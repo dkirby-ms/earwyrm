@@ -1,0 +1,58 @@
+{
+  "task_id": "earwyrm-project-plan",
+  "task_slug": "earwyrm-project-plan",
+  "session_name": "Earwyrm project plan",
+  "parent_task": null,
+  "child_tasks": [],
+  "mode": "manual",
+  "active_phase": "Plan",
+  "status": "active",
+  "session_status": "running",
+  "artifact_paths": {
+    "research": null,
+    "plan": ".copilot-tracking/plans/2026-11-11/earwyrm-project-plan-plan.md",
+    "critique": null,
+    "changes": null,
+    "review": null
+  },
+  "documents": {
+    "research": [],
+    "plan": [".copilot-tracking/plans/2026-11-11/earwyrm-project-plan-plan.md"],
+    "critique": [],
+    "changes": [],
+    "review": []
+  },
+  "confirmed_decisions": [
+    {
+      "decision": "Planning boundary",
+      "status": "current",
+      "evidence": "User requests a simple project plan and task breakdown suitable for GitHub issues, not application implementation or tracker mutation."
+    },
+    {
+      "decision": "Planning decision participation",
+      "status": "user-retained",
+      "evidence": "Question tool reports user unavailable and directs pragmatic defaults. Produce local Markdown drafts; do not infer automatic progression."
+    },
+    {
+      "decision": "Research evidence",
+      "status": "reused",
+      "evidence": "docs/design-proposal.md supplies scope, architecture, four-week sequencing and audio proof thresholds. Unspecified implementation choices remain explicit future tasks."
+    },
+    {
+      "decision": "Tracker preflight",
+      "status": "blocked",
+      "evidence": "GitHub is the intended future tracker, but no owner/repo is supplied. Stop connected backlog planning; produce only the requested standalone local documents. No duplicate assessment or tracker readiness claim."
+    },
+    {
+      "decision": "Planning critique",
+      "status": "standard",
+      "evidence": "Default, bounded to the requested planning documents and supplied proposal."
+    }
+  ],
+  "blockers": [],
+  "next_action": {
+    "phase": "Plan",
+    "action": "Draft the local project plan and issue bodies; do not implement the application or publish issues."
+  },
+  "prioritized_follow_ups": []
+}
