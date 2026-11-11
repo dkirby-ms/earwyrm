@@ -1,8 +1,9 @@
 <!-- markdownlint-disable-file -->
 ---
-title: Earwyrm planning deliverables
 description: Bounded planning work for a local project plan and GitHub-ready task breakdown.
 ---
+
+# RPI Plan: Earwyrm planning deliverables
 
 ## Task Metadata
 
@@ -14,7 +15,10 @@ description: Bounded planning work for a local project plan and GitHub-ready tas
 
 Produce a four-week MVP plan and flat issue drafts from the supplied proposal.
 Keep the audio proof as a hard gate, preserve its fallback, and separate pilot work.
-Drafting is in progress; application implementation is not authorized.
+The [docs/project-plan.md](../../../docs/project-plan.md) and
+[docs/github-issues.md](../../../docs/github-issues.md) drafts are complete.
+The standard direct critique is Complete with a Pass verdict and no findings.
+Application implementation is not authorized.
 
 ### What You May Not Know
 
@@ -28,7 +32,7 @@ This work adds two documents, `docs/project-plan.md` and `docs/github-issues.md`
 without changing application connections.
 
 <!-- rpi:phase id=P01 -->
-### [ ] P01: Prepare planning deliverables
+### [x] P01: Prepare planning deliverables
 
 Goals:
 * Make the proposed MVP actionable without expanding its scope.
@@ -39,7 +43,7 @@ Dependencies:
 Changes in the map: Two local planning documents; no architecture changes.
 
 <!-- rpi:task id=P01-T01 -->
-#### [ ] P01-T01: Draft the project plan
+#### [x] P01-T01: Draft the project plan
 
 Goals:
 * Establish scope, milestones, proof gates, risks and completion conditions.
@@ -58,7 +62,7 @@ Dependencies:
 * None.
 
 <!-- rpi:task id=P01-T02 -->
-#### [ ] P01-T02: Draft issue-ready tasks
+#### [x] P01-T02: Draft issue-ready tasks
 
 Goals:
 * Give contributors bounded work with testable completion conditions and dependencies.
@@ -95,10 +99,10 @@ Dependencies:
 ## Planning Readiness and Next Step
 
 * Participation: user-retained; unanswered material implementation decisions stay open.
-* Draft readiness: sufficient evidence for planning documents.
+* Planning execution: Complete; documents ready for user review and manual transfer.
 * Implementation readiness: not assessed; the request ends at planning.
-* Critique: standard, not yet started.
-* Next action: author and critique the requested documents, then stop in Plan.
+* Critique: standard, Complete, Pass; no actionable findings.
+* Next action: stop in Plan; refinement or application work needs explicit direction.
 
 ## Scope and Non-Goals
 
@@ -126,7 +130,11 @@ Dependencies:
 ## Critique Disposition
 
 * Setting: standard, default.
-* Status: not started.
+* Status: Complete.
+* Verdict: Pass; no findings.
+* Record: [.copilot-tracking/reviews/plans/2026-11-11/earwyrm-project-plan-plan-critique.md](../../reviews/plans/2026-11-11/earwyrm-project-plan-plan-critique.md)
+* Accepted residual limits: staffing and implementation choices remain unresolved;
+  no runtime, Azure, live backlog or legal/pricing verification is claimed.
 * Boundary: coverage and consistency of the local planning deliverables.
 
 ## Artifact Self-Check
@@ -139,6 +147,9 @@ Dependencies:
 * Regression coverage: design proposal remains unchanged.
 * Validation: no build or runtime tests needed for documentation-only changes;
   no documentation test tooling exists.
+* Structural check passed with `python3`: 14 unique issue drafts, required body
+  sections and checkboxes, valid dependency titles, acyclic graph, frontmatter and
+  local document links. The original proposal remains unchanged.
 
 ## Follow-Up Items
 

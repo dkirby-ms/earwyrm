@@ -143,10 +143,9 @@ review remain prerequisites for a real advertiser pilot.
 * Conversational revisions, additional MCP servers and Copilot/Teams publishing
 * Marketplace packaging and commercial pilot rollout
 
-## Moving the tasks to GitHub
+## GitHub tracking
 
-Use the four milestone names above and create one issue per task in
-[GitHub issue drafts](./github-issues.md). Copy the title and body, attach the
-suggested milestone, then replace dependency titles with actual issue links.
-Suggested labels are optional and must be created or mapped in the destination
-repository. No repository, labels, milestones or issues have been created.
+The 14 tasks are tracked as [GitHub issues](https://github.com/dkirby-ms/earwyrm/issues),
+with acceptance criteria and linked dependencies. The [issue drafts](./github-issues.md)
+link each live issue. Week names and suggested labels are retained in issue bodies;
+no new milestones or labels were created.

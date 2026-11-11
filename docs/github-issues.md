@@ -5,11 +5,11 @@ description: Copy-ready task titles, scope, acceptance criteria and dependencies
 
 ## How to use
 
-Create one issue per numbered section. Use its Title as the issue title and copy
-Summary through Dependencies as the body; milestone and labels are suggested
-metadata. Numbers here are reading order, not GitHub issue numbers.
-Replace dependency titles with real issue links after creation.
-No live backlog or duplicate check has been performed.
+All 14 tasks were created in [dkirby-ms/earwyrm](https://github.com/dkirby-ms/earwyrm/issues)
+on 2026-11-11 after checking for existing issues. Each section links its live issue.
+The issue bodies preserve the acceptance criteria and link their dependencies.
+Milestones and labels remain suggested metadata in the bodies where matching
+repository metadata did not exist; only the existing `documentation` label was applied.
 
 Keep this backlog flat for the POC. Each issue includes implementation and its
 focused tests; do not create a separate testing hierarchy.
@@ -20,6 +20,8 @@ Source references identify sections of the [design proposal](./design-proposal.m
 ## 1. Define synthetic briefs and the audio evaluation protocol
 
 Title: Define synthetic advertiser briefs and audio proof criteria
+
+Issue: [#1](https://github.com/dkirby-ms/earwyrm/issues/1)
 
 Milestone: Week 1: Prove the audio
 
@@ -54,6 +56,8 @@ Source: proposal sections 5, 6 and 9.
 
 Title: Build local retro-synth audio proof and spoken-tagline alternative
 
+Issue: [#2](https://github.com/dkirby-ms/earwyrm/issues/2)
+
 Milestone: Week 1: Prove the audio
 
 Suggested labels: `poc`, `audio`
@@ -86,6 +90,8 @@ Source: proposal sections 4, 5, 6 and 9.
 
 Title: Evaluate the audio proof and record the go-no-go decision
 
+Issue: [#3](https://github.com/dkirby-ms/earwyrm/issues/3)
+
 Milestone: Week 1: Prove the audio
 
 Suggested labels: `poc`, `audio`, `decision`
@@ -112,6 +118,8 @@ Source: proposal section 9.
 ## 4. Establish contracts and deployment
 
 Title: Scaffold service contracts and reproducible Azure deployment
+
+Issue: [#4](https://github.com/dkirby-ms/earwyrm/issues/4)
 
 Milestone: Week 2: Establish the platform
 
@@ -148,6 +156,8 @@ Source: proposal sections 5, 6 and 8.
 
 Title: Implement the Lyric and Hook Writer MCP server
 
+Issue: [#5](https://github.com/dkirby-ms/earwyrm/issues/5)
+
 Milestone: Week 2: Establish the platform
 
 Suggested labels: `poc`, `mcp`, `generation`
@@ -182,6 +192,8 @@ Source: proposal sections 5 and 6.
 
 Title: Implement the Melody and Arrangement MCP server
 
+Issue: [#6](https://github.com/dkirby-ms/earwyrm/issues/6)
+
 Milestone: Week 2: Establish the platform
 
 Suggested labels: `poc`, `mcp`, `audio`
@@ -210,6 +222,8 @@ Source: proposal sections 4, 5 and 6.
 ## 7. Govern MCP access
 
 Title: Add Entra ID authentication and APIM MCP policies
+
+Issue: [#7](https://github.com/dkirby-ms/earwyrm/issues/7)
 
 Milestone: Week 2: Establish the platform
 
@@ -241,6 +255,8 @@ Source: proposal sections 5 and 6.
 
 Title: Run idempotent audio renders in queue-triggered Container Apps jobs
 
+Issue: [#8](https://github.com/dkirby-ms/earwyrm/issues/8)
+
 Milestone: Week 3: Complete generation
 
 Suggested labels: `poc`, `audio`, `platform`
@@ -268,6 +284,8 @@ Source: proposal sections 5 and 6.
 ## 9. Enforce audio quality
 
 Title: Enforce audio quality gates and validated spoken-tagline fallback
+
+Issue: [#9](https://github.com/dkirby-ms/earwyrm/issues/9)
 
 Milestone: Week 3: Complete generation
 
@@ -297,6 +315,8 @@ Source: proposal sections 5 and 6.
 ## 10. Connect the workflow
 
 Title: Orchestrate generation with a deterministic Agent Framework workflow
+
+Issue: [#10](https://github.com/dkirby-ms/earwyrm/issues/10)
 
 Milestone: Week 3: Complete generation
 
@@ -329,6 +349,8 @@ Source: proposal sections 5 and 6.
 
 Title: Build the seller brief picker and audio review experience
 
+Issue: [#11](https://github.com/dkirby-ms/earwyrm/issues/11)
+
 Milestone: Week 4: Complete the demo
 
 Suggested labels: `poc`, `web`
@@ -355,6 +377,8 @@ Source: proposal sections 1 and 5.
 ## 12. Add approval and sharing
 
 Title: Record seller approval and share demos for advertiser sign-off
+
+Issue: [#12](https://github.com/dkirby-ms/earwyrm/issues/12)
 
 Milestone: Week 4: Complete the demo
 
@@ -385,6 +409,8 @@ Source: proposal sections 5 and 6.
 
 Title: Verify end-to-end tracing and per-job timing and cost reports
 
+Issue: [#13](https://github.com/dkirby-ms/earwyrm/issues/13)
+
 Milestone: Week 4: Complete the demo
 
 Suggested labels: `poc`, `operations`
@@ -412,6 +438,8 @@ Source: proposal sections 3, 5 and 6.
 ## 14. Validate and package the POC
 
 Title: Validate the deployed MVP and publish the demo package
+
+Issue: [#14](https://github.com/dkirby-ms/earwyrm/issues/14)
 
 Milestone: Week 4: Complete the demo
 
