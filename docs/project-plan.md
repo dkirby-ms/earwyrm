@@ -45,25 +45,15 @@ Week 4 verifies these controls end to end.
 
 ## Week-1 decision gate
 
-Produce local audio for all three synthetic advertisers before platform work starts.
-Use five independent listeners for 15 hook transcriptions, and three production
-professionals for nine usability ratings.
+Use the [audio POC protocol](audio-poc/protocol.md) and [synthetic brief fixtures](audio-poc/advertiser-briefs.json) to evaluate three local outputs with one participant. The provisional self-evaluation screen passes only when all three outputs have correct brand-and-CTA transcriptions and are rated "usable with minor edits."
 
-Continue with vocoded jingles only when all proposal criteria pass:
+Every audio component must have documented commercial-use rights, each measured render must take less than five minutes, and metered per-render consumption must be below $0.50. Report fixed gateway and hosting charges separately.
 
-* At least 12 of 15 transcriptions correctly identify both the brand and call to action
-* At least 7 of 9 professional ratings say usable with minor edits
-* Every audio component has a documented commercial license or applicable usage rights
-* Azure cost is below $0.50 per jingle
-* Each measured render takes less than five minutes
+An output is Fail when available evidence shows a criterion failed. Otherwise it is Pending while required evidence is missing, and Pass only when transcription, self-rating, rights, duration and metered cost all pass. The overall POC is Fail if any output fails, Pending if none fail but at least one remains pending, and Pass only when all three pass.
 
-Keep the exact seven-of-nine threshold; do not round it down to six ratings.
-Record render timings, resource usage, cost assumptions, rights evidence and human
-scores. Missing human ratings or rights evidence leave the gate pending.
+Label this result as unblinded self-evaluation, not independent or professional evidence. The original panel of five independent listeners and three production professionals is deferred future validation, not the one-person POC gate. Its thresholds remain 12 of 15 correct transcriptions and at least seven of nine usable-with-minor-edits ratings (approximately 77.8%). This local POC scope does not change the live GitHub issue.
 
-If any criterion fails, weeks 2 to 4 target the instrumental-bed or sonic-logo
-product with a spoken tagline on the same architecture. Recheck that product's
-intelligibility, quality and rights; do not assume the pivot automatically passes.
+If any current POC criterion fails, weeks 2 to 4 target the instrumental-bed or sonic-logo product with a spoken tagline on the same architecture. Recheck that product's intelligibility, quality and rights; do not assume the pivot automatically passes.
 
 ## Work sequence
 
@@ -126,8 +116,7 @@ review remain prerequisites for a real advertiser pilot.
 ## Main risks
 
 * Vocoded speech may not be usable: evaluate in week 1 and retain the spoken-tagline pivot.
-* Human reviewers may be unavailable: arrange five listeners and three production
-  professionals at the start; missing feedback blocks the audio decision.
+* The one-person POC is unblinded self-evaluation, not independent or professional validation; retain the full panel only as deferred future validation when that evidence is needed.
 * Service access or deployment setup may delay week 2: validate prerequisites
   before starting platform work; do not replace the required gateway silently.
 * Melody checks do not establish legal clearance: use a documented limited

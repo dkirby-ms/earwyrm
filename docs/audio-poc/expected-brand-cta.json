@@ -1,0 +1,20 @@
+[
+  {
+    "brief_id": "brief-001",
+    "expected_brand": "Cedar Loop Bike Repair",
+    "expected_cta": "Call or email Cedar Loop Bike Repair to schedule a tune-up.",
+    "accepted_cta_variants": []
+  },
+  {
+    "brief_id": "brief-002",
+    "expected_brand": "Mosslight Garden Supply",
+    "expected_cta": "Ask Mosslight Garden Supply about seed-starting kits by phone or email.",
+    "accepted_cta_variants": []
+  },
+  {
+    "brief_id": "brief-003",
+    "expected_brand": "Harbor Thread Alterations",
+    "expected_cta": "Contact Harbor Thread Alterations to ask about an appointment.",
+    "accepted_cta_variants": []
+  }
+]

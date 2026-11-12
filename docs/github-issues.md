@@ -36,15 +36,16 @@ go/no-go decision before platform work.
 
 * Create three synthetic briefs with name, offer, location, contact details, tone and approved claims.
 * Define the brief adapter contract so real connectors can replace fixtures later.
-* Arrange the listener and production-professional evaluations and cost measurements.
+* Define the one-person POC protocol and blank evidence record for self-evaluation, component rights, render duration and metered cost.
+* Use the [audio POC protocol](audio-poc/protocol.md) and [synthetic brief fixtures](audio-poc/advertiser-briefs.json). Actual evaluation waits until outputs exist.
 
 ### Acceptance criteria
 
 * [ ] Three synthetic briefs and expected brand/CTA answers are available without real advertiser data.
-* [ ] Five independent listeners and three production professionals are scheduled.
-* [ ] The protocol records 15 hook transcriptions and nine usability ratings.
-* [ ] Pass criteria preserve 12/15 correct brand-and-CTA responses, 7/9 usable-with-minor-edits ratings, documented component rights, cost below $0.50 per jingle and renders below five minutes.
-* [ ] Cost accounting records metered usage and states how fixed hosting/gateway costs will be reported.
+* [ ] One participant evaluates three outputs; the provisional self-evaluation screen passes only when all three brand-and-CTA transcriptions are correct and all three outputs are rated "usable with minor edits."
+* [ ] Each output records component-level commercial-rights evidence, measured render duration below five minutes, and metered per-render consumption below $0.50; fixed gateway and hosting charges are reported separately.
+* [ ] Output and overall POC records distinguish Pass, Fail and Pending: an evidenced failed criterion is Fail, missing required evidence without a known failure is Pending, and Pass requires all criteria to pass.
+* [ ] The original full panel is deferred future validation only: five independent listeners, at least 12 of 15 correct transcriptions, and three production professionals with at least seven of nine usable-with-minor-edits ratings (approximately 77.8%). It is not a one-person POC gate, and the live GitHub issue remains unchanged.
 
 ### Dependencies
 
@@ -98,16 +99,19 @@ Suggested labels: `poc`, `audio`, `decision`
 
 ### Summary
 
-Use the planned human evaluation and measurements to choose the remaining build path.
+Deferred follow-on: after the one-person POC, use the original panel and measurements to choose the remaining build path, if that future validation is separately authorized.
 
 ### Acceptance criteria
 
-* [ ] Five listeners complete all 15 hook transcriptions and three professionals complete all nine ratings.
-* [ ] Actual results for every week-1 criterion are recorded alongside the evaluated samples.
-* [ ] Missing evidence leaves the decision pending rather than being counted as a pass.
-* [ ] Vocoded jingles proceed only if every criterion passes, including at least seven positive professional ratings.
-* [ ] If any criterion fails, the spoken-tagline pivot is recorded and evaluated before it is treated as usable.
+* [ ] When deferred full-panel validation is separately authorized, five independent listeners complete all 15 hook transcriptions, with at least 12 correct brand-and-CTA results.
+* [ ] Three production professionals complete all nine usability ratings, with at least seven rated "usable with minor edits" (approximately 77.8%).
+* [ ] Every audio component has documented commercial-use rights, each measured render takes less than five minutes, and metered per-render consumption is below $0.50; fixed gateway and hosting charges are reported separately.
+* [ ] Actual results for every deferred full-panel criterion are recorded alongside the evaluated samples.
+* [ ] Missing evidence leaves the deferred full-panel decision pending rather than being counted as a pass.
+* [ ] Vocoded jingles proceed only if every deferred full-panel criterion passes.
+* [ ] If any deferred full-panel criterion fails, the spoken-tagline pivot is recorded and evaluated before it is treated as usable.
 * [ ] The selected path and its implications for the remaining issues are documented.
+* [ ] This deferred full-panel issue is not a gate for the one-person POC, and the live GitHub issue remains unchanged.
 
 ### Dependencies
 

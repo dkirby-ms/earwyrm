@@ -1,0 +1,47 @@
+[
+  {
+    "brief_id": "brief-001",
+    "name": "Cedar Loop Bike Repair",
+    "offer": "Tune-ups for neighborhood bikes",
+    "location": "Riverton",
+    "contact_details": {
+      "email": "service+brief-001@example.com",
+      "phone": "+1-202-555-0101"
+    },
+    "tone": "Friendly and practical",
+    "approved_claims": [
+      "Repairs and tune-ups are available for bicycles",
+      "Customers can ask about appointments by phone or email"
+    ]
+  },
+  {
+    "brief_id": "brief-002",
+    "name": "Mosslight Garden Supply",
+    "offer": "Seed-starting kits for home gardens",
+    "location": "Maple Junction",
+    "contact_details": {
+      "email": "hello+brief-002@example.org",
+      "phone": "+1-202-555-0102"
+    },
+    "tone": "Warm and encouraging",
+    "approved_claims": [
+      "Seed-starting kits are available for home gardens",
+      "Customers can ask about products by phone or email"
+    ]
+  },
+  {
+    "brief_id": "brief-003",
+    "name": "Harbor Thread Alterations",
+    "offer": "Everyday clothing alterations",
+    "location": "Lakeview",
+    "contact_details": {
+      "email": "appointments+brief-003@example.com",
+      "phone": "+1-202-555-0103"
+    },
+    "tone": "Calm and welcoming",
+    "approved_claims": [
+      "Alterations are available for everyday clothing",
+      "Customers can ask about appointments by phone or email"
+    ]
+  }
+]
