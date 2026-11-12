@@ -1,0 +1,120 @@
+{
+  "task_id": "issue-1-define-synthetic-advertiser-briefs",
+  "task_slug": "issue-1-define-synthetic-advertiser-briefs",
+  "session_name": "Issue 1 audio proof",
+  "parent_task": null,
+  "child_tasks": [],
+  "mode": "automatic",
+  "active_phase": "Follow-up",
+  "status": "completed",
+  "session_status": "stopped",
+  "artifact_paths": {
+    "research": ".copilot-tracking/research/2026-11-11/issue-1-define-synthetic-advertiser-briefs-research.md",
+    "plan": ".copilot-tracking/plans/2026-11-11/issue-1-define-synthetic-advertiser-briefs-plan.md",
+    "critique": ".copilot-tracking/reviews/plans/2026-11-11/issue-1-define-synthetic-advertiser-briefs-plan-critique.md",
+    "changes": ".copilot-tracking/changes/2026-11-11/issue-1-define-synthetic-advertiser-briefs-changes.md",
+    "review": ".copilot-tracking/reviews/logs/2026-11-11/issue-1-define-synthetic-advertiser-briefs-review.md"
+  },
+  "documents": {
+    "research": [
+      ".copilot-tracking/research/2026-11-11/issue-1-define-synthetic-advertiser-briefs-research.md"
+    ],
+    "plan": [
+      ".copilot-tracking/plans/2026-11-11/issue-1-define-synthetic-advertiser-briefs-plan.md"
+    ],
+    "critique": [
+      ".copilot-tracking/reviews/plans/2026-11-11/issue-1-define-synthetic-advertiser-briefs-plan-critique.md"
+    ],
+    "changes": [
+      ".copilot-tracking/changes/2026-11-11/issue-1-define-synthetic-advertiser-briefs-changes.md"
+    ],
+    "review": [
+      ".copilot-tracking/reviews/logs/2026-11-11/issue-1-define-synthetic-advertiser-briefs-review.md"
+    ]
+  },
+  "confirmed_decisions": [
+    {
+      "decision": "Automatic session scope",
+      "status": "current",
+      "evidence": "Root task issue-1-define-synthetic-advertiser-briefs, state .copilot-tracking/rpi-sessions/2026-11-11/issue-1-audio-proof/issue-1-define-synthetic-advertiser-briefs-state.json. User authorized issue #1 scope: three synthetic briefs and a replaceable adapter contract, and explicitly changed the POC evaluation scope to one participant with no external bookings. The user selected a provisional 3/3 self-evaluation rule for brand+CTA transcription and usability. Write boundary is repository files directly required for this issue. Excludes real advertiser data, external participant outreach or calendar changes, tracker mutation, cloud spend and platform work."
+    },
+    {
+      "decision": "Automatic progression boundary",
+      "status": "through-review",
+      "evidence": "User selected 'Keep going, but check with me' for this issue on 2026-11-11."
+    },
+    {
+      "decision": "Research decision participation",
+      "status": "user-retained",
+      "evidence": "User selected 'Keep going, but check with me'; ask about material unresolved research decisions."
+    },
+    {
+      "decision": "Planning decision participation",
+      "status": "user-retained",
+      "evidence": "User selected 'Keep going, but check with me'; ask about material unresolved planning decisions."
+    },
+    {
+      "decision": "Review decision participation",
+      "status": "user-retained",
+      "evidence": "User selected 'Keep going, but check with me'; ask about material unresolved review decisions."
+    },
+    {
+      "decision": "Follow-up decision participation",
+      "status": "user-retained",
+      "evidence": "User selected 'Keep going, but check with me'; ask the user to select among eligible follow-ups."
+    },
+    {
+      "decision": "Subagent use",
+      "status": "auto",
+      "evidence": "No specific subagent restriction was requested; phase skills may use a helper only if it improves evidence quality for bounded work."
+    },
+    {
+      "decision": "Planning critique",
+      "status": "standard",
+      "evidence": "Default for the first task; user did not request a different critique depth or skip."
+    },
+    {
+      "decision": "Review step",
+      "status": "run",
+      "evidence": "Default for the first task; user did not request a skip."
+    },
+    {
+      "decision": "Canvas",
+      "status": "current",
+      "evidence": "instanceId rpi-issue-1-define-synthetic-advertiser-briefs; handle 6758; extensionId plugin:hve-core:rpi-workflow"
+    },
+    {
+      "decision": "One-person POC evaluation gate",
+      "status": "confirmed",
+      "evidence": "User chose a provisional 3/3 self-evaluation threshold for both measures: each of the three outputs must correctly convey brand and CTA and be rated 'usable with minor edits.' Cycle 2 revalidated that this is a bounded POC self-screen, not independent-listener or professional evidence."
+    },
+    {
+      "decision": "Fixed-cost threshold basis",
+      "status": "confirmed",
+      "evidence": "User answered D2 on 2026-11-11: compare metered per-render consumption to the $0.50 threshold and report fixed gateway/hosting charges separately."
+    },
+    {
+      "decision": "Planning D1: synthetic brief and answer-key representation",
+      "status": "confirmed",
+      "evidence": "User selected JSON for the three synthetic briefs, with expected brand/CTA answers in a separate JSON file."
+    },
+    {
+      "decision": "Planning D2: treatment of original full-panel criteria in local documents",
+      "status": "confirmed",
+      "evidence": "User selected retain_deferred: preserve the original 5+3 panel in local documents only as clearly labeled deferred future validation, not as a one-person POC gate."
+    },
+    {
+      "decision": "Planning readiness after critique disposition",
+      "status": "ready",
+      "evidence": "The plan contains direct corrections and exact resolving evidence for PC-001 through PC-011. The initial critique verdict remains Revise; all findings are dispositioned as resolved, and no follow-up critique was requested."
+    },
+    {
+      "decision": "Automatic session acceptance",
+      "status": "met",
+      "evidence": "The confirmed Issue #1 scope is complete: every plan marker is checked, named validation passed, and the Review record is Complete with outcome Conformant. Follow-up found no required finding, blocker, or active follow-up item. The original full panel remains intentionally deferred outside scope."
+    }
+  ],
+  "blockers": [],
+  "next_action": null,
+  "prioritized_follow_ups": []
+}
