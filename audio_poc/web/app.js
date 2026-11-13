@@ -422,12 +422,13 @@ function renderOutputs() {
         "p",
         "notice",
         isInstrumental
-          ? "Instrumental-only preview — not vocal proof."
+          ? "Instrumental-only preview — not vocal proof. Evaluation remains Pending; playback is available."
           : "Azure voice output.",
       ),
     );
     const badge = createElement("p", "status-badge");
     setStatusBadge(badge, output.status);
+    badge.textContent = `Evaluation: ${output.status}`;
     card.append(badge);
 
     let audioUrl = state.audioUrls.get(output.output_id);
@@ -436,6 +437,9 @@ function renderOutputs() {
     audio.preload = "none";
     audio.setAttribute("aria-label", `Play ${brief?.name || output.brief_id}, ${output.variant}`);
     if (audioUrl) audio.src = audioUrl;
+    audio.addEventListener("error", () => {
+      showError("Audio playback failed. Try Load protected audio again, or download the WAV.");
+    });
     audio.addEventListener("ended", () => {
       releaseAudioUrl(output.output_id);
       audio.removeAttribute("src");
@@ -588,7 +592,7 @@ async function renderOffline() {
       body: { brief_ids: briefIds, mode: "instrumental" },
     });
     await loadWorkspaceData();
-    announce("Instrumental preview completed. It is not vocal proof.");
+    announce("Instrumental preview completed. Select Load protected audio, then press Play. Pending is evaluation status, not render progress.");
   });
 }
 

@@ -180,6 +180,14 @@ def test_given_configured_api_when_serving_web_app_then_applies_csp_and_pinned_c
     assert "script-src 'self'" in policy
     assert "connect-src 'self'" in policy
     assert "frame-src 'self'" in policy
+    directives = {
+        parts[0]: parts[1:]
+        for directive in policy.split(";")
+        if (parts := directive.split())
+    }
+    assert directives["media-src"] == ["'self'", "blob:"]
+    assert directives["default-src"] == ["'self'"]
+    assert directives["script-src"] == ["'self'"]
     assert "object-src 'none'" in policy
     assert "base-uri 'self'" in policy
     assert "frame-ancestors 'none'" in policy

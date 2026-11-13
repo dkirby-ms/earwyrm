@@ -429,6 +429,7 @@ def create_app(
             "script-src 'self'; "
             "style-src 'self'; "
             "img-src 'self' data:; "
+            "media-src 'self' blob:; "
             f"connect-src {trusted_sources}; "
             f"frame-src {trusted_sources}; "
             "object-src 'none'; "

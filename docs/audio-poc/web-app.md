@@ -174,6 +174,20 @@ disallows objects and framing by other sites. The callback alone permits
 same-origin framing for silent token renewal and is served with `no-store`.
 The app does not load scripts from a CDN.
 
+Audio playback uses authenticated same-origin API requests followed by local
+Blob URLs. The CSP permits these URLs only for media with
+`media-src 'self' blob:`; script and default sources remain restricted.
+
+## Listen to instrumental previews
+
+After selecting briefs and rendering, find the completed outputs under
+**Rendered variants**. Select **Load protected audio** on an output, then press
+**Play** in its audio controls. You can also select **Download WAV**.
+
+**Pending** is an evaluation status, not render progress, and does not block
+playback. Instrumental previews remain Pending because they are not vocal
+proof. **Recent render runs** reports whether rendering completed.
+
 ## Local audio and evaluation storage
 
 By default, the API stores its SQLite database and audio under
