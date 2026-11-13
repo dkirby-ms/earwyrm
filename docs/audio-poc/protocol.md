@@ -20,6 +20,10 @@ outputs and supporting evidence exist. Creating the protocol and fixtures does
 not produce audio, prove rights, measure duration or cost, or establish a POC
 result.
 
+Use the [local rendering guide](rendering.md) to create instrumental or paired
+Azure vocal outputs and their evidence manifests. Instrumental-only renders
+and tone-based automated tests do not satisfy the live vocal proof.
+
 ## Synthetic Brief Contract
 
 Each brief has a stable, unique `brief_id` using the `brief-NNN` form. The
