@@ -180,8 +180,13 @@ Blob URLs. The CSP permits these URLs only for media with
 
 ## Listen to instrumental previews
 
-After selecting briefs and rendering, find the completed outputs under
-**Rendered variants**. Select **Load protected audio** on an output, then press
+Use the workspace navigation to switch between **Select briefs**,
+**Evaluation status**, **Rendered variants**, and **Recent runs** without
+losing the current selection or an unfinished evaluation. Paid usage awaiting
+reconciliation remains visible across these views.
+
+After rendering, the workspace opens **Rendered variants** to show the
+completed outputs. Select **Load protected audio** on an output, then press
 **Play** in its audio controls. You can also select **Download WAV**.
 
 **Pending** is an evaluation status, not render progress, and does not block
@@ -272,3 +277,9 @@ uv sync --locked
 
 Use fake MSAL and API responses for browser workflow checks. Do not use a real
 tenant token or enable paid Speech as part of routine validation.
+
+Run the workspace navigation test with Node.js:
+
+```bash
+node --test tests/test_web_navigation.cjs
+```

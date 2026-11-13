@@ -56,6 +56,15 @@ const state = {
   busy: false,
 };
 
+function showWorkspaceView(viewId) {
+  for (const view of ui.workspace.querySelectorAll(".workspace-view")) {
+    view.hidden = view.id !== viewId;
+  }
+  for (const button of ui.workspace.querySelectorAll(".workspace-nav-button")) {
+    button.setAttribute("aria-pressed", String(button.dataset.view === viewId));
+  }
+}
+
 function announce(message) {
   ui.announcement.textContent = message;
 }
@@ -592,6 +601,8 @@ async function renderOffline() {
       body: { brief_ids: briefIds, mode: "instrumental" },
     });
     await loadWorkspaceData();
+    showWorkspaceView("outputs-view");
+    document.getElementById("comparison-heading").focus();
     announce("Instrumental preview completed. Select Load protected audio, then press Play. Pending is evaluation status, not render progress.");
   });
 }
@@ -641,6 +652,8 @@ async function renderAzure() {
         },
       });
       await loadWorkspaceData();
+      showWorkspaceView("outputs-view");
+      document.getElementById("comparison-heading").focus();
       announce("Azure voice render completed. Reconcile actual metered usage before another paid attempt.");
     } catch (error) {
       try {
@@ -747,6 +760,9 @@ ui["offline-render-button"].addEventListener("click", renderOffline);
 ui["paid-render-button"].addEventListener("click", renderAzure);
 ui["cancel-estimate-button"].addEventListener("click", () => ui["estimate-dialog"].close("cancel"));
 ui["confirm-estimate-button"].addEventListener("click", () => ui["estimate-dialog"].close("confirm"));
+for (const button of ui.workspace.querySelectorAll(".workspace-nav-button")) {
+  button.addEventListener("click", () => showWorkspaceView(button.dataset.view));
+}
 window.addEventListener("pagehide", () => {
   for (const outputId of state.audioUrls.keys()) releaseAudioUrl(outputId);
 });
