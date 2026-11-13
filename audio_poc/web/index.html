@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>Earwyrm Audio Evaluation</title>
+    <link rel="stylesheet" href="/styles.css">
+    <script defer src="/vendor/msal-browser.min.js"></script>
+    <script defer src="/app.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to main content</a>
+    <header class="site-header">
+      <div>
+        <p class="eyebrow">Local proof of concept</p>
+        <h1>Earwyrm Audio Evaluation</h1>
+      </div>
+      <div id="session-panel" class="session-panel" hidden>
+        <span id="signed-in-user"></span>
+        <button id="sign-out-button" class="button button-secondary" type="button">Sign out</button>
+      </div>
+    </header>
+
+    <main id="main">
+      <p id="announcement" class="visually-hidden" aria-live="polite" aria-atomic="true"></p>
+      <p id="error-message" class="alert" role="alert" hidden></p>
+
+      <section id="setup-panel" class="panel" aria-labelledby="setup-heading" hidden>
+        <p class="eyebrow">Configuration</p>
+        <h2 id="setup-heading">Sign-in setup required</h2>
+        <p id="setup-message">
+          Configure the existing Entra External ID tenant values on the API, then reload this page.
+        </p>
+        <p class="muted">This page does not create or change tenant registrations.</p>
+      </section>
+
+      <section id="sign-in-panel" class="panel sign-in-panel" aria-labelledby="sign-in-heading" hidden>
+        <p class="eyebrow">Secure access</p>
+        <h2 id="sign-in-heading">Sign in to your evaluation workspace</h2>
+        <p>Your audio and evaluation evidence are private to your signed-in account on this local POC.</p>
+        <button id="sign-in-button" class="button button-primary" type="button">Sign in with Entra External ID</button>
+      </section>
+
+      <div id="workspace" hidden>
+        <nav class="workspace-nav" aria-label="Workspace sections">
+          <button class="workspace-nav-button" type="button" data-view="select-view" aria-pressed="true">Select briefs</button>
+          <button class="workspace-nav-button" type="button" data-view="status-view" aria-pressed="false">Evaluation status</button>
+          <button class="workspace-nav-button" type="button" data-view="outputs-view" aria-pressed="false">Rendered variants</button>
+          <button class="workspace-nav-button" type="button" data-view="runs-view" aria-pressed="false">Recent runs</button>
+        </nav>
+
+        <section id="reconciliation-panel" class="panel" aria-labelledby="reconciliation-heading" hidden>
+          <p class="eyebrow">Operator evidence</p>
+          <h2 id="reconciliation-heading">Paid usage awaiting reconciliation</h2>
+          <p class="notice">
+            A paid attempt remains reserved until actual metered usage is recorded. Do not retry it. Enter the actual cost and the evidence reference from the provider's billing record.
+          </p>
+          <div id="reconciliation-list" class="stack"></div>
+        </section>
+
+        <section id="select-view" class="panel workspace-view" aria-labelledby="brief-heading">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">1 · Select</p>
+              <h2 id="brief-heading">Choose synthetic briefs</h2>
+            </div>
+            <p class="muted">Expected answers are not shown before evaluation.</p>
+          </div>
+          <fieldset>
+            <legend>Select one or more briefs to render</legend>
+            <div id="brief-list" class="brief-list"></div>
+          </fieldset>
+          <p id="selection-count" class="muted">No briefs selected.</p>
+          <div class="button-row">
+            <button id="offline-render-button" class="button button-primary" type="button" disabled>
+              Render instrumental preview
+            </button>
+            <button id="paid-render-button" class="button button-secondary" type="button" disabled>
+              Estimate and render Azure voice
+            </button>
+          </div>
+          <p class="notice">
+            Instrumental-only output is a workflow preview, not vocal proof. Azure voice rendering stays unavailable unless the server is explicitly configured.
+          </p>
+          <p id="render-options-message" class="muted"></p>
+        </section>
+
+        <section id="status-view" class="panel workspace-view" aria-labelledby="status-heading" hidden>
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">2 · Evaluate</p>
+              <h2 id="status-heading">Three-brief evaluation status</h2>
+            </div>
+            <p id="overall-status" class="status-badge">Pending</p>
+          </div>
+          <p class="muted">Pending means evaluation or evidence is incomplete, not that audio is still rendering. Instrumental previews are not vocal proof and remain Pending.</p>
+          <ul id="brief-status-list" class="status-list"></ul>
+        </section>
+
+        <section id="outputs-view" class="panel workspace-view" aria-labelledby="comparison-heading" hidden>
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">3 · Compare</p>
+              <h2 id="comparison-heading" tabindex="-1">Rendered variants</h2>
+            </div>
+            <p id="output-count" class="muted">No outputs yet.</p>
+          </div>
+          <p class="muted">For each completed output, select Load protected audio, then press Play in its audio controls. Evaluation status does not block playback.</p>
+          <div class="table-wrap">
+            <table>
+              <caption>Comparison of your rendered outputs</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Brief</th>
+                  <th scope="col">Variant</th>
+                  <th scope="col">Duration</th>
+                  <th scope="col">Numeric gates</th>
+                  <th scope="col">Evaluation status</th>
+                </tr>
+              </thead>
+              <tbody id="comparison-rows"></tbody>
+            </table>
+          </div>
+          <div id="output-list" class="output-list"></div>
+        </section>
+
+        <section id="runs-view" class="panel workspace-view" aria-labelledby="runs-heading" hidden>
+          <p class="eyebrow">Recovery</p>
+          <h2 id="runs-heading">Recent render runs</h2>
+          <p class="muted">Run and paid-attempt status is recovered from the API after a page reload or connection loss.</p>
+          <ul id="run-list" class="run-list"></ul>
+        </section>
+      </div>
+    </main>
+
+    <dialog id="estimate-dialog" aria-labelledby="estimate-heading" aria-describedby="estimate-summary">
+      <div class="dialog-content">
+        <p class="eyebrow">Separate spending decision</p>
+        <h2 id="estimate-heading">Confirm this Azure voice estimate</h2>
+        <p id="estimate-summary"></p>
+        <p class="muted">Confirmation is bound to these exact briefs and the server-computed estimate. The server will re-check both before starting.</p>
+        <div class="button-row">
+          <button id="cancel-estimate-button" class="button button-secondary" type="button">Do not render</button>
+          <button id="confirm-estimate-button" class="button button-primary" type="button">Confirm and render</button>
+        </div>
+      </div>
+    </dialog>
+
+    <footer>
+      <p>Local-only POC · No deployment, tenant changes, or paid requests are performed automatically.</p>
+    </footer>
+  </body>
+</html>
