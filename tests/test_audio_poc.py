@@ -23,6 +23,8 @@ from audio_poc.__main__ import (
 from audio_poc.dsp import FRAMES, SAMPLE_RATE, compose, synthesize, tone
 from audio_poc.speech import Utterance, Word, align, validate_utterance
 
+pytestmark = pytest.mark.usefixtures("composition_seeds")
+
 
 class TestSpeech:
     """Test double generating tones, never pretending to be actual Azure output."""
@@ -186,6 +188,72 @@ def test_given_repeatable_score_when_synthesized_then_samples_are_identical() ->
 
     # Assert
     np.testing.assert_array_equal(first, second)
+
+
+def test_given_same_brief_when_regenerated_then_music_and_voice_change_beyond_key(
+    tmp_path: Path, evidence: dict
+) -> None:
+    # Arrange
+    brief, text = load_inputs()[0]
+    paths = [tmp_path / "version-a", tmp_path / "version-b"]
+
+    # Act
+    for path, seed in zip(paths, [42, 43], strict=True):
+        render_brief(
+            path, brief, text, 0, TestSpeech(), evidence, composition_seed=seed
+        )
+    scores = [json.loads((path / "score.json").read_text()) for path in paths]
+
+    # Assert
+    for instrument in ("lead", "vocal"):
+        melodies = [
+            [note["pitch"] for note in score if note["instrument"] == instrument]
+            for score in scores
+        ]
+        intervals = [
+            tuple(b - a for a, b in zip(melody, melody[1:])) for melody in melodies
+        ]
+        assert intervals[0] != intervals[1]
+    assert (paths[0] / "vocoded.wav").read_bytes() != (
+        paths[1] / "vocoded.wav"
+    ).read_bytes()
+    assert [
+        json.loads((path / "composition.json").read_text())["seed"] for path in paths
+    ] == [42, 43]
+
+
+def test_given_prior_output_when_generating_then_rejected_candidate_is_replaced_before_render(
+    tmp_path: Path,
+) -> None:
+    # Arrange
+    brief, text = load_inputs()[0]
+    archive = tmp_path / "history"
+    first = render_brief(
+        tmp_path / "first",
+        brief,
+        text,
+        0,
+        None,
+        None,
+        composition_seed=42,
+        history_dir=archive,
+    )
+
+    # Act
+    second = render_brief(
+        tmp_path / "second",
+        brief,
+        text,
+        0,
+        None,
+        None,
+        history_dir=archive,
+    )
+
+    # Assert
+    assert first[0]["composition_seed"] == 42
+    assert second[0]["composition_seed"] != 42
+    assert second[0]["melody_similarity"]["passed"]
 
 
 @pytest.mark.parametrize(

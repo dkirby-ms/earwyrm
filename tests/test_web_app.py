@@ -24,6 +24,8 @@ from audio_poc.dsp import SAMPLE_RATE, tone
 from audio_poc.speech import Utterance, Word
 from audio_poc.web_storage import StorageConflict, WebStorage
 
+pytestmark = pytest.mark.usefixtures("composition_seeds")
+
 AUTHORITY = "https://tenant.ciamlogin.com/tenant-id"
 ISSUER = "https://tenant.ciamlogin.com/tenant-id/v2.0"
 AUDIENCE = "api://audio-api"

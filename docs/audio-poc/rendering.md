@@ -19,8 +19,21 @@ JSON notes, a script, an alignment map and an evidence manifest.
   per brief. Source and aligned speech WAVs are also retained for diagnosis.
 
 Outputs are mono 24 kHz PCM16 review demos, peak-normalized to -1 dBFS.
-This is not LUFS normalization, broadcast mastering, melody-similarity clearance
-or a claim of natural singing. Listen at a comfortable volume.
+This is not LUFS normalization, broadcast mastering, commercial-catalog or legal
+clearance, or a claim of natural singing. Listen at a comfortable volume.
+
+Each new render now chooses a fresh recorded composition seed, rather than
+rotating or transposing a fixed tune. The hook's intervals and rhythm, chord
+progression, voicings and contrasting section vary. The vocal carrier develops
+the same musical identity. `composition.json` retains the seed and bounded
+similarity report; identical seeds remain reproducible.
+
+The CLI stores melody history in `renders/.melody-history` (under the selected
+output root); the web app uses its private `melody` store. Both screen against
+known references, legacy output and earlier output in their own store before
+delivery. A rejected melody raises an error, not a successful fallback.
+Deleting a store discards that store's history. See the
+[MCP contract and screening limits](../melody-mcp.md).
 
 ## Install and render without Azure
 
@@ -110,7 +123,7 @@ authored [generation-scripts.json](generation-scripts.json). It never loads
 [expected-brand-cta.json](expected-brand-cta.json). Scripts use the approved
 brief facts and do not call a lyric model.
 
-The fixed score is 120 BPM. Azure word events supply source offsets, durations
+The arrangement is 120 BPM. Azure word events supply source offsets, durations
 and text positions. The renderer rejects missing, overlapping or mismatched
 word events instead of silently omitting speech. Complete word intervals are
 resampled into quarter-second note slots between seconds 3 and 25. An 18-band
@@ -118,7 +131,10 @@ vocoder transfers those speech envelopes to the synthesized melody carrier;
 high-frequency speech preserves unvoiced consonants. Resampling changes the
 modulator pitch, so this path is an intelligibility experiment, not a
 pitch-preserving singer. The spoken alternative retains the original speech
-rate and ends one second before the spot finishes.
+rate and ends one second before the spot finishes. This legacy POC map remains
+word-level; it does not pretend Azure provides syllable boundaries. The
+independent MCP service accepts explicit upstream syllables and timing windows
+and returns a per-syllable map.
 
 ## Evidence and evaluation
 

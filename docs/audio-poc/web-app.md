@@ -19,6 +19,13 @@ modify app registrations, provision Azure resources, deploy services, or submit
 paid Speech requests. Each of those actions remains a separate decision.
 Instrumental-only output is a workflow preview, not vocal proof.
 
+Regenerate now creates a fresh musical identity, including melody intervals,
+rhythm and harmony, not only a different key. The backing and vocal carrier
+share the recorded composition seed. The private melody history screens each
+new output before delivery; it does not enqueue a second render. See
+[Melody and Arrangement MCP](../melody-mcp.md) for the independent service,
+single queue ownership and similarity-screening limitations.
+
 ## Install and start locally
 
 From the repository root, install the locked dependencies and start Uvicorn on

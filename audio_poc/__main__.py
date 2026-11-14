@@ -9,6 +9,7 @@ import logging
 import math
 import os
 import re
+import sqlite3
 import sys
 import time
 import uuid
@@ -21,14 +22,18 @@ import numpy as np
 
 from audio_poc.dsp import (
     SAMPLE_RATE,
+    Note,
     compose,
     mix,
+    musical_plan,
     normalize,
     synthesize,
     vocode,
     write_midi,
     write_wav,
 )
+from audio_poc.melody_service import MelodyService
+from audio_poc.similarity import screen, select_screened
 from audio_poc.speech import VOICE, AzureSpeech, SpeechProvider, align, place_spoken
 
 LOGGER = logging.getLogger(__name__)
@@ -146,8 +151,8 @@ def component_ledger(evidence: dict | None) -> list[dict]:
     components = [
         {
             "component": "melody_and_chords",
-            "origin": "Original deterministic score in audio_poc/dsp.py",
-            "evidence": "score.json and score.mid",
+            "origin": "Seeded phrase composition in audio_poc/dsp.py",
+            "evidence": "composition.json, score.json and score.mid",
             "commercial_use_basis": None,
             "status": "Pending",
         },
@@ -194,6 +199,9 @@ def render_brief(
     index: int,
     provider: SpeechProvider | None,
     evidence: dict | None,
+    *,
+    composition_seed: int | None = None,
+    history_dir: Path | None = None,
 ) -> list[dict]:
     """Persist a single brief's outputs and every attempted metered request.
 
@@ -205,8 +213,20 @@ def render_brief(
     attempt_id = str(uuid.uuid4())
     save_json(directory / "brief.json", brief)
     (directory / "script.txt").write_text(text + "\n", encoding="utf-8")
-    notes = compose(index)
-    bed = synthesize(notes, seed=index)
+
+    def candidate(seed: int) -> tuple[list[Note], dict[str, list[int]]]:
+        score = compose(seed)
+        return score, {
+            "lead": [note.pitch for note in score if note.instrument == "lead"]
+        }
+
+    archive = MelodyService(history_dir) if history_dir is not None else None
+    seed, notes, melodies, _report = select_screened(
+        candidate,
+        seed=composition_seed,
+        history=archive.history_snapshot() if archive is not None else None,
+    )
+    bed = synthesize(notes, seed=seed)
     outputs = {"instrumental": normalize(bed)}
     attempt = None
     alignment = []
@@ -243,15 +263,29 @@ def render_brief(
         )
         save_json(directory / "attempt.json", attempt)
         modulator, carrier, melody, alignment = align(
-            utterance, text, [48, 50, 45][index]
+            utterance, text, musical_plan(seed).root, melody_seed=seed
         )
         notes += melody
+        melodies["vocal"] = [note.pitch for note in melody]
         outputs = {
             "vocoded": mix(bed, vocode(modulator, carrier)),
             "spoken": mix(bed, place_spoken(utterance)),
         }
         write_wav(directory / "source-speech.wav", utterance.audio)
         write_wav(directory / "aligned-speech.wav", modulator)
+    report = (
+        archive.record_local_output(attempt_id, melodies)
+        if archive is not None
+        else screen(melodies)
+    )
+    save_json(
+        directory / "composition.json",
+        {
+            "seed": seed,
+            "similarity": report.model_dump(),
+            "timing_granularity": "word" if provider is not None else None,
+        },
+    )
     save_json(directory / "score.json", [asdict(note) for note in notes])
     write_midi(directory / "score.mid", notes)
     save_json(directory / "alignment.json", alignment)
@@ -289,6 +323,8 @@ def render_brief(
                     "billing_reconciled": False,
                 },
                 "components": component_ledger(evidence),
+                "composition_seed": seed,
+                "melody_similarity": report.model_dump(),
                 "ai_generated": True,
                 "disclosure": "Code-generated music and, in live mode, a stock synthetic Azure voice; review demo, not broadcast master.",
                 "evaluation": {
@@ -392,7 +428,13 @@ def main() -> int:
         for index, (brief, text) in enumerate(inputs):
             rows.extend(
                 render_brief(
-                    run / brief["brief_id"], brief, text, index, provider, evidence
+                    run / brief["brief_id"],
+                    brief,
+                    text,
+                    index,
+                    provider,
+                    evidence,
+                    history_dir=args.output / ".melody-history",
                 )
             )
         status = "Fail" if any(row["status"] == "Fail" for row in rows) else "Pending"
@@ -410,7 +452,14 @@ def main() -> int:
             status,
         )
         return 1 if status == "Fail" else 0
-    except (ValueError, OSError, RuntimeError, ArithmeticError, ImportError) as error:
+    except (
+        ValueError,
+        OSError,
+        RuntimeError,
+        ArithmeticError,
+        ImportError,
+        sqlite3.Error,
+    ) as error:
         LOGGER.error("%s", error)
         return 2 if isinstance(error, (ValueError, ArithmeticError)) else 1
     except KeyboardInterrupt:

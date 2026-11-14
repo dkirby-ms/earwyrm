@@ -44,24 +44,89 @@ def tone(pitch: int, duration: float, *, bright: bool = True) -> Audio:
     return np.asarray(samples * envelope, dtype=np.float64)
 
 
+@dataclass(frozen=True)
+class MusicalPlan:
+    """Seeded diatonic harmony, hook scale degrees and eighth-note rhythm."""
+
+    root: int
+    scale: tuple[int, ...]
+    progression: tuple[int, ...]
+    motif: tuple[int, ...]
+    rhythm: tuple[int, ...]
+
+    def pitch(self, degree: int) -> int:
+        octave, step = divmod(degree, 7)
+        return self.root + self.scale[step] + octave * 12
+
+
+def musical_plan(seed: int) -> MusicalPlan:
+    """Choose a repeatable musical identity, not a transposition of a fixed tune."""
+    rng = np.random.default_rng(seed)
+    root = int(rng.choice([45, 47, 48, 50, 52, 53, 55]))
+    scale = (0, 2, 4, 5, 7, 9, 11) if rng.integers(2) else (0, 2, 3, 5, 7, 8, 10)
+    progressions = [(0, 5, 3, 4), (0, 3, 4, 0), (0, 5, 1, 4), (0, 4, 5, 3)]
+    progression = progressions[int(rng.integers(len(progressions)))]
+    degree = int(rng.choice([0, 2, 4]))
+    motif = [degree]
+    for _ in range(6):
+        degree = int(np.clip(degree + rng.choice([-3, -2, -1, 1, 2, 3]), 0, 9))
+        motif.append(degree)
+    motif.append(int(rng.choice([0, 2, 4])))
+    rhythm = [1] * 8
+    for _ in range(8):
+        rhythm[int(rng.integers(8))] += 1
+    return MusicalPlan(root, scale, progression, tuple(motif), tuple(rhythm))
+
+
+def vocal_pitch(seed: int, index: int, start: float) -> int:
+    """Develop the arrangement's hook over the chord sounding at a vocal onset."""
+    plan = musical_plan(seed)
+    chord = plan.progression[min(14, int(start // 2)) % 4]
+    degree = plan.motif[index % 8]
+    if 14 <= start < 22:
+        degree = 7 - degree
+    return plan.pitch(degree + chord) + 12
+
+
 def compose(index: int) -> list[Note]:
-    """Compose a 120 BPM, 15-bar bed with a brief-specific original motif."""
-    root = [48, 50, 45][index]
-    progression = [0, 5, 9, 7]
-    motif = [0, 7, 12, 4, 9, 7, 4, 2]
+    """Compose a seeded 120 BPM arrangement with intro, hook, bridge and cadence."""
+    plan = musical_plan(index)
     notes = []
     for bar in range(15):
-        base = root + progression[bar % 4]
+        chord = plan.progression[bar % 4] if bar < 14 else 0
         start = bar * 2.0
-        for interval in (0, 4, 7):
-            notes.append(Note(start, 1.9, base + interval, "pad", 0.045))
+        inversion = (bar + index) % 3
+        for voice, degree in enumerate((chord, chord + 2, chord + 4)):
+            pitch = plan.pitch(degree) + (12 if voice < inversion else 0)
+            notes.append(Note(start, 1.9, pitch, "pad", 0.045))
         for beat in range(4):
-            notes.append(Note(start + beat * BEAT, 0.38, base - 12, "bass", 0.15))
+            bass_degree = chord + (4 if beat == 3 and bar % 2 else 0)
+            notes.append(
+                Note(
+                    start + beat * BEAT,
+                    0.38,
+                    plan.pitch(bass_degree) - 12,
+                    "bass",
+                    0.15,
+                )
+            )
             notes.append(Note(start + beat * BEAT, 0.16, 36, "kick", 0.21))
-            notes.append(Note(start + beat * BEAT + 0.25, 0.055, 42, "hat", 0.028))
-        for step in range(8):
-            pitch = root + 12 + motif[(step + index * 2 + bar % 2) % len(motif)]
-            notes.append(Note(start + step * 0.25, 0.21, pitch, "lead", 0.045))
+            if bar not in (0, 14):
+                notes.append(Note(start + beat * BEAT + 0.25, 0.055, 42, "hat", 0.028))
+        if bar == 0:
+            continue
+        # A two-bar hook returns after the contrasting bridge.
+        cursor = 0
+        for step, length in enumerate(plan.rhythm):
+            position = (bar - 1) % 2 * 8
+            if position <= cursor < position + 8:
+                onset = start + (cursor - position) * 0.25
+                pitch = vocal_pitch(index, step, onset)
+                duration = min(length * 0.25 * 0.85, 30 - onset)
+                if bar == 14:
+                    pitch = plan.pitch(7)
+                notes.append(Note(onset, duration, pitch, "lead", 0.045))
+            cursor += length
     return notes
 
 

@@ -600,6 +600,7 @@ def create_app(
                         index,
                         provider,
                         evidence,
+                        history_dir=store.root / "melody",
                     )
                     for row in rows:
                         audio = (work_directory / row["file"]).read_bytes()

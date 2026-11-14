@@ -16,7 +16,15 @@ from typing import Protocol
 
 import numpy as np
 
-from audio_poc.dsp import FRAMES, SAMPLE_RATE, Audio, Note, tone
+from audio_poc.dsp import (
+    FRAMES,
+    SAMPLE_RATE,
+    Audio,
+    Note,
+    musical_plan,
+    tone,
+    vocal_pitch,
+)
 
 VOICE = "en-US-JennyNeural"
 
@@ -163,7 +171,7 @@ def validate_utterance(utterance: Utterance, text: str) -> None:
 
 
 def align(
-    utterance: Utterance, text: str, root: int
+    utterance: Utterance, text: str, root: int, *, melody_seed: int | None = None
 ) -> tuple[Audio, Audio, list[Note], list[dict]]:
     """Fit complete word intervals into half-beat slots between seconds 3 and 25.
 
@@ -180,7 +188,8 @@ def align(
     modulator, carrier = np.zeros(FRAMES), np.zeros(FRAMES)
     notes, alignment = [], []
     start = 3.0
-    motif = [0, 4, 7, 9, 7, 4, 2, 0]
+    seed = root if melody_seed is None else melody_seed
+    transpose = root - musical_plan(seed).root
     for index, (word, beats) in enumerate(zip(utterance.words, slots, strict=True)):
         duration = beats * 0.25
         source = utterance.audio[
@@ -197,7 +206,7 @@ def align(
         fade = min(round(0.005 * SAMPLE_RATE), count // 2)
         fitted[:fade] *= np.linspace(0, 1, fade)
         fitted[-fade:] *= np.linspace(1, 0, fade)
-        pitch = root + 12 + motif[index % len(motif)]
+        pitch = vocal_pitch(seed, index, start) + transpose
         destination = round(start * SAMPLE_RATE)
         modulator[destination : destination + count] = fitted
         carrier[destination : destination + count] = tone(pitch, duration)
