@@ -52,7 +52,7 @@ class LyricLine(Contract):
 
 
 class CompositionRequest(Contract):
-    """Provisional v1 input until the platform adopts shared contracts in #4."""
+    """Version-one input; logical_job_id identifies one immutable candidate."""
 
     schema_version: Literal[1] = 1
     logical_job_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")

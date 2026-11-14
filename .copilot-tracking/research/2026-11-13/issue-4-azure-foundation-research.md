@@ -55,7 +55,7 @@ The existing models define brief, lyric, composition and syllable timing shapes.
 
 ### F5: A managed-identity deployment is feasible with explicit prerequisites
 
-Use Container Apps for web and two MCP scaffolds, an event-driven job and Azure Storage Queue, private Blob containers, ACR, APIM Developer, an Azure OpenAI model deployment, paid Speech S0, Content Safety S0, Key Vault and workspace-based Application Insights. Entra registrations remain documented prerequisites. APIM validates seller tokens and uses its own managed identity to call MCP backends; backend authentication permits only that identity's application ID. No shared keys or generated client secrets are needed.
+Use Container Apps for web and two MCP scaffolds, an event-driven job and Azure Storage Queue, private Blob containers, ACR, APIM Developer, an Azure OpenAI model deployment, paid Speech S0, Content Safety S0, Key Vault and workspace-based Application Insights. Entra registrations remain documented prerequisites. APIM validates seller tokens and uses its own managed identity to call MCP backends; backend authentication permits only that identity's service-principal object ID through `allowedPrincipals.identities`. No shared keys or generated client secrets are needed.
 
 * Questions: Q3
 * Evidence state: partially supported claim

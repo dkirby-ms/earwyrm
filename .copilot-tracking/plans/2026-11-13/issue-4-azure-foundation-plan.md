@@ -9,7 +9,7 @@
 
 ## Executive Summary
 
-Establish reusable service contracts and a credential-free, reproducible Azure foundation. Keep existing local rendering and MCP services unchanged. Deploy explicit non-generating scaffolds rather than presenting a local SQLite queue as production infrastructure. Planning is implementation-ready pending standard critique; cloud deployment remains a separate consent and prerequisite gate.
+Establish reusable service contracts and a credential-free, reproducible Azure foundation. Keep existing local rendering and MCP services unchanged. Deploy explicit non-generating scaffolds rather than presenting a local SQLite queue as production infrastructure. Planning and standard critique are complete and the bootstrap correction is resolved; local implementation is ready. Cloud deployment remains a separate consent and prerequisite gate.
 
 ### What You May Not Know
 
@@ -48,7 +48,7 @@ flowchart LR
 ```
 
 <!-- rpi:phase id=P01 -->
-### [ ] P01: Adopt contracts and build explicit service scaffolds
+### [x] P01: Adopt contracts and build explicit service scaffolds
 
 Goals:
 * Consumers have reusable schemas and containers that identify their capabilities honestly.
@@ -59,7 +59,7 @@ Dependencies:
 Changes in the map: Shared contracts and runtime.
 
 <!-- rpi:task id=P01-T01 -->
-#### [ ] P01-T01: Define contracts and scaffold entrypoints
+#### [x] P01-T01: Define contracts and scaffold entrypoints
 
 Goals:
 * Publish schemas for all issue-4 entities with bounded, validated identity and audit fields.
@@ -84,7 +84,7 @@ Dependencies:
 * None.
 
 <!-- rpi:phase id=P02 -->
-### [ ] P02: Define reproducible Azure infrastructure
+### [x] P02: Define reproducible Azure infrastructure
 
 Goals:
 * A configured environment can provision and deploy the foundation without committed credentials.
@@ -95,7 +95,7 @@ Dependencies:
 Changes in the map: APIM, Container Apps/job and supporting Azure resources.
 
 <!-- rpi:task id=P02-T01 -->
-#### [ ] P02-T01: Add azd and Bicep resources
+#### [x] P02-T01: Add azd and Bicep resources
 
 Goals:
 * Provision all required resource types with endpoint outputs and role-scoped identities.
@@ -113,6 +113,7 @@ Details:
 * Job image deployment uses azd service tags, not hooks.
 * Scope RBAC by service role; Key Vault remains empty until a remaining secret is actually required.
 * Use placeholder bootstrap image only during infrastructure creation; azd deploy replaces every app/job image.
+* Bootstrap image must listen on the same port as application TCP probes. Do not override its command with an application-specific entrypoint; application role comes from environment and its own image entrypoint.
 
 References:
 * [docs/design-proposal.md](../../../docs/design-proposal.md): sections 5, 6, 8.
@@ -122,7 +123,7 @@ Dependencies:
 * P01-T01.
 
 <!-- rpi:phase id=P03 -->
-### [ ] P03: Verify contracts, protocol and deployment readiness
+### [x] P03: Verify contracts, protocol and deployment readiness
 
 Goals:
 * Operators can set up, smoke-check and remove the foundation with known limits.
@@ -133,7 +134,7 @@ Dependencies:
 Changes in the map: Validation and operator guide.
 
 <!-- rpi:task id=P03-T01 -->
-#### [ ] P03-T01: Add focused tests and deployment documentation
+#### [x] P03-T01: Add focused tests and deployment documentation
 
 Goals:
 * Verify invalid contract states are rejected, scaffolds do not claim generation, and Bicep and image builds succeed.
@@ -177,9 +178,9 @@ Dependencies:
 ## Planning Readiness and Next Step
 
 * Execution: draft complete.
-* Readiness: awaiting standard critique.
+* Readiness: Ready after standard critique and PC-001 correction.
 * Participation: agent-owned, automatic mode.
-* Next action: critique, then automatic implementation if ready.
+* Next action: automatic implementation.
 * Plan: `.copilot-tracking/plans/2026-11-13/issue-4-azure-foundation-plan.md`.
 * Changes record: `.copilot-tracking/changes/2026-11-13/issue-4-azure-foundation-changes.md`.
 
@@ -231,9 +232,9 @@ Non-goals: deploying local POC as a production app, implementing the workflow/re
 ## Critique Disposition
 
 * Setting: standard, first-task default.
-* Status: started.
+* Status: Complete; verdict Revise, now corrected.
 * Output: `.copilot-tracking/reviews/plans/2026-11-13/issue-4-azure-foundation-plan-critique.md`.
-* Findings: pending.
+* PC-001 (Medium): resolved by P02-T01's explicit bootstrap-compatible probe/command requirement. No Critical/High findings. No repeat critique required.
 
 ## Artifact Self-Check
 

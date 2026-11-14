@@ -1,4 +1,4 @@
-"""Provisional v1 lyric contracts and deterministic English prosody checks."""
+"""Version-one lyric contracts and deterministic English prosody checks."""
 
 from __future__ import annotations
 
