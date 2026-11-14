@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 import sqlite3
 import uuid
 from contextlib import closing
@@ -31,6 +30,7 @@ from audio_poc.similarity import (
     screen,
     select_screened,
 )
+from audio_poc.sqlite_files import prepare_database_file
 
 LOGGER = logging.getLogger(__name__)
 TRACER = trace.get_tracer(__name__)
@@ -115,9 +115,9 @@ class MelodyService:
         self.artifact_dir = self.root / "artifacts"
         self.artifact_dir.mkdir(mode=0o700, exist_ok=True)
         self.database_path = self.root / "melody.sqlite3"
-        descriptor = os.open(self.database_path, os.O_CREAT | os.O_RDWR, 0o600)
-        os.close(descriptor)
-        self.database_path.chmod(0o600)
+        prepare_database_file(
+            self.database_path, self.root.parent / ".earwyrm-initialized"
+        )
         with closing(self._connect()) as connection, connection:
             connection.execute("""
                 CREATE TABLE IF NOT EXISTS render_jobs (
@@ -138,7 +138,9 @@ class MelodyService:
             """)
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database_path, timeout=60)
+        connection = sqlite3.connect(
+            f"{self.database_path.as_uri()}?mode=rw", uri=True, timeout=60
+        )
         connection.row_factory = sqlite3.Row
         return connection
 

@@ -1,0 +1,101 @@
+name: Approved web deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Preview first; deploy only after reviewing that preview
+        type: choice
+        options: [preview, deploy]
+        default: preview
+      maintenance_approved:
+        description: Approve downtime and this run's cloud operations
+        type: boolean
+        default: false
+      other_writers_stopped:
+        description: All other clients writing to this isolated share are stopped
+        type: boolean
+        default: false
+      preview_reviewed:
+        description: For deploy, the target's current preview was reviewed and approved
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: earwyrm-web-deployment
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: >-
+      inputs.maintenance_approved && inputs.other_writers_stopped &&
+      (inputs.action == 'preview' || inputs.preview_reviewed)
+    runs-on: ubuntu-latest
+    environment: earwyrm-web
+    env:
+      AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      AZURE_PRINCIPAL_ID: ${{ vars.AZURE_PRINCIPAL_ID }}
+      AZURE_ENV_NAME: ${{ vars.AZURE_ENV_NAME }}
+      AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+      ENTRA_CLIENT_ID: ${{ vars.ENTRA_CLIENT_ID }}
+      ENTRA_AUTHORITY: ${{ vars.ENTRA_AUTHORITY }}
+      ENTRA_METADATA_URL: ${{ vars.ENTRA_METADATA_URL }}
+      ENTRA_EXPECTED_ISSUER: ${{ vars.ENTRA_EXPECTED_ISSUER }}
+      ENTRA_AUDIENCE: ${{ vars.ENTRA_AUDIENCE }}
+      ENTRA_API_SCOPE_PREFIX: ${{ vars.ENTRA_API_SCOPE_PREFIX }}
+      EARWYRM_MAINTENANCE_APPROVED: "true"
+      EARWYRM_OTHER_WRITERS_STOPPED: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Azure/setup-azd@v2.3.0
+      - uses: astral-sh/setup-uv@v6
+      - name: Install locked tooling
+        run: uv sync --locked
+      - name: GitHub OIDC login for Azure CLI
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: GitHub OIDC login for azd
+        run: >-
+          azd auth login --client-id "$AZURE_CLIENT_ID"
+          --tenant-id "$AZURE_TENANT_ID" --federated-credential-provider github
+      - name: Configure isolated environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          az extension add --name containerapp --upgrade
+          azd env new "$AZURE_ENV_NAME" --no-prompt
+          azd env set AZURE_SUBSCRIPTION_ID "$AZURE_SUBSCRIPTION_ID"
+          azd env set AZURE_LOCATION "$AZURE_LOCATION"
+          azd env set AZURE_PRINCIPAL_ID "$AZURE_PRINCIPAL_ID"
+          azd env set ENTRA_CLIENT_ID "$ENTRA_CLIENT_ID"
+          azd env set ENTRA_AUTHORITY "$ENTRA_AUTHORITY"
+          azd env set ENTRA_METADATA_URL "$ENTRA_METADATA_URL"
+          azd env set ENTRA_EXPECTED_ISSUER "$ENTRA_EXPECTED_ISSUER"
+          azd env set ENTRA_AUDIENCE "$ENTRA_AUDIENCE"
+          azd env set ENTRA_API_SCOPE_PREFIX "$ENTRA_API_SCOPE_PREFIX"
+      - name: Stop and verify existing writers
+        run: uv run --no-sync python scripts/deployment_gate.py quiesce
+      - name: Preview resources
+        if: inputs.action == 'preview'
+        run: azd provision --preview --no-prompt
+      - name: Provision approved resources
+        if: inputs.action == 'deploy'
+        run: azd provision --no-prompt
+      - name: Stop and verify bootstrap or replacement writers
+        if: inputs.action == 'deploy'
+        run: uv run --no-sync python scripts/deployment_gate.py quiesce
+      - name: Deploy approved web image
+        if: inputs.action == 'deploy'
+        run: azd deploy web --no-prompt
+      - name: Resume and check replica count
+        if: inputs.action == 'deploy'
+        run: uv run --no-sync python scripts/deployment_gate.py resume

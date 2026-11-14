@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
 import threading
@@ -16,7 +17,7 @@ from typing import Any, Literal
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from starlette.responses import FileResponse
+from starlette.responses import FileResponse, JSONResponse
 
 from audio_poc.__main__ import (
     FIXTURES,
@@ -39,6 +40,7 @@ from audio_poc.web_storage import (
 )
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+LOGGER = logging.getLogger(__name__)
 EXPECTED_ANSWERS = FIXTURES / "expected-brand-cta.json"
 ACCEPTED_RATING = "usable with minor edits"
 ALLOWED_RATINGS = {
@@ -389,6 +391,15 @@ def create_app(
     app.state.paid_render_lock = threading.Lock()
     app.state.speech_provider_factory = speech_provider_factory or AzureSpeech
 
+    @app.exception_handler(sqlite3.Error)
+    async def database_unavailable(
+        _request: Request, _error: sqlite3.Error
+    ) -> JSONResponse:
+        LOGGER.error("Persistent database operation failed; no successful delivery")
+        return JSONResponse(
+            status_code=503, content={"detail": "Persistent storage is unavailable"}
+        )
+
     def storage() -> WebStorage:
         with app.state.storage_lock:
             if app.state.storage is None:
@@ -583,6 +594,9 @@ def create_app(
             except StorageConflict as error:
                 app.state.paid_render_lock.release()
                 raise HTTPException(status_code=409, detail=str(error)) from error
+            except (sqlite3.Error, OSError):
+                app.state.paid_render_lock.release()
+                raise
 
         try:
             with TemporaryDirectory(dir=store.work_dir) as temporary:
@@ -622,6 +636,7 @@ def create_app(
             ImportError,
             sqlite3.Error,
         ) as error:
+            LOGGER.error("Render failed; no successful delivery")
             store.set_run_status(run_id, "failed_or_unknown")
             if attempt_id is not None:
                 store.finish_attempt(attempt_id, "failed_or_unknown")

@@ -1,35 +1,36 @@
-metadata name = 'Earwyrm service'
-metadata description = 'One authenticated, stateless container scaffold with an explicit runtime identity.'
+metadata name = 'Earwyrm web service'
+metadata description = 'Same-origin web UI and API backed by a mounted Azure file share.'
 
-@description('Container app resource name.')
+@description('Container app name.')
 param name string
 @description('azd environment name.')
 param environmentName string
-@description('Compute region.')
+@description('Azure region.')
 param location string
-@description('Role and azd service discovery name.')
-@allowed(['web', 'lyric', 'melody'])
-param role string
-@description('Managed environment resource ID.')
+@description('Container Apps environment resource ID.')
 param environmentId string
-@description('Managed environment default DNS suffix.')
+@description('Container Apps environment DNS suffix.')
 param environmentDomain string
-@description('Runtime user-assigned managed identity resource ID.')
-param runtimeIdentityId string
-@description('Runtime identity client ID for DefaultAzureCredential.')
-param runtimeClientId string
 @description('Registry-pull identity resource ID.')
 param pullIdentityId string
-@description('ACR hostname.')
+@description('Registry hostname.')
 param registryEndpoint string
-@description('Initial bootstrap image, replaced by azd deploy.')
+@description('Temporary image used before azd deploy.')
 param bootstrapImage string
-@description('Entra application ID for this service audience.')
-param audienceClientId string
-@description('Gateway service-principal object ID; null for the web service.')
-param gatewayPrincipalId string?
-@description('Workspace-backed Application Insights connection string.')
-param insightsConnectionString string
+@description('Environment Azure Files storage definition name.')
+param storageName string
+@description('Existing browser SPA client ID.')
+param entraClientId string
+@description('External ID CIAM authority.')
+param entraAuthority string
+@description('External ID discovery URL.')
+param entraMetadataUrl string
+@description('Exact discovery issuer.')
+param entraExpectedIssuer string
+@description('Expected API token audience.')
+param entraAudience string
+@description('API scope prefix.')
+param entraApiScopePrefix string
 
 var hostname = '${name}.${environmentDomain}'
 
@@ -38,12 +39,11 @@ resource app 'Microsoft.App/containerApps@2026-07-01' = {
   location: location
   tags: {
     'azd-env-name': environmentName
-    'azd-service-name': role
+    'azd-service-name': 'web'
   }
   identity: {
     type: 'UserAssigned'
     userAssignedIdentities: {
-      '${runtimeIdentityId}': {}
       '${pullIdentityId}': {}
     }
   }
@@ -57,12 +57,7 @@ resource app 'Microsoft.App/containerApps@2026-07-01' = {
         targetPort: 8080
         transport: 'http'
       }
-      registries: [
-        {
-          server: registryEndpoint
-          identity: pullIdentityId
-        }
-      ]
+      registries: [{ server: registryEndpoint, identity: pullIdentityId }]
     }
     template: {
       containers: [
@@ -70,71 +65,37 @@ resource app 'Microsoft.App/containerApps@2026-07-01' = {
           name: 'main'
           image: bootstrapImage
           env: [
-            { name: 'SERVICE_ROLE', value: role }
-            { name: 'AZURE_CLIENT_ID', value: runtimeClientId }
-            { name: 'PLATFORM_ALLOWED_HOST', value: hostname }
-            { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: insightsConnectionString }
-            { name: 'OTEL_SERVICE_NAME', value: 'earwyrm-${role}' }
-            {
-              name: 'OTEL_RESOURCE_ATTRIBUTES'
-              value: 'service.version=0.1.0,deployment.environment=${environmentName}'
-            }
+            { name: 'ENTRA_CLIENT_ID', value: entraClientId }
+            { name: 'ENTRA_AUTHORITY', value: entraAuthority }
+            { name: 'ENTRA_METADATA_URL', value: entraMetadataUrl }
+            { name: 'ENTRA_EXPECTED_ISSUER', value: entraExpectedIssuer }
+            { name: 'ENTRA_AUDIENCE', value: entraAudience }
+            { name: 'ENTRA_API_SCOPE_PREFIX', value: entraApiScopePrefix }
+            { name: 'EARWYRM_DATA_DIR', value: '/mnt/earwyrm' }
+            { name: 'SPEECH_ENABLED', value: 'false' }
           ]
-          resources: {
-            cpu: json('0.25')
-            memory: '0.5Gi'
-          }
+          volumeMounts: [{ volumeName: 'earwyrm', mountPath: '/mnt/earwyrm' }]
+          resources: { cpu: json('0.5'), memory: '1Gi' }
           probes: [
-            {
-              type: 'Liveness'
-              tcpSocket: { port: 8080 }
-              initialDelaySeconds: 10
-              periodSeconds: 30
-            }
-            {
-              type: 'Readiness'
-              tcpSocket: { port: 8080 }
-              periodSeconds: 10
-            }
+            { type: 'Liveness', tcpSocket: { port: 8080 }, initialDelaySeconds: 10, periodSeconds: 30 }
+            { type: 'Readiness', tcpSocket: { port: 8080 }, periodSeconds: 10 }
           ]
         }
       ]
-      scale: { minReplicas: 0, maxReplicas: 1 }
+      volumes: [
+        {
+          name: 'earwyrm'
+          storageName: storageName
+          storageType: 'AzureFile'
+          mountOptions: 'uid=10001,gid=10001,dir_mode=0700,file_mode=0600'
+        }
+      ]
+      scale: { minReplicas: 1, maxReplicas: 1 }
     }
   }
 }
 
-resource auth 'Microsoft.App/containerApps/authConfigs@2026-07-01' = {
-  parent: app
-  name: 'current'
-  properties: {
-    platform: { enabled: true }
-    globalValidation: {
-      unauthenticatedClientAction: 'Return401'
-      excludedPaths: ['/healthz']
-    }
-    httpSettings: { requireHttps: true }
-    identityProviders: {
-      azureActiveDirectory: {
-        enabled: true
-        registration: {
-          clientId: audienceClientId
-          openIdIssuer: '${environment().authentication.loginEndpoint}${tenant().tenantId}/v2.0'
-        }
-        validation: {
-          allowedAudiences: [audienceClientId, 'api://${audienceClientId}']
-          defaultAuthorizationPolicy: gatewayPrincipalId == null
-            ? {}
-            : {
-                allowedPrincipals: {
-                  identities: [gatewayPrincipalId!]
-                }
-              }
-        }
-      }
-    }
-  }
-}
-
-@description('HTTPS container endpoint; auth permits only the configured callers.')
+@description('HTTPS web endpoint.')
 output endpoint string = 'https://${hostname}'
+@description('Container app name.')
+output appName string = app.name

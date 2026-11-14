@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
+
+from audio_poc.sqlite_files import prepare_database_file
 
 
 class StorageConflict(RuntimeError):
@@ -37,13 +38,13 @@ class WebStorage:
         self.root.chmod(0o700)
         self.audio_dir.chmod(0o700)
         self.work_dir.chmod(0o700)
-        descriptor = os.open(self.database_path, os.O_CREAT | os.O_RDWR, 0o600)
-        os.close(descriptor)
-        self.database_path.chmod(0o600)
+        prepare_database_file(self.database_path, self.root / ".earwyrm-initialized")
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database_path, timeout=5.0)
+        connection = sqlite3.connect(
+            f"{self.database_path.as_uri()}?mode=rw", uri=True, timeout=5.0
+        )
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA busy_timeout = 5000")

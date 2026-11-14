@@ -5,3 +5,7 @@
 !audio_poc/
 !audio_poc/**
 audio_poc/**/__pycache__/
+!Dockerfile.web
+!docs/
+!docs/audio-poc/
+!docs/audio-poc/*.json

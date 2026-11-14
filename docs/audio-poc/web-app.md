@@ -14,9 +14,10 @@ and evidence downloads. The Python API validates access tokens and delegated
 permissions; Speech credentials, evaluator answers, audio, and evaluation
 records remain server-side.
 
-This is a local proof, not a production deployment. It does not create or
-modify app registrations, provision Azure resources, deploy services, or submit
-paid Speech requests. Each of those actions remains a separate decision.
+These local instructions do not create or modify app registrations, provision
+Azure resources, deploy services, or submit paid Speech requests. Each of
+those actions remains a separate decision. For the Azure proof and its storage
+limitations, see [Azure deployment](../azure-deployment.md).
 Instrumental-only output is a workflow preview, not vocal proof.
 
 Regenerate now creates a fresh musical identity, including melody intervals,

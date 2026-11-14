@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import sqlite3
 import stat
 import threading
 import time
@@ -34,6 +36,175 @@ METADATA_URL = (
 )
 JWKS_URI = "https://tenant.ciamlogin.com/tenant-id/discovery/v2.0/keys"
 ALL_SCOPES = "briefs.read renders.read renders.write evaluations.write outputs.read"
+
+
+def test_given_unmounted_data_directory_when_starting_cloud_web_then_fail(
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("fcntl")
+    from audio_poc.cloud_web import acquire_writer_lock
+
+    with pytest.raises(RuntimeError, match="not a mounted volume"):
+        acquire_writer_lock(tmp_path)
+
+
+def test_given_existing_writer_when_starting_cloud_web_then_refuse_until_released(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("fcntl")
+    from audio_poc import cloud_web
+
+    monkeypatch.setattr(cloud_web, "_is_mounted", lambda _path: True)
+    descriptor = cloud_web.acquire_writer_lock(tmp_path)
+    try:
+        assert os.get_inheritable(descriptor)
+        with pytest.raises(BlockingIOError):
+            cloud_web.acquire_writer_lock(tmp_path)
+    finally:
+        os.close(descriptor)
+
+    descriptor = cloud_web.acquire_writer_lock(tmp_path)
+    os.close(descriptor)
+
+
+def test_given_initialized_store_when_database_is_missing_then_fail(
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("fcntl")
+    from audio_poc.cloud_web import prepare_databases
+
+    prepare_databases(tmp_path)
+    (tmp_path / "earwyrm.sqlite3").unlink()
+    with pytest.raises(RuntimeError, match="missing a database"):
+        prepare_databases(tmp_path)
+
+
+@pytest.mark.parametrize("database", ["earwyrm.sqlite3", "melody/melody.sqlite3"])
+@pytest.mark.parametrize("cached", [True, False])
+def test_given_database_lost_after_startup_when_opening_then_fail_without_recreating(
+    tmp_path: Path, database: str, cached: bool
+) -> None:
+    pytest.importorskip("fcntl")
+    from audio_poc.cloud_web import prepare_databases
+    from audio_poc.melody_service import CompositionUnavailable, MelodyService
+
+    prepare_databases(tmp_path)
+    path = tmp_path / database
+    service_type = WebStorage if database == "earwyrm.sqlite3" else MelodyService
+    root = tmp_path if service_type is WebStorage else tmp_path / "melody"
+    service = service_type(root) if cached else None
+    path.unlink()
+
+    error_type = (
+        CompositionUnavailable
+        if cached and service_type is MelodyService
+        else sqlite3.Error
+    )
+    with pytest.raises(error_type):
+        if service is None:
+            service_type(root)
+        elif isinstance(service, WebStorage):
+            service.create_run("lost-store", "user-a", "instrumental", ["brief-001"])
+        else:
+            service.history_snapshot()
+
+    assert not path.exists()
+
+
+@pytest.mark.parametrize(
+    ("database", "status"),
+    [("earwyrm.sqlite3", 503), ("melody/melody.sqlite3", 500)],
+)
+def test_given_database_lost_after_startup_when_rendering_then_no_delivery_or_recreation(
+    tmp_path: Path,
+    signing_material: tuple[Any, dict[str, object]],
+    database: str,
+    status: int,
+) -> None:
+    pytest.importorskip("fcntl")
+    from audio_poc.cloud_web import prepare_databases
+
+    prepare_databases(tmp_path)
+    private_key, public_jwk = signing_material
+    client, token = _client(
+        data_dir=tmp_path, private_key=private_key, public_jwk=public_jwk
+    )
+    headers = {"Authorization": f"Bearer {token}"}
+    assert client.get("/api/outputs", headers=headers).status_code == 200
+    path = tmp_path / database
+    path.unlink()
+
+    response = client.post(
+        "/api/renders",
+        headers=headers,
+        json={"mode": "instrumental", "brief_ids": ["brief-001"]},
+    )
+
+    assert response.status_code == status
+    assert not path.exists()
+    assert not list((tmp_path / "audio").iterdir())
+
+
+def test_given_database_loss_when_reserving_paid_render_then_release_lock_without_speech(
+    tmp_path: Path, signing_material: tuple[Any, dict[str, object]]
+) -> None:
+    pytest.importorskip("fcntl")
+    from audio_poc.cloud_web import prepare_databases
+
+    root = tmp_path / "private"
+    prepare_databases(root)
+    private_key, public_jwk = signing_material
+    evidence_path = tmp_path / "speech-evidence.json"
+    _write_evidence(evidence_path)
+    provider = FakeSpeech()
+    client, token = _client(
+        data_dir=root,
+        private_key=private_key,
+        public_jwk=public_jwk,
+        environ=_speech_environment(root, evidence_path),
+        speech_provider_factory=lambda: provider,
+    )
+    headers = {"Authorization": f"Bearer {token}"}
+    estimate_response = client.post(
+        "/api/renders/estimate",
+        headers=headers,
+        json={"brief_ids": ["brief-001"]},
+    )
+    assert estimate_response.status_code == 200
+    estimate = estimate_response.json()
+    database = root / "earwyrm.sqlite3"
+    database.unlink()
+
+    response = client.post(
+        "/api/renders",
+        headers=headers,
+        json={
+            "mode": "azure",
+            "brief_ids": estimate["brief_ids"],
+            "confirmation": estimate,
+        },
+    )
+
+    assert response.status_code == 503
+    assert not database.exists()
+    assert provider.calls == []
+    lock = client.app.state.paid_render_lock
+    assert lock.acquire(blocking=False)
+    lock.release()
+
+
+@pytest.mark.parametrize("database", ["earwyrm.sqlite3", "melody/melody.sqlite3"])
+def test_given_wal_database_when_starting_cloud_web_then_fail(
+    tmp_path: Path, database: str
+) -> None:
+    pytest.importorskip("fcntl")
+    from audio_poc.cloud_web import prepare_databases
+
+    prepare_databases(tmp_path)
+    with sqlite3.connect(tmp_path / database) as connection:
+        assert connection.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+    with pytest.raises(RuntimeError, match="Unsupported SQLite journal mode: wal"):
+        prepare_databases(tmp_path)
 
 
 class FakeSpeech:
