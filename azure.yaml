@@ -1,0 +1,38 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Azure/azure-dev/main/schemas/v1.0/azure.yaml.json
+name: earwyrm
+infra:
+  provider: bicep
+  path: infra
+services:
+  web:
+    project: .
+    language: docker
+    host: containerapp
+    docker:
+      path: Dockerfile
+      context: .
+      remoteBuild: true
+  lyric:
+    project: .
+    language: docker
+    host: containerapp
+    docker:
+      path: Dockerfile
+      context: .
+      remoteBuild: true
+  melody:
+    project: .
+    language: docker
+    host: containerapp
+    docker:
+      path: Dockerfile
+      context: .
+      remoteBuild: true
+  render:
+    project: .
+    language: docker
+    host: containerapp
+    docker:
+      path: Dockerfile
+      context: .
+      remoteBuild: true

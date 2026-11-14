@@ -13,6 +13,10 @@ Source: [design proposal](./design-proposal.md), especially sections 1, 5, 6 and
 Implementation work is broken down in [GitHub issue drafts](./github-issues.md).
 This is a proposed delivery sequence, not a staffing or completion-date commitment.
 
+For platform setup, use the [Azure deployment guide](./azure-deployment.md) and
+[version-one service contracts](./service-contracts.md). The deployment is an
+explicit non-generating foundation; it does not mark the later workflow complete.
+
 ## MVP scope
 
 * Three synthetic advertiser briefs behind a replaceable advertiser adapter

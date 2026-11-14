@@ -1,0 +1,43 @@
+{
+  "task_id": "issue-4-azure-foundation",
+  "task_slug": "issue-4-azure-foundation",
+  "session_name": "Azure foundation",
+  "parent_task": null,
+  "child_tasks": [],
+  "mode": "automatic",
+  "active_phase": "Follow-up",
+  "status": "completed",
+  "session_status": "stopped",
+  "artifact_paths": {
+    "research": ".copilot-tracking/research/2026-11-13/issue-4-azure-foundation-research.md",
+    "plan": ".copilot-tracking/plans/2026-11-13/issue-4-azure-foundation-plan.md",
+    "critique": ".copilot-tracking/reviews/plans/2026-11-13/issue-4-azure-foundation-plan-critique.md",
+    "changes": ".copilot-tracking/changes/2026-11-13/issue-4-azure-foundation-changes.md",
+    "review": ".copilot-tracking/reviews/logs/2026-11-13/issue-4-azure-foundation-review.md"
+  },
+  "documents": {
+    "research": [".copilot-tracking/research/2026-11-13/issue-4-azure-foundation-research.md"],
+    "plan": [".copilot-tracking/plans/2026-11-13/issue-4-azure-foundation-plan.md"],
+    "critique": [".copilot-tracking/reviews/plans/2026-11-13/issue-4-azure-foundation-plan-critique.md"],
+    "changes": [".copilot-tracking/changes/2026-11-13/issue-4-azure-foundation-changes.md"],
+    "review": [".copilot-tracking/reviews/logs/2026-11-13/issue-4-azure-foundation-review.md"]
+  },
+  "confirmed_decisions": [
+    {"decision": "Automatic session scope", "status": "current", "evidence": "User requested issue #4, then selected end-to-end. Implement contracts and reproducible Azure scaffolding; preserve existing lyric changes. No commit, push, tracker mutation, or billable provisioning authorized. Acceptance criteria: issue #4."},
+    {"decision": "Automatic progression boundary", "status": "through-review", "evidence": "User selected end-to-end."},
+    {"decision": "Research decision participation", "status": "agent-owned", "evidence": "End-to-end default."},
+    {"decision": "Planning decision participation", "status": "agent-owned", "evidence": "End-to-end default."},
+    {"decision": "Review decision participation", "status": "agent-owned", "evidence": "End-to-end default."},
+    {"decision": "Follow-up decision participation", "status": "agent-owned", "evidence": "End-to-end default."},
+    {"decision": "Subagent use", "status": "auto", "evidence": "Default; use only for substantial independent work."},
+    {"decision": "Planning critique", "status": "standard", "evidence": "First-task default."},
+    {"decision": "Review step", "status": "run", "evidence": "First-task default."},
+    {"decision": "Canvas", "status": "current", "evidence": "instance rpi-azure-foundation; handle NXDK; extensionId plugin:hve-core:rpi-workflow"},
+    {"decision": "Research disposition", "status": "executed", "evidence": "Research continuing after user supplied audio gate confirmation."},
+    {"decision": "Audio decision", "status": "passed-user-attested", "evidence": "User stated 'audio proof passed' in response to the prerequisite evidence question. Treat as permission to proceed on the vocoded path with spoken fallback, not independent verification of individual measurements or rights."},
+    {"decision": "Cloud validation", "status": "paused-operator-owned", "evidence": "User selected 'Pause before Azure provisioning' and stated 'I will use my own environment'. No cloud provisioning authorized; RV-001 acceptance remains required and unverified. Review RD-007."}
+  ],
+  "blockers": [{"id":"cloud-acceptance","summary":"Clean azd up and authenticated cloud smoke remain unverified.","resolution":"Operator supplies subscription/region, Entra registration prerequisites and explicit billable provisioning consent."}],
+  "next_action": {"phase": "Follow-up", "action": "Paused as requested. User validates azd up and authenticated smoke in their own environment; issue #4 acceptance remains unverified until results are supplied."},
+  "prioritized_follow_ups": [{"rank":1,"task":"Verify clean Azure deployment and authenticated cloud smoke","rationale":"Required in-scope acceptance, not optional cleanup. No demonstrated local implementation defect was found; billing consent and operator prerequisites block validation.","evidence":".copilot-tracking/reviews/logs/2026-11-13/issue-4-azure-foundation-review.md RV-001 and RD-003 through RD-006"}]
+}

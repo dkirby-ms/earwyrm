@@ -1,0 +1,7 @@
+**
+!Dockerfile
+!pyproject.toml
+!uv.lock
+!audio_poc/
+!audio_poc/**
+audio_poc/**/__pycache__/

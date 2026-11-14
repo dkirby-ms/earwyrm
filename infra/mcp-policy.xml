@@ -1,0 +1,26 @@
+<policies>
+  <inbound>
+    <base />
+    <validate-jwt header-name="Authorization" require-scheme="Bearer"
+                  failed-validation-httpcode="401" output-token-variable-name="seller-token">
+      <openid-config url="https://login.microsoftonline.com/__TENANT_ID__/v2.0/.well-known/openid-configuration" />
+      <audiences><audience>__SELLER_API_CLIENT_ID__</audience><audience>api://__SELLER_API_CLIENT_ID__</audience></audiences>
+      <issuers><issuer>https://login.microsoftonline.com/__TENANT_ID__/v2.0</issuer></issuers>
+      <required-claims>
+        <claim name="tid" match="all"><value>__TENANT_ID__</value></claim>
+        <claim name="scp" match="any" separator=" "><value>Jingle.Create</value></claim>
+      </required-claims>
+    </validate-jwt>
+    <choose>
+      <when condition="@(!((Jwt)context.Variables[&quot;seller-token&quot;]).Claims.ContainsKey(&quot;oid&quot;) || ((Jwt)context.Variables[&quot;seller-token&quot;]).Claims[&quot;oid&quot;].Length != 1 || string.IsNullOrWhiteSpace(((Jwt)context.Variables[&quot;seller-token&quot;]).Claims[&quot;oid&quot;][0]))">
+        <return-response><set-status code="401" reason="Seller object ID required" /></return-response>
+      </when>
+    </choose>
+    <rate-limit-by-key calls="30" renewal-period="60"
+      counter-key="@(((Jwt)context.Variables[&quot;seller-token&quot;]).Claims[&quot;oid&quot;][0])" />
+    <authentication-managed-identity resource="api://__BACKEND_API_CLIENT_ID__" />
+  </inbound>
+  <backend><forward-request timeout="120" buffer-response="false" /></backend>
+  <outbound><base /></outbound>
+  <on-error><base /></on-error>
+</policies>
