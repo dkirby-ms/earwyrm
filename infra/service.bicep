@@ -37,7 +37,7 @@ param databaseHost string
 param databaseName string
 @description('PostgreSQL administrator login.')
 param databaseAdminLogin string
-@description('Version-pinned Key Vault URI for the PostgreSQL password.')
+@description('Versionless Key Vault URI tracking the latest PostgreSQL password.')
 param databasePasswordSecretUri string
 
 var hostname = '${name}.${environmentDomain}'

@@ -13,12 +13,14 @@ param keyVaultName string
 param keyVaultResourceGroupName string
 @description('Existing Key Vault secret name for the PostgreSQL administrator password.')
 param databasePasswordSecretName string
-@description('Version of the Key Vault secret used by the app.')
-param databasePasswordSecretVersion string
 @description('PostgreSQL administrator login.')
 param databaseAdminLogin string
-@description('Comma-separated verified PostgreSQL firewall IPv4 addresses.')
-param databaseOutboundIpv4s string
+@description('Address space for the application virtual network.')
+param virtualNetworkAddressPrefix string
+@description('Dedicated Container Apps subnet address prefix.')
+param containerAppsSubnetPrefix string
+@description('Private endpoint subnet address prefix.')
+param privateEndpointsSubnetPrefix string
 @description('Browser SPA client ID.')
 param entraClientId string
 @description('External ID CIAM authority.')
@@ -39,7 +41,66 @@ var tags = { 'azd-env-name': environmentName }
 var shareName = 'earwyrm'
 var environmentStorageName = 'earwyrmfiles'
 var postgresName = 'psql${suffix}'
-var databasePasswordSecretUri = '${credentialVault.properties.vaultUri}secrets/${databasePasswordSecretName}/${databasePasswordSecretVersion}'
+var databasePasswordSecretUri = '${credentialVault.properties.vaultUri}secrets/${databasePasswordSecretName}'
+var containerAppsSubnetName = 'aca-infrastructure'
+var privateEndpointsSubnetName = 'private-endpoints'
+
+resource virtualNetwork 'Microsoft.Network/virtualNetworks@2026-03-01' = {
+  name: 'vnet-web-${suffix}'
+  location: location
+  tags: tags
+  properties: {
+    addressSpace: { addressPrefixes: [virtualNetworkAddressPrefix] }
+    subnets: [
+      {
+        name: containerAppsSubnetName
+        properties: {
+          addressPrefix: containerAppsSubnetPrefix
+          delegations: [
+            {
+              name: 'container-apps'
+              properties: { serviceName: 'Microsoft.App/environments' }
+            }
+          ]
+        }
+      }
+      {
+        name: privateEndpointsSubnetName
+        properties: {
+          addressPrefix: privateEndpointsSubnetPrefix
+          privateEndpointNetworkPolicies: 'Disabled'
+        }
+      }
+    ]
+  }
+}
+
+resource containerAppsSubnet 'Microsoft.Network/virtualNetworks/subnets@2026-03-01' existing = {
+  parent: virtualNetwork
+  name: containerAppsSubnetName
+}
+
+resource privateEndpointsSubnet 'Microsoft.Network/virtualNetworks/subnets@2026-03-01' existing = {
+  parent: virtualNetwork
+  name: privateEndpointsSubnetName
+}
+
+resource postgresDns 'Microsoft.Network/privateDnsZones@2024-06-01' = {
+  name: 'privatelink.postgres.database.azure.com'
+  location: 'global'
+  tags: tags
+}
+
+resource postgresDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = {
+  parent: postgresDns
+  name: 'postgres-${suffix}'
+  location: 'global'
+  tags: tags
+  properties: {
+    registrationEnabled: false
+    virtualNetwork: { id: virtualNetwork.id }
+  }
+}
 
 resource credentialVault 'Microsoft.KeyVault/vaults@2026-05-15' existing = {
   scope: resourceGroup(keyVaultResourceGroupName)
@@ -106,6 +167,11 @@ resource containerEnvironment 'Microsoft.App/managedEnvironments@2026-03-02-prev
   identity: { type: 'SystemAssigned' }
   properties: {
     appLogsConfiguration: { destination: 'azure-monitor' }
+    publicNetworkAccess: 'Enabled'
+    vnetConfiguration: {
+      infrastructureSubnetId: containerAppsSubnet.id
+      internal: false
+    }
     workloadProfiles: [
       { name: 'Consumption', workloadProfileType: 'Consumption' }
     ]
@@ -191,7 +257,8 @@ module postgres './postgresql.bicep' = {
     environmentName: environmentName
     administratorLogin: databaseAdminLogin
     administratorPassword: credentialVault.getSecret(databasePasswordSecretName)
-    outboundIpv4s: databaseOutboundIpv4s
+    privateEndpointSubnetId: privateEndpointsSubnet.id
+    privateDnsZoneId: postgresDns.id
   }
 }
 
@@ -217,7 +284,7 @@ module web './service.bicep' = {
     databaseAdminLogin: databaseAdminLogin
     databasePasswordSecretUri: databasePasswordSecretUri
   }
-  dependsOn: [pullRole, databasePasswordReader]
+  dependsOn: [pullRole, databasePasswordReader, postgresDnsLink]
 }
 
 @description('Registry hostname.')
@@ -236,3 +303,5 @@ output appName string = web.outputs.appName
 output postgresHostName string = postgres.outputs.hostName
 @description('PostgreSQL database name.')
 output postgresDatabaseName string = postgres.outputs.databaseName
+@description('Application virtual network name.')
+output virtualNetworkName string = virtualNetwork.name

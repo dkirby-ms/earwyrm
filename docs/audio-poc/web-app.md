@@ -185,8 +185,11 @@ flow, session storage, and a same-origin redirect URI. Tokens are sent in
 
 The Azure Container App receives `EARWYRM_DATABASE_HOST`,
 `EARWYRM_DATABASE_NAME`, and `EARWYRM_DATABASE_USER` as non-secret settings.
-Its `EARWYRM_DATABASE_PASSWORD` comes from a version-pinned Key Vault reference
-through the app's user-assigned managed identity. Do not copy the password into
+Its `EARWYRM_DATABASE_PASSWORD` comes from a versionless Key Vault reference
+through the app's user-assigned managed identity and tracks the latest version.
+Coordinate password rotation with the stopped-writer maintenance procedure in
+the [deployment runbook](../azure-deployment.md#safe-updates-and-maintenance).
+Do not copy the password into
 GitHub variables, an azd environment, a Bicep parameter file, or command
 arguments. The deployment identity and app identity have separate roles: the
 deployment identity reads the secret for the secure provisioning reference;
@@ -209,7 +212,7 @@ PostgreSQL holds structured application records. Keep backups of both the
 database and file data, including the original SQLite sources until cutover is
 separately approved. Follow the [Azure deployment guide](../azure-deployment.md)
 for the approved preview, provision, initialization/import, and deploy sequence,
-network allowlist, and coordinated password rotation. The web app refuses to
+private endpoint and private DNS, and coordinated password rotation. The web app refuses to
 serve a missing or incomplete PostgreSQL initialization; provisioning alone
 does not initialize the application store.
 
@@ -221,6 +224,11 @@ After signing in, use a protected API client to call `/api/identity` with the
 `briefs.read` delegated scope. It returns only the caller's validated issuer and
 subject. Verify those two values with the operator through a trusted channel;
 do not share the access token.
+
+Run hosted database administration, initialization and import commands from an
+approved host with VNet connectivity and private DNS resolution. A standard
+GitHub-hosted runner or internet-only laptop cannot reach the database; do not
+enable public access as a workaround.
 
 For an operator command against PostgreSQL, set `EARWYRM_DATA_DIR` to an
 existing, empty absolute directory and set `EARWYRM_DATABASE_URL` securely in

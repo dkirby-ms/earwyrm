@@ -53,9 +53,7 @@ jobs:
       AZURE_KEY_VAULT_NAME: ${{ vars.AZURE_KEY_VAULT_NAME }}
       AZURE_KEY_VAULT_RESOURCE_GROUP: ${{ vars.AZURE_KEY_VAULT_RESOURCE_GROUP }}
       AZURE_POSTGRESQL_PASSWORD_SECRET_NAME: ${{ vars.AZURE_POSTGRESQL_PASSWORD_SECRET_NAME }}
-      AZURE_POSTGRESQL_PASSWORD_SECRET_VERSION: ${{ vars.AZURE_POSTGRESQL_PASSWORD_SECRET_VERSION }}
       AZURE_POSTGRESQL_ADMIN_LOGIN: ${{ vars.AZURE_POSTGRESQL_ADMIN_LOGIN }}
-      AZURE_POSTGRESQL_OUTBOUND_IPS: ${{ vars.AZURE_POSTGRESQL_OUTBOUND_IPS }}
       ENTRA_CLIENT_ID: ${{ vars.ENTRA_CLIENT_ID }}
       ENTRA_AUTHORITY: ${{ vars.ENTRA_AUTHORITY }}
       ENTRA_METADATA_URL: ${{ vars.ENTRA_METADATA_URL }}
@@ -95,9 +93,7 @@ jobs:
           azd env set AZURE_KEY_VAULT_NAME "$AZURE_KEY_VAULT_NAME"
           azd env set AZURE_KEY_VAULT_RESOURCE_GROUP "$AZURE_KEY_VAULT_RESOURCE_GROUP"
           azd env set AZURE_POSTGRESQL_PASSWORD_SECRET_NAME "$AZURE_POSTGRESQL_PASSWORD_SECRET_NAME"
-          azd env set AZURE_POSTGRESQL_PASSWORD_SECRET_VERSION "$AZURE_POSTGRESQL_PASSWORD_SECRET_VERSION"
           azd env set AZURE_POSTGRESQL_ADMIN_LOGIN "$AZURE_POSTGRESQL_ADMIN_LOGIN"
-          azd env set AZURE_POSTGRESQL_OUTBOUND_IPS "$AZURE_POSTGRESQL_OUTBOUND_IPS"
           azd env set ENTRA_CLIENT_ID "$ENTRA_CLIENT_ID"
           azd env set ENTRA_AUTHORITY "$ENTRA_AUTHORITY"
           azd env set ENTRA_METADATA_URL "$ENTRA_METADATA_URL"
@@ -115,9 +111,9 @@ jobs:
       - name: Stop and verify bootstrap or replacement writers
         if: inputs.action == 'provision' || inputs.action == 'deploy'
         run: npm run deployment-gate -- quiesce
-      - name: Reconcile PostgreSQL firewall rules
+      - name: Verify private PostgreSQL networking
         if: inputs.action == 'provision' || inputs.action == 'deploy'
-        run: npm run deployment-gate -- reconcile-firewall
+        run: npm run deployment-gate -- verify-network
       - name: Deploy approved web image
         if: inputs.action == 'deploy'
         run: azd deploy web --no-prompt

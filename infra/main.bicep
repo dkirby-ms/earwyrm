@@ -28,18 +28,19 @@ param keyVaultResourceGroupName string
 @maxLength(127)
 param databasePasswordSecretName string
 
-@description('Version of the existing Key Vault secret used by the app.')
-@minLength(1)
-param databasePasswordSecretVersion string
-
 @description('PostgreSQL administrator login.')
 @minLength(1)
 @maxLength(63)
 param databaseAdminLogin string
 
-@description('Comma-separated, verified outbound IPv4 addresses allowed to reach PostgreSQL.')
-@minLength(1)
-param databaseOutboundIpv4s string
+@description('Address space for the application virtual network.')
+param virtualNetworkAddressPrefix string = '10.42.0.0/16'
+
+@description('Dedicated subnet for the Container Apps workload profiles environment.')
+param containerAppsSubnetPrefix string = '10.42.0.0/23'
+
+@description('Separate, nondelegated subnet for private endpoints.')
+param privateEndpointsSubnetPrefix string = '10.42.2.0/27'
 
 @description('Existing browser SPA application client ID.')
 @minLength(1)
@@ -69,7 +70,7 @@ param entraApiScopePrefix string
 param bootstrapImage string = 'docker.io/nginxinc/nginx-unprivileged:1.28-alpine'
 
 resource resourceGroup 'Microsoft.Resources/resourceGroups@2025-04-01' = {
-  name: 'rg-earwyrm-${environmentName}'
+  name: 'rg-${environmentName}'
   location: location
   tags: { 'azd-env-name': environmentName }
 }
@@ -83,9 +84,10 @@ module platform './platform.bicep' = {
     keyVaultName: keyVaultName
     keyVaultResourceGroupName: keyVaultResourceGroupName
     databasePasswordSecretName: databasePasswordSecretName
-    databasePasswordSecretVersion: databasePasswordSecretVersion
     databaseAdminLogin: databaseAdminLogin
-    databaseOutboundIpv4s: databaseOutboundIpv4s
+    virtualNetworkAddressPrefix: virtualNetworkAddressPrefix
+    containerAppsSubnetPrefix: containerAppsSubnetPrefix
+    privateEndpointsSubnetPrefix: privateEndpointsSubnetPrefix
     entraClientId: entraClientId
     entraAuthority: entraAuthority
     entraMetadataUrl: entraMetadataUrl
@@ -114,3 +116,5 @@ output AZURE_CONTAINER_APP_NAME string = platform.outputs.appName
 output AZURE_POSTGRESQL_HOST string = platform.outputs.postgresHostName
 @description('PostgreSQL database name.')
 output AZURE_POSTGRESQL_DATABASE string = platform.outputs.postgresDatabaseName
+@description('Application virtual network for private database access and approved administration.')
+output AZURE_VIRTUAL_NETWORK_NAME string = platform.outputs.virtualNetworkName

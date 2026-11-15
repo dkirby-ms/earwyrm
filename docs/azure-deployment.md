@@ -15,6 +15,13 @@ retain SQLite source data for migration and rollback. The deployment does not
 create registrations, APIM, an AI model, or a functioning MCP service. Paid
 Speech remains disabled.
 
+The Container Apps workload profiles environment uses a dedicated VNet subnet,
+while the web UI and API retain public HTTPS ingress. PostgreSQL public network
+access is disabled. A private endpoint in a separate, nondelegated subnet and
+the VNet-linked `privatelink.postgres.database.azure.com` zone provide database
+connectivity without an outbound-IP allowlist. Key Vault, registry and other
+Azure service access are unchanged.
+
 > [!CAUTION]
 > This is a disposable, single-user proof of concept. Azure Files
 > managed-identity SMB mounting is a preview feature. The share still holds
@@ -51,7 +58,8 @@ maintenance procedure below even when the lock appears to work.
 * Use an isolated new azd environment and an Azure subscription with resource
   creation and `Microsoft.Authorization/roleAssignments/write` permissions.
   Register `Microsoft.App`, `Microsoft.ContainerRegistry`, `Microsoft.Storage`,
-  `Microsoft.ManagedIdentity`, `Microsoft.Insights`, and
+  `Microsoft.ManagedIdentity`, `Microsoft.Network`,
+  `Microsoft.DBforPostgreSQL`, `Microsoft.KeyVault`, `Microsoft.Insights`, and
   `Microsoft.OperationalInsights` if required.
 * Confirm preview support in the subscription and region, SMB network access
   on port 445, registry access, resource quota and authorization. RBAC role
@@ -72,6 +80,43 @@ maintenance procedure below even when the lock appears to work.
   deploying. This template replaces the prior scaffold configuration; removing
   a resource from a template does not delete an existing Azure resource. Do not
   modify or delete existing resources or data without separate approval.
+
+## Private network and replacement environment
+
+Use a fresh `AZURE_ENV_NAME` when moving from the old environment without a
+custom VNet. Container Apps cannot change an existing environment's network
+type in place. The template creates an isolated `rg-<environment>` resource
+group; it does not destroy or migrate the old environment, database or share.
+Even for this disposable proof, review costs and obtain separate approval before
+cleaning up old resources. The new web origin also needs its approved External
+ID redirect URI.
+
+The default VNet is `10.42.0.0/16`, with `10.42.0.0/23` delegated exclusively to
+`Microsoft.App/environments` and `10.42.2.0/27` for private endpoints. If these
+overlap an intended peered or on-premises network, change
+`virtualNetworkAddressPrefix`, `containerAppsSubnetPrefix` and
+`privateEndpointsSubnetPrefix` in the deployment parameters before provisioning.
+Keep the subnets distinct and size the ACA subnet before creating the
+environment; its size cannot be changed afterward.
+
+The PostgreSQL server uses Private Link, not PostgreSQL delegated-subnet VNet
+integration. Its public access is disabled and the template creates no
+PostgreSQL firewall rules. The endpoint targets `postgresqlServer`; its DNS zone
+group manages the private address record and the zone is linked to the ACA VNet.
+Continue connecting with the server's ordinary
+`<server>.postgres.database.azure.com` hostname and `sslmode=verify-full`,
+not its private IP or a substituted TLS hostname.
+
+Database initialization, imports, owner administration, backups and recovery
+must run from an approved host in this VNet, a peered VNet, or a VPN-connected
+network with private DNS resolution. A standard GitHub-hosted runner and a
+normal internet-connected laptop cannot connect directly. Provisioning and the
+workflow's network checks use Azure management APIs, so they do not require
+database network access. The workflow does not provision an administration VM,
+VPN or self-hosted runner, and does not initialize the database.
+
+See [ACA VNet requirements](https://learn.microsoft.com/azure/container-apps/custom-virtual-networks)
+and [PostgreSQL Private Link](https://learn.microsoft.com/azure/postgresql/network/concepts-networking-private-link).
 
 ## Existing External ID configuration
 
@@ -126,20 +171,20 @@ Set these non-secret GitHub environment variables:
 | `AZURE_KEY_VAULT_NAME` | Existing RBAC-enabled Key Vault name |
 | `AZURE_KEY_VAULT_RESOURCE_GROUP` | Resource group containing that vault in the deployment subscription |
 | `AZURE_POSTGRESQL_PASSWORD_SECRET_NAME` | Existing secret containing the PostgreSQL administrator password |
-| `AZURE_POSTGRESQL_PASSWORD_SECRET_VERSION` | Current 32-character hexadecimal version of that secret |
 | `AZURE_POSTGRESQL_ADMIN_LOGIN` | PostgreSQL administrator login |
-| `AZURE_POSTGRESQL_OUTBOUND_IPS` | Comma-separated public IPv4 addresses for verified Container Apps egress and any temporarily approved migration host |
 | All six `ENTRA_*` settings above | Verbatim existing External ID values |
 
 The workflow logs both Azure CLI and azd in through GitHub OIDC. Its maintenance
-gate validates the IP allowlist before Azure access, verifies the CLI
+gate verifies the CLI
 subscription, tenant, service-principal type and client ID, and checks that the
 vault permits RBAC and template deployment. It reads only the selected secret's
-ID, never its value, and requires the configured version to be current before
-inventorying or changing the target. Bicep reads that current value through a
+ID, never its value, and verifies that the latest version resolves before
+inventorying or changing the target. No secret-version variable is required.
+Bicep reads the latest value through a
 secure deployment-time Key Vault reference; the Container App uses its
-user-assigned identity and a version-pinned Key Vault reference to the same
-secret. Do not rotate the secret between the gate and deployment. The deployment
+user-assigned identity and a versionless Key Vault reference to the same
+secret, allowing Container Apps to refresh to the latest version automatically.
+Do not rotate the secret between the gate and deployment. The deployment
 owner must confirm `AZURE_PRINCIPAL_ID` belongs to that service principal.
 Bicep intentionally assigns registry publishing to `ServicePrincipal`, not to
 an interactive user. The parameter mapping is in
@@ -154,14 +199,16 @@ approved maintenance recovery if you decide not to proceed.
 
 After approving the preview, dispatch `provision`. This creates or updates the
 resources without deploying the application image, then stops and verifies the
-temporary bootstrap app. The app remains stopped. Verify the database server,
-network allowlist, vault permissions and Key Vault secret version. Initialize
+temporary bootstrap app. The app remains stopped. The workflow verifies the
+private endpoint, DNS linkage and disabled public database access. Verify vault
+permissions and the latest Key Vault secret version. From the approved
+VNet-connected administration host, initialize
 an explicitly empty store or import the backed-up SQLite stores by following
 the [database migration runbook](./audio-poc/web-app.md#import-existing-sqlite-data).
-If the approved import host needs database access, add only its verified public
-IPv4 address for the maintenance window, then remove it from the allowlist after
-the import. Keep all source files and backups until cutover is separately
-approved.
+The host must resolve the ordinary server hostname to the private endpoint
+address and establish a TLS-validated database connection. Do not enable public
+database access for an import. Keep all source files and backups until cutover
+is separately approved.
 
 Dispatch `deploy` only after the PostgreSQL initialization or import has been
 independently verified. Confirm `postgres_store_initialized` and the current
@@ -181,7 +228,8 @@ operators.
 In the workflow, `azd env get-values` shows `WEB_ENDPOINT`, `AZURE_RESOURCE_GROUP`,
 `AZURE_CONTAINER_APP_NAME`, `AZURE_CONTAINER_ENVIRONMENT_NAME`,
 `AZURE_STORAGE_ACCOUNT_NAME`, `AZURE_FILE_SHARE_NAME`,
-`AZURE_POSTGRESQL_HOST` and `AZURE_POSTGRESQL_DATABASE`.
+`AZURE_POSTGRESQL_HOST`, `AZURE_POSTGRESQL_DATABASE` and
+`AZURE_VIRTUAL_NETWORK_NAME`.
 
 The first provision uses a temporary nginx image until `azd deploy` publishes
 the web image. `azd provision` alone does not deploy the application and may
@@ -200,8 +248,7 @@ not the storage mount or a successful user login.
 
 [azure.yaml](../azure.yaml) registers fail-closed `preprovision` and `predeploy`
 hooks using [deployment_gate.ts](../scripts/deployment_gate.ts). These hooks
-require the approved GitHub OIDC context, a nonempty allowlist of individual
-public IPv4 addresses, the approved vault configuration and the pinned current
+require the approved GitHub OIDC context, the approved vault configuration and a resolvable latest
 secret version. They inventory the isolated resource group and require
 `runningStatus: Stopped` plus zero replicas for every revision, including
 inactive ones. Transiently empty replicas on a running app do not pass. Any
@@ -217,24 +264,24 @@ outside this target cannot be discovered by this check: their owners must stop
 them and confirm `other_writers_stopped` before approving the run. Real SMB
 locking is not assumed. The workflow's `resume` action requires exactly one
 replica; this is not proof of application readiness or successful SMB mounting.
-PostgreSQL firewall rules allow only the supplied single-address IPv4 entries.
-The deployment owner must verify that the list covers every active Container
-Apps outbound address and can remain reliable. If egress is not stable or
-complete, do not provision. Recheck the list when the environment or region
-changes. The gate validates syntax and rejects broad, private, duplicate or
-invalid addresses; it cannot establish live egress coverage without the
-deployment owner's inventory.
 
 After provisioning and the second writer-quiescence check, the approved
-workflow runs `npm run deployment-gate -- reconcile-firewall` before deployment or
-workflow completion. The gate requires exactly one Flexible Server tagged for
-the selected environment and in `Ready` state. It removes only obsolete
-`container-app-egress-<index>` rules, leaves unrecognized rules untouched and
-fails if any remain, then verifies that the owned rule names and exact IP pairs
-match the approved allowlist. A missing or ambiguous server, inventory mismatch,
-or Azure CLI error blocks the run. Rule deletion can take up to five minutes to
-propagate, so a matching control-plane inventory does not prove immediate
-network enforcement; verify live connectivity separately.
+workflow runs `npm run deployment-gate -- verify-network`. The gate requires
+exactly one tagged Flexible Server in `Ready` state with public network access
+disabled. It checks that the app's environment uses a VNet in the isolated
+resource group, exactly one approved endpoint targets that PostgreSQL server
+from a separate subnet in the same VNet, and the endpoint DNS zone group and
+completed VNet DNS link point to the expected private zone and VNet. Truncated,
+missing, ambiguous or invalid inventories and Azure CLI errors fail closed.
+The `resume` action repeats these checks before starting the app. No firewall
+rules are created or deleted.
+
+These are management-plane checks, not proof of live DNS resolution, routing
+or database authentication. Before deployment, verify the ordinary PostgreSQL
+hostname resolves privately from the VNet-connected administration host and
+verify an actual connection with full TLS certificate and hostname validation.
+After deploying, check app startup and a protected database-backed operation;
+`/healthz` alone does not establish database readiness.
 
 Do not use ordinary `azd up` as an update shortcut. Provisioning can start a
 bootstrap revision, so the workflow quiesces and verifies it before deployment.
@@ -281,15 +328,17 @@ writers are active. Never treat a successful local lock test as proof that the
 Azure SMB lock is reliable.
 
 For PostgreSQL password rotation, stop the app and other writers first. Add the
-new password as a new Key Vault secret version and update
-`AZURE_POSTGRESQL_PASSWORD_SECRET_VERSION` to that exact version. Review the
+new password as a new Key Vault secret version; no version variable needs
+updating. Container Apps follows the latest version automatically, so keep
+writers stopped until the database credential has been updated. Review the
 preview, then use the gated provision operation to update the server credential
-and app reference together. Verify a fresh TLS-validated database connection
+from the latest secret. Verify a fresh TLS-validated database connection
 before deploying or resuming the app. Retain the old secret version and an
 approved recovery path until verification succeeds. Rotating the Key Vault
 secret alone does not change the PostgreSQL password. If the server update
-fails, keep the app stopped and restore the matching previous server credential
-and secret reference through an approved deployment.
+fails, keep the app stopped and restore the previous password as the latest
+Key Vault secret version, then restore the matching server credential through
+an approved deployment.
 
 ## Backup and restore
 
@@ -301,8 +350,9 @@ From an approved administration host, create an encrypted PostgreSQL dump with
 a trusted `pg_dump` client and full TLS certificate and host verification. Supply
 the current database password through a temporary owner-only password file or
 an approved secret manager, never as a command argument or shell-history value.
-The host must be allowed by the PostgreSQL firewall and use the trusted system
-CA bundle. The server retains seven days of local backups, but those are not an
+The host must reach the private endpoint through the VNet and resolve its
+private DNS records, and must use the trusted system CA bundle. Do not enable
+public database access for backups. The server retains seven days of local backups, but those are not an
 independent off-server backup and do not include Azure Files data.
 
 On the same stopped deployment, mount the share using a separately authorized
