@@ -87,7 +87,7 @@ resource app 'Microsoft.App/containerApps@2026-07-01' = {
           name: 'earwyrm'
           storageName: storageName
           storageType: 'AzureFile'
-          mountOptions: 'uid=10001,gid=10001,dir_mode=0700,file_mode=0600'
+          mountOptions: 'uid=10001,gid=10001,dir_mode=0700,file_mode=0600,nobrl'
         }
       ]
       scale: { minReplicas: 1, maxReplicas: 1 }

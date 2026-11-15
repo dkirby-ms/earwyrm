@@ -1,7 +1,7 @@
 ---
 title: Deploy the web proof to Azure
 description: Deploy the existing External ID web proof with an identity-authenticated Azure Files share.
-ms.date: 2026-11-14
+ms.date: 2026-11-15
 ms.topic: how-to
 ---
 
@@ -23,8 +23,8 @@ The Container Apps **environment** has a system-assigned identity. It receives
 the account-scoped `Storage File Data SMB MI Admin` role for a classic Azure
 Files SMB share. SMB OAuth and Kerberos are enabled; storage account keys are
 not used. The share contains both SQLite databases, the initialized-store marker,
-private audio and working files. The app rejects an unmounted data path and a
-second cooperating writer, and checks for missing databases and unsupported
+private audio and working files. The app rejects an unmounted data path, attempts
+to exclude a second cooperating writer, and checks for missing databases and unsupported
 SQLite journal modes at startup. Every runtime SQLite connection uses
 non-creating `mode=rw`; constructors also refuse to recreate missing databases
 once the store marker exists. Database loss blocks reads or renders rather
@@ -33,8 +33,18 @@ than silently resetting owner records, the paid ledger or melody history.
 The new share starts empty. Existing local records and audio are not copied
 automatically.
 
-The advisory lock depends on actual SMB lock semantics and has not been
-validated on Azure. It does not constrain other clients that ignore the lock.
+The database volume uses the SMB
+[`nobrl` mount option](https://manpages.debian.org/bookworm/cifs-utils/mount.cifs.8.en.html)
+to avoid SQLite startup failures caused by SMB byte-range locking. This disables
+byte-range lock requests to the server; it does not make concurrent database
+access from separate replicas or clients safe. Existing UID/GID and private
+file permissions remain unchanged. Keep SQLite in rollback-journal mode, not
+WAL, as required by the startup checks. See
+[SQLite's network-filesystem caveats](https://www.sqlite.org/useovernet.html).
+
+The advisory writer lock remains a best-effort safeguard and has not been
+validated on Azure with `nobrl`. Do not rely on it for cross-replica or
+cross-client exclusion. It does not constrain clients that ignore the lock.
 Single-revision mode, one replica and one worker reduce contention but do not
 guarantee that revisions or replacement replicas never overlap. Follow the
 maintenance procedure below even when the lock appears to work.
