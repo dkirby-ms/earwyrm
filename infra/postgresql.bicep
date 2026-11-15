@@ -1,5 +1,5 @@
 metadata name = 'Earwyrm PostgreSQL database'
-metadata description = 'A low-cost PostgreSQL Flexible Server with explicit public firewall rules.'
+metadata description = 'A low-cost PostgreSQL Flexible Server reachable only through a private endpoint.'
 
 @description('PostgreSQL Flexible Server name.')
 param name string
@@ -12,12 +12,12 @@ param administratorLogin string
 @secure()
 @description('Administrator password read from the existing Key Vault.')
 param administratorPassword string
-@description('Comma-separated verified outbound IPv4 addresses allowed to reach PostgreSQL.')
-@minLength(1)
-param outboundIpv4s string
+@description('Nondelegated subnet for the PostgreSQL private endpoint.')
+param privateEndpointSubnetId string
+@description('Private DNS zone linked to the application virtual network.')
+param privateDnsZoneId string
 
 var databaseName = 'earwyrm'
-var firewallAddresses = split(outboundIpv4s, ',')
 var tags = { 'azd-env-name': environmentName }
 
 resource server 'Microsoft.DBforPostgreSQL/flexibleServers@2026-10-01' = {
@@ -43,7 +43,7 @@ resource server 'Microsoft.DBforPostgreSQL/flexibleServers@2026-10-01' = {
       mode: 'Disabled'
     }
     network: {
-      publicNetworkAccess: 'Enabled'
+      publicNetworkAccess: 'Disabled'
     }
     storage: {
       autoGrow: 'Enabled'
@@ -63,14 +63,36 @@ resource database 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2026-10-0
   }
 }
 
-resource firewallRules 'Microsoft.DBforPostgreSQL/flexibleServers/firewallRules@2026-10-01' = [for (address, index) in firewallAddresses: {
-  parent: server
-  name: 'container-app-egress-${index}'
+resource privateEndpoint 'Microsoft.Network/privateEndpoints@2026-03-01' = {
+  name: 'pe-${name}'
+  location: location
+  tags: tags
   properties: {
-    startIpAddress: address
-    endIpAddress: address
+    subnet: { id: privateEndpointSubnetId }
+    privateLinkServiceConnections: [
+      {
+        name: 'postgresql'
+        properties: {
+          privateLinkServiceId: server.id
+          groupIds: ['postgresqlServer']
+        }
+      }
+    ]
   }
-}]
+}
+
+resource privateDnsZoneGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2026-03-01' = {
+  parent: privateEndpoint
+  name: 'postgresql'
+  properties: {
+    privateDnsZoneConfigs: [
+      {
+        name: 'postgresql'
+        properties: { privateDnsZoneId: privateDnsZoneId }
+      }
+    ]
+  }
+}
 
 @description('PostgreSQL Flexible Server hostname.')
 output hostName string = server.properties.fullyQualifiedDomainName
