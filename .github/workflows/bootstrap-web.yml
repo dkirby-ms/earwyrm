@@ -1,0 +1,51 @@
+name: Bootstrap web credentials
+
+on:
+  workflow_dispatch:
+    inputs:
+      bootstrap_approved:
+        description: Approve credential resource creation and scoped Key Vault role assignments
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: earwyrm-web-deployment
+  cancel-in-progress: false
+
+jobs:
+  bootstrap:
+    if: inputs.bootstrap_approved
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: earwyrm-web
+    env:
+      AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      AZURE_PRINCIPAL_ID: ${{ vars.AZURE_PRINCIPAL_ID }}
+      AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+      AZURE_KEY_VAULT_NAME: ${{ vars.AZURE_KEY_VAULT_NAME }}
+      AZURE_KEY_VAULT_RESOURCE_GROUP: ${{ vars.AZURE_KEY_VAULT_RESOURCE_GROUP }}
+      AZURE_POSTGRESQL_PASSWORD_SECRET_NAME: ${{ vars.AZURE_POSTGRESQL_PASSWORD_SECRET_NAME }}
+      AZURE_POSTGRESQL_ADMIN_LOGIN: ${{ vars.AZURE_POSTGRESQL_ADMIN_LOGIN }}
+      EARWYRM_BOOTSTRAP_APPROVED: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install locked tooling
+        run: npm ci --no-audit --no-fund
+      - name: GitHub OIDC login for Azure CLI
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Bootstrap credential prerequisites without rotating passwords
+        run: npm run bootstrap-deployment

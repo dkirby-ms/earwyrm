@@ -168,11 +168,60 @@ Set these non-secret GitHub environment variables:
 | `AZURE_SUBSCRIPTION_ID` | Explicit approved subscription ID |
 | `AZURE_ENV_NAME` | Isolated environment name, 3-20 lowercase letters, digits or hyphens, starting and ending with a letter or digit |
 | `AZURE_LOCATION` | Approved region |
-| `AZURE_KEY_VAULT_NAME` | Existing RBAC-enabled Key Vault name |
-| `AZURE_KEY_VAULT_RESOURCE_GROUP` | Resource group containing that vault in the deployment subscription |
-| `AZURE_POSTGRESQL_PASSWORD_SECRET_NAME` | Existing secret containing the PostgreSQL administrator password |
+| `AZURE_KEY_VAULT_NAME` | Globally unique Key Vault name to bootstrap, or an existing RBAC-enabled vault |
+| `AZURE_KEY_VAULT_RESOURCE_GROUP` | Resource group to bootstrap for that vault in the deployment subscription |
+| `AZURE_POSTGRESQL_PASSWORD_SECRET_NAME` | PostgreSQL password secret name; bootstrap creates it only when absent |
 | `AZURE_POSTGRESQL_ADMIN_LOGIN` | PostgreSQL administrator login |
 | All six `ENTRA_*` settings above | Verbatim existing External ID values |
+
+### Bootstrap credential prerequisites
+
+Before the first deployment preview, dispatch
+[Bootstrap web credentials](../.github/workflows/bootstrap-web.yml) and select
+`bootstrap_approved`. Publish the workflow to the default branch first so
+GitHub exposes its manual dispatch. It uses the same protected `earwyrm-web`
+environment, OIDC deployment identity and concurrency lock as deployment.
+It does not create an identity, app, PostgreSQL server or network.
+
+The workflow creates the configured vault resource group and vault only when
+missing. New vaults use Standard SKU, Azure RBAC, template-deployment access,
+90-day soft-delete retention and purge protection. Purge protection cannot be
+disabled afterward. Vault access remains on the public, RBAC-protected endpoint
+so GitHub-hosted runners can bootstrap credentials. Existing vaults are not
+reconfigured; they must already enable RBAC and template deployment and permit
+the runner's network access.
+
+Bootstrap generates a cryptographically random PostgreSQL password only when
+the selected secret is absent. It passes the password through a private
+temporary file, removes that file on success or failure, and never logs the
+password or puts it in command arguments, workflow outputs or GitHub variables.
+An existing secret is retained without adding a version. Bootstrap does not
+recover or purge soft-deleted vaults or secrets, and is not a rotation mechanism.
+Do not run external credential creation or rotation concurrently with bootstrap.
+
+The deployment principal needs resource-group/vault creation and role-assignment
+creation/deletion permissions in the selected subscription and vault scope.
+Bootstrap temporarily grants that principal `Key Vault Secrets Officer` at the
+vault scope, then removes only its run-specific assignment in a `finally` block.
+It leaves `Key Vault Secrets User` scoped to the selected secret for subsequent
+deployment checks. Existing role assignments are preserved. Cancellation or
+runner loss can interrupt cleanup; an Azure owner must inspect and remove any
+leftover bootstrap writer assignment before retrying. The workflow logs the
+run-specific assignment's generated UUID, not credentials, so the owner can
+identify it without removing unrelated grants. Cleanup failures fail the
+workflow explicitly.
+
+RBAC propagation is retried for up to about five minutes per access check.
+Authorization and firewall failures are not treated as an absent secret.
+If bootstrap fails, inspect the safe operation diagnostic, correct permissions
+or networking, then retry; an already-created password is retained. The principal
+also needs the existing template-deployment permissions for later provisioning.
+See [Key Vault RBAC](https://learn.microsoft.com/azure/key-vault/general/rbac-guide).
+
+After bootstrap succeeds, dispatch a new `preview` in the deployment workflow.
+Bootstrap success does not authorize provisioning or deployment.
+
+### Preview and provision
 
 The workflow logs both Azure CLI and azd in through GitHub OIDC. Its maintenance
 gate verifies the CLI

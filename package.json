@@ -21,6 +21,7 @@
     "render": "tsx apps/api/src/cli.ts",
     "database": "tsx apps/api/src/bootstrap_database.ts",
     "deployment-gate": "tsx scripts/deployment_gate.ts",
+    "bootstrap-deployment": "tsx scripts/bootstrap_deployment.ts",
     "contracts": "tsx apps/api/src/contracts.ts"
   },
   "devDependencies": {

@@ -21,17 +21,20 @@ export type Azure = (subscription: string, ...arguments_: string[]) => Promise<u
 type Environment = Readonly<Record<string, string | undefined>>;
 
 /** Contains only fixed diagnostic text and known setting names, safe for workflow logs. */
-class DeploymentGateError extends Error {}
+export class DeploymentGateError extends Error {
+  constructor(message: string, readonly azureCode?: string) { super(message); }
+}
 
 const AZURE_OPERATIONS = new Set([
   'account show', 'keyvault show', 'keyvault secret show', 'group exists',
   'containerapp list', 'containerapp show', 'containerapp revision list', 'containerapp replica list',
   'postgres flexible-server list', 'postgres flexible-server show', 'rest',
+  'group create', 'keyvault list', 'keyvault create', 'keyvault secret set', 'role assignment create',
 ]);
 const AZURE_ERROR_CODES = new Set([
   'AuthorizationFailed', 'AuthenticationFailed', 'Forbidden', 'ForbiddenByRbac', 'ForbiddenByFirewall',
   'SecretNotFound', 'VaultNotFound', 'ResourceNotFound', 'ResourceGroupNotFound',
-  'SubscriptionNotFound', 'ExpiredAuthenticationToken',
+  'SubscriptionNotFound', 'ExpiredAuthenticationToken', 'RoleAssignmentExists',
 ]);
 const INVENTORY_FIELDS = new Set([
   'name', 'id', 'tags', 'tenantId', 'user', 'type', 'properties',
@@ -69,6 +72,7 @@ export const azure: Azure = async (subscription, ...arguments_) => {
     ], { timeout: 120_000, maxBuffer: 8 * 1024 * 1024 }));
   } catch (error) {
     const diagnostics: string[] = [];
+    let azureCode: string | undefined;
     if (typeof error === 'object' && error !== null) {
       if ('code' in error) {
         if (typeof error.code === 'number' && Number.isInteger(error.code) && error.code >= 0 && error.code <= 255) {
@@ -77,45 +81,30 @@ export const azure: Azure = async (subscription, ...arguments_) => {
       }
       if ('stderr' in error && typeof error.stderr === 'string') {
         const code = /^\s*ERROR:\s*\(([A-Za-z]+)\)/m.exec(error.stderr)?.[1];
-        if (code && AZURE_ERROR_CODES.has(code)) diagnostics.push(code);
+        if (code && AZURE_ERROR_CODES.has(code)) { diagnostics.push(code); azureCode = code; }
       }
     }
-    throw new DeploymentGateError(`${operation} failed${diagnostics.length ? ` (${diagnostics.join('; ')})` : ''}; raw CLI output withheld`);
+    throw new DeploymentGateError(`${operation} failed${diagnostics.length ? ` (${diagnostics.join('; ')})` : ''}; raw CLI output withheld`, azureCode);
   }
   if (arguments_[0] === 'rest' && !stdout.trim()) return null;
   try { return JSON.parse(stdout) as unknown; }
   catch { throw new DeploymentGateError(`${operation} returned invalid JSON; raw CLI output withheld`); }
 };
 
-/** Validates workflow consent and inventories only the configured isolated deployment. */
-export async function deployment_target(
-  environ: Environment = process.env,
-  call: Azure = azure,
-): Promise<[string, string, Resource | null]> {
-  for (const name of [
-    'AZURE_SUBSCRIPTION_ID', 'AZURE_TENANT_ID', 'AZURE_CLIENT_ID',
-    'AZURE_PRINCIPAL_ID', 'AZURE_ENV_NAME', ...POSTGRES_REQUIRED_SETTINGS,
-  ]) {
-    if (!environ[name]) {
-      throw new DeploymentGateError(`Required deployment setting is missing: ${name}`);
-    }
-  }
-  const required = (name: string): string => {
-    const value = environ[name];
-    if (value === undefined) throw new DeploymentGateError(`Required deployment setting is missing: ${name}`);
-    return value;
-  };
+/** Rejects absent settings without including their values in diagnostics. */
+export function required_setting(environ: Environment, name: string): string {
+  const value = environ[name];
+  if (!value) throw new DeploymentGateError(`Required deployment setting is missing: ${name}`);
+  return value;
+}
+
+/** Requires GitHub OIDC and verifies the configured subscription, tenant and client before mutations. */
+export async function verify_deployment_identity(environ: Environment, call: Azure): Promise<string> {
+  const required = (name: string) => required_setting(environ, name);
+  for (const name of ['AZURE_SUBSCRIPTION_ID', 'AZURE_TENANT_ID', 'AZURE_CLIENT_ID', 'AZURE_PRINCIPAL_ID']) required(name);
   if (environ.GITHUB_ACTIONS !== 'true' || !environ.ACTIONS_ID_TOKEN_REQUEST_URL ||
     !environ.ACTIONS_ID_TOKEN_REQUEST_TOKEN) {
     throw new DeploymentGateError('Deployment requires the GitHub OIDC workflow');
-  }
-  if (environ.EARWYRM_MAINTENANCE_APPROVED !== 'true' ||
-    environ.EARWYRM_OTHER_WRITERS_STOPPED !== 'true') {
-    throw new DeploymentGateError('Approved maintenance and stopped external writers are required');
-  }
-  const environment = required('AZURE_ENV_NAME');
-  if (!/^[a-z0-9][a-z0-9-]{1,18}[a-z0-9]$/.test(environment)) {
-    throw new DeploymentGateError('Use a 3-20 character lowercase azd environment name');
   }
   const subscription = required('AZURE_SUBSCRIPTION_ID');
   const account = z.object({
@@ -128,6 +117,37 @@ export async function deployment_target(
     account.user.name.toLowerCase() !== required('AZURE_CLIENT_ID').toLowerCase()) {
     throw new DeploymentGateError('Azure CLI account is not the configured deployment service principal');
   }
+  return subscription;
+}
+
+/** Formats only trusted diagnostics; raw exception messages and inventory values remain withheld. */
+export function deployment_error_detail(error: unknown): string {
+  return error instanceof DeploymentGateError ? error.message
+    : error instanceof z.ZodError ? `Azure inventory response failed validation: ${inventory_diagnostic(error)}; see the last logged Azure operation`
+      : 'Unexpected deployment operation failure; raw error details withheld';
+}
+
+/** Validates workflow consent and inventories only the configured isolated deployment. */
+export async function deployment_target(
+  environ: Environment = process.env,
+  call: Azure = azure,
+): Promise<[string, string, Resource | null]> {
+  for (const name of [
+    'AZURE_SUBSCRIPTION_ID', 'AZURE_TENANT_ID', 'AZURE_CLIENT_ID',
+    'AZURE_PRINCIPAL_ID', 'AZURE_ENV_NAME', ...POSTGRES_REQUIRED_SETTINGS,
+  ]) {
+    required_setting(environ, name);
+  }
+  const required = (name: string) => required_setting(environ, name);
+  if (environ.EARWYRM_MAINTENANCE_APPROVED !== 'true' ||
+    environ.EARWYRM_OTHER_WRITERS_STOPPED !== 'true') {
+    throw new DeploymentGateError('Approved maintenance and stopped external writers are required');
+  }
+  const environment = required('AZURE_ENV_NAME');
+  if (!/^[a-z0-9][a-z0-9-]{1,18}[a-z0-9]$/.test(environment)) {
+    throw new DeploymentGateError('Use a 3-20 character lowercase azd environment name');
+  }
+  const subscription = await verify_deployment_identity(environ, call);
   const vault = z.object({ properties: z.object({
     enableRbacAuthorization: z.boolean(), enabledForTemplateDeployment: z.boolean(),
   }) }).parse(await call(subscription, 'keyvault', 'show',
@@ -302,10 +322,7 @@ export async function run(action: string, options: {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   run(process.argv[2] ?? '').catch((error: unknown) => {
-    const detail = error instanceof DeploymentGateError ? error.message
-      : error instanceof z.ZodError ? `Azure inventory response failed validation: ${inventory_diagnostic(error)}; see the last logged Azure operation`
-        : 'Unexpected deployment gate failure; raw error details withheld';
-    console.error(`ERROR: Deployment gate failed: ${detail}`);
+    console.error(`ERROR: Deployment gate failed: ${deployment_error_detail(error)}`);
     process.exitCode = 1;
   });
 }
