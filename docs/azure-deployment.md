@@ -256,6 +256,16 @@ running replica, missing or invalid inventory, wrong identity, unavailable
 secret or CLI error blocks the command. A successful stop request is never
 sufficient.
 
+The gate logs recognized Azure command prefixes without arguments or resource
+URLs. Failures report the specific safe validation message, a missing setting's
+name, or the failed command with its exit status and a recognized Azure error
+code when available. Invalid inventory responses report known schema field
+names and issue codes. Raw CLI stdout/stderr, response values and user-defined
+inventory keys are not logged. Use the last operation line to identify which
+lookup failed; do not bypass the gate or dump credentials to diagnose it.
+After publishing a diagnostics fix, dispatch a new preview against the updated
+branch. Rerunning an old Actions run reuses that run's original commit.
+
 The authorized workflow's `quiesce` action stops only the single app tagged
 for this environment's `web` service and polls for zero replicas, timing out
 after five minutes. Additional or unrelated apps in the group block the run

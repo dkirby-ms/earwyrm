@@ -20,19 +20,71 @@ type Resource = z.infer<typeof Resource>;
 export type Azure = (subscription: string, ...arguments_: string[]) => Promise<unknown>;
 type Environment = Readonly<Record<string, string | undefined>>;
 
+/** Contains only fixed diagnostic text and known setting names, safe for workflow logs. */
+class DeploymentGateError extends Error {}
+
+const AZURE_OPERATIONS = new Set([
+  'account show', 'keyvault show', 'keyvault secret show', 'group exists',
+  'containerapp list', 'containerapp show', 'containerapp revision list', 'containerapp replica list',
+  'postgres flexible-server list', 'postgres flexible-server show', 'rest',
+]);
+const AZURE_ERROR_CODES = new Set([
+  'AuthorizationFailed', 'AuthenticationFailed', 'Forbidden', 'ForbiddenByRbac', 'ForbiddenByFirewall',
+  'SecretNotFound', 'VaultNotFound', 'ResourceNotFound', 'ResourceGroupNotFound',
+  'SubscriptionNotFound', 'ExpiredAuthenticationToken',
+]);
+const INVENTORY_FIELDS = new Set([
+  'name', 'id', 'tags', 'tenantId', 'user', 'type', 'properties',
+  'enableRbacAuthorization', 'enabledForTemplateDeployment', 'state', 'network', 'publicNetworkAccess',
+  'environmentId', 'provisioningState', 'vnetConfiguration', 'infrastructureSubnetId', 'nextLink', 'value',
+  'subnet', 'privateLinkServiceConnections', 'privateLinkServiceId', 'groupIds',
+  'privateLinkServiceConnectionState', 'status', 'privateDnsZoneConfigs', 'privateDnsZoneId',
+  'virtualNetworkLinkState', 'virtualNetwork', 'runningStatus',
+]);
+
+/** Logs only recognized command prefixes, never flags, values or REST URLs. */
+function azure_operation(arguments_: readonly string[]): string {
+  const flag_index = arguments_.findIndex((argument) => argument.startsWith('-'));
+  const command = arguments_.slice(0, flag_index === -1 ? arguments_.length : flag_index).join(' ');
+  return AZURE_OPERATIONS.has(command) ? `az ${command}` : 'Azure CLI operation';
+}
+
+/** Reports schema fields and issue codes, never response values or user-defined keys. */
+function inventory_diagnostic(error: z.ZodError): string {
+  return error.issues.slice(0, 3).map((issue) => {
+    const path = issue.path.map((part) => typeof part === 'number' ? '[]'
+      : typeof part === 'string' && INVENTORY_FIELDS.has(part) ? part : '[redacted-key]').join('.');
+    return `${path || 'response'} (${issue.code})`;
+  }).join(', ');
+}
+
 /** Executes against an explicit subscription; never forwards CLI stderr or credentials. */
 export const azure: Azure = async (subscription, ...arguments_) => {
+  const operation = azure_operation(arguments_);
+  console.error(`INFO: Azure operation: ${operation}`);
   let stdout: string;
   try {
     ({ stdout } = await execute('az', [
       ...arguments_, '--subscription', subscription, '--output', 'json',
     ], { timeout: 120_000, maxBuffer: 8 * 1024 * 1024 }));
   } catch (error) {
-    if (error instanceof Error) throw new Error('Azure CLI operation failed; inspect approved workflow diagnostics');
-    throw error;
+    const diagnostics: string[] = [];
+    if (typeof error === 'object' && error !== null) {
+      if ('code' in error) {
+        if (typeof error.code === 'number' && Number.isInteger(error.code) && error.code >= 0 && error.code <= 255) {
+          diagnostics.push(`exit ${error.code}`);
+        } else if (error.code === 'ENOENT') diagnostics.push('Azure CLI executable not found');
+      }
+      if ('stderr' in error && typeof error.stderr === 'string') {
+        const code = /^\s*ERROR:\s*\(([A-Za-z]+)\)/m.exec(error.stderr)?.[1];
+        if (code && AZURE_ERROR_CODES.has(code)) diagnostics.push(code);
+      }
+    }
+    throw new DeploymentGateError(`${operation} failed${diagnostics.length ? ` (${diagnostics.join('; ')})` : ''}; raw CLI output withheld`);
   }
   if (arguments_[0] === 'rest' && !stdout.trim()) return null;
-  return JSON.parse(stdout) as unknown;
+  try { return JSON.parse(stdout) as unknown; }
+  catch { throw new DeploymentGateError(`${operation} returned invalid JSON; raw CLI output withheld`); }
 };
 
 /** Validates workflow consent and inventories only the configured isolated deployment. */
@@ -45,25 +97,25 @@ export async function deployment_target(
     'AZURE_PRINCIPAL_ID', 'AZURE_ENV_NAME', ...POSTGRES_REQUIRED_SETTINGS,
   ]) {
     if (!environ[name]) {
-      throw new Error(`Required deployment setting is missing: ${name}`);
+      throw new DeploymentGateError(`Required deployment setting is missing: ${name}`);
     }
   }
   const required = (name: string): string => {
     const value = environ[name];
-    if (value === undefined) throw new Error(`Required deployment setting is missing: ${name}`);
+    if (value === undefined) throw new DeploymentGateError(`Required deployment setting is missing: ${name}`);
     return value;
   };
   if (environ.GITHUB_ACTIONS !== 'true' || !environ.ACTIONS_ID_TOKEN_REQUEST_URL ||
     !environ.ACTIONS_ID_TOKEN_REQUEST_TOKEN) {
-    throw new Error('Deployment requires the GitHub OIDC workflow');
+    throw new DeploymentGateError('Deployment requires the GitHub OIDC workflow');
   }
   if (environ.EARWYRM_MAINTENANCE_APPROVED !== 'true' ||
     environ.EARWYRM_OTHER_WRITERS_STOPPED !== 'true') {
-    throw new Error('Approved maintenance and stopped external writers are required');
+    throw new DeploymentGateError('Approved maintenance and stopped external writers are required');
   }
   const environment = required('AZURE_ENV_NAME');
   if (!/^[a-z0-9][a-z0-9-]{1,18}[a-z0-9]$/.test(environment)) {
-    throw new Error('Use a 3-20 character lowercase azd environment name');
+    throw new DeploymentGateError('Use a 3-20 character lowercase azd environment name');
   }
   const subscription = required('AZURE_SUBSCRIPTION_ID');
   const account = z.object({
@@ -74,36 +126,37 @@ export async function deployment_target(
     account.tenantId.toLowerCase() !== required('AZURE_TENANT_ID').toLowerCase() ||
     account.user.type !== 'servicePrincipal' ||
     account.user.name.toLowerCase() !== required('AZURE_CLIENT_ID').toLowerCase()) {
-    throw new Error('Azure CLI account is not the configured deployment service principal');
+    throw new DeploymentGateError('Azure CLI account is not the configured deployment service principal');
   }
   const vault = z.object({ properties: z.object({
     enableRbacAuthorization: z.boolean(), enabledForTemplateDeployment: z.boolean(),
   }) }).parse(await call(subscription, 'keyvault', 'show',
     '--name', required('AZURE_KEY_VAULT_NAME'),
     '--resource-group', required('AZURE_KEY_VAULT_RESOURCE_GROUP')));
-  if (!vault.properties.enableRbacAuthorization || !vault.properties.enabledForTemplateDeployment) {
-    throw new Error('The existing Key Vault must use RBAC and allow secure template deployment');
+  if (!vault.properties.enableRbacAuthorization) throw new DeploymentGateError('Key Vault must use Azure RBAC (enableRbacAuthorization=true)');
+  if (!vault.properties.enabledForTemplateDeployment) {
+    throw new DeploymentGateError('Key Vault must allow secure template deployment (enabledForTemplateDeployment=true)');
   }
   const secret_id = z.string().url().parse(await call(subscription, 'keyvault', 'secret', 'show',
     '--vault-name', required('AZURE_KEY_VAULT_NAME'),
     '--name', required('AZURE_POSTGRESQL_PASSWORD_SECRET_NAME'), '--query', 'id'));
   if (!/\/[0-9a-fA-F]{32}\/?$/.test(secret_id)) {
-    throw new Error('The latest PostgreSQL Key Vault secret must have a valid versioned ID');
+    throw new DeploymentGateError('The latest PostgreSQL Key Vault secret must have a valid versioned ID');
   }
   const group = `rg-${environment}`;
   const exists = await call(subscription, 'group', 'exists', '--name', group);
   if (exists === false) return [subscription, group, null];
-  if (exists !== true) throw new Error('Invalid resource group inventory response');
+  if (exists !== true) throw new DeploymentGateError('Invalid resource group inventory response');
   const apps = z.array(Resource).parse(await call(subscription, 'containerapp', 'list', '--resource-group', group));
   if (!apps.length) return [subscription, group, null];
   if (apps.length !== 1 || apps[0].tags['azd-env-name'] !== environment ||
     apps[0].tags['azd-service-name'] !== 'web') {
-    throw new Error('Target must contain only the isolated, tagged web app');
+    throw new DeploymentGateError('Target must contain only the isolated, tagged web app');
   }
   const app = apps[0];
   const expected_id = `/subscriptions/${subscription}/resourceGroups/${group}/providers/Microsoft.App/containerApps/${app.name}`;
   if (app.id.toLowerCase() !== expected_id.toLowerCase()) {
-    throw new Error('Container app inventory does not match the selected target');
+    throw new DeploymentGateError('Container app inventory does not match the selected target');
   }
   return [subscription, group, app];
 }
@@ -130,11 +183,11 @@ export async function verify_private_network(
   const servers = z.array(Resource).parse(await call(subscription,
     'postgres', 'flexible-server', 'list', '--resource-group', group));
   const matching = servers.filter((server) => server.tags['azd-env-name'] === environment);
-  if (matching.length !== 1) throw new Error('PostgreSQL server target is absent or ambiguous');
+  if (matching.length !== 1) throw new DeploymentGateError('PostgreSQL server target is absent or ambiguous');
   const server = matching[0];
   const expected_id = `/subscriptions/${subscription}/resourceGroups/${group}/providers/Microsoft.DBforPostgreSQL/flexibleServers/${server.name}`;
   if (server.id.toLowerCase() !== expected_id.toLowerCase()) {
-    throw new Error('PostgreSQL server inventory does not match the selected target');
+    throw new DeploymentGateError('PostgreSQL server inventory does not match the selected target');
   }
   const details = Resource.extend({
     state: z.string(), network: z.object({ publicNetworkAccess: z.literal('Disabled') }),
@@ -142,7 +195,7 @@ export async function verify_private_network(
     'postgres', 'flexible-server', 'show', '--resource-group', group, '--name', server.name));
   if (details.id.toLowerCase() !== expected_id.toLowerCase() ||
     details.tags['azd-env-name'] !== environment || details.state !== 'Ready') {
-    throw new Error('PostgreSQL server details or readiness do not match the selected target');
+    throw new DeploymentGateError('PostgreSQL server details or readiness do not match the selected target');
   }
   const group_id = `/subscriptions/${subscription}/resourceGroups/${group}`;
   const read = (id: string, version: string) => call(subscription, 'rest', '--method', 'get', '--url',
@@ -154,7 +207,7 @@ export async function verify_private_network(
   const environment_name = environment_id.split('/').at(-1);
   if (app_details.id.toLowerCase() !== app.id.toLowerCase() || !environment_name ||
     environment_id.toLowerCase() !== `${group_id}/providers/Microsoft.App/managedEnvironments/${environment_name}`.toLowerCase()) {
-    throw new Error('Container app environment does not match the selected target');
+    throw new DeploymentGateError('Container app environment does not match the selected target');
   }
   const managed_environment = Resource.extend({ properties: z.object({
     provisioningState: z.literal('Succeeded'),
@@ -166,7 +219,7 @@ export async function verify_private_network(
   if (managed_environment.id.toLowerCase() !== environment_id.toLowerCase() || !subnet_name ||
     subnet_name.includes('/') || extra.length || !vnet_name ||
     vnet_id !== `${group_id}/providers/Microsoft.Network/virtualNetworks/${vnet_name}`.toLowerCase()) {
-    throw new Error('Container Apps must use a subnet in the selected private virtual network');
+    throw new DeploymentGateError('Container Apps must use a subnet in the selected private virtual network');
   }
   const endpoints = z.object({ nextLink: z.null().optional(), value: z.array(Resource.extend({ properties: z.object({
     provisioningState: z.literal('Succeeded'),
@@ -180,14 +233,14 @@ export async function verify_private_network(
     endpoint.tags['azd-env-name'] === environment && endpoint.properties.privateLinkServiceConnections.some(({ properties }) =>
       properties.privateLinkServiceId.toLowerCase() === server.id.toLowerCase() &&
       properties.groupIds.includes('postgresqlServer') && properties.privateLinkServiceConnectionState.status === 'Approved'));
-  if (matching_endpoints.length !== 1) throw new Error('PostgreSQL private endpoint is absent, unapproved or ambiguous');
+  if (matching_endpoints.length !== 1) throw new DeploymentGateError('PostgreSQL private endpoint is absent, unapproved or ambiguous');
   const endpoint = matching_endpoints[0];
   const endpoint_subnet = endpoint.properties.subnet.id.toLowerCase();
   const endpoint_subnet_name = endpoint_subnet.slice(`${vnet_id}/subnets/`.length);
   if (endpoint.id.toLowerCase() !== `${group_id}/providers/Microsoft.Network/privateEndpoints/${endpoint.name}`.toLowerCase() ||
     !endpoint_subnet.startsWith(`${vnet_id}/subnets/`) || !endpoint_subnet_name || endpoint_subnet_name.includes('/') ||
     endpoint_subnet === subnet_id) {
-    throw new Error('PostgreSQL private endpoint must use a separate subnet in the Container Apps virtual network');
+    throw new DeploymentGateError('PostgreSQL private endpoint must use a separate subnet in the Container Apps virtual network');
   }
   const zone_id = `${group_id}/providers/Microsoft.Network/privateDnsZones/privatelink.postgres.database.azure.com`;
   const zone_groups = z.object({ nextLink: z.null().optional(), value: z.array(z.object({ properties: z.object({
@@ -196,14 +249,14 @@ export async function verify_private_network(
   }) })) }).parse(await read(`${endpoint.id}/privateDnsZoneGroups`, '2026-03-01')).value;
   if (!zone_groups.some(({ properties }) => properties.privateDnsZoneConfigs.some(({ properties: config }) =>
     config.privateDnsZoneId.toLowerCase() === zone_id.toLowerCase()))) {
-    throw new Error('PostgreSQL private endpoint is missing its private DNS zone group');
+    throw new DeploymentGateError('PostgreSQL private endpoint is missing its private DNS zone group');
   }
   const links = z.object({ nextLink: z.null().optional(), value: z.array(z.object({ properties: z.object({
     provisioningState: z.literal('Succeeded'), virtualNetworkLinkState: z.literal('Completed'),
     virtualNetwork: z.object({ id: z.string() }),
   }) })) }).parse(await read(`${zone_id}/virtualNetworkLinks`, '2024-06-01')).value;
   if (!links.some(({ properties }) => properties.virtualNetwork.id.toLowerCase() === vnet_id)) {
-    throw new Error('PostgreSQL private DNS zone is not linked to the Container Apps virtual network');
+    throw new DeploymentGateError('PostgreSQL private DNS zone is not linked to the Container Apps virtual network');
   }
   console.error('INFO: Verified private PostgreSQL endpoint, DNS linkage and disabled public access');
 }
@@ -212,17 +265,17 @@ export async function verify_private_network(
 export async function run(action: string, options: {
   environ?: Environment; azure?: Azure; now?: () => number; sleep?: (milliseconds: number) => Promise<unknown>;
 } = {}): Promise<void> {
-  if (!['verify', 'quiesce', 'resume', 'verify-network'].includes(action)) throw new Error('Invalid deployment action');
+  if (!['verify', 'quiesce', 'resume', 'verify-network'].includes(action)) throw new DeploymentGateError('Invalid deployment action');
   const environ = options.environ ?? process.env;
   const call = options.azure ?? azure;
   const [subscription, group, app] = await deployment_target(environ, call);
   if (action === 'verify-network' || action === 'resume') {
-    if (!app) throw new Error('Private networking requires a provisioned container app');
+    if (!app) throw new DeploymentGateError('Private networking requires a provisioned container app');
     await verify_private_network(subscription, group, app, environ, call);
     if (action === 'verify-network') return;
   }
   if (!app) {
-    if (action === 'resume') throw new Error('Cannot resume an app that has not been provisioned');
+    if (action === 'resume') throw new DeploymentGateError('Cannot resume an app that has not been provisioned');
     console.error('INFO: No existing web app in the selected isolated target');
     return;
   }
@@ -239,17 +292,20 @@ export async function run(action: string, options: {
       .properties.runningStatus;
     const count = await replica_count(subscription, group, app.name, call);
     if (action === 'resume') {
-      if (count > 1) throw new Error('Multiple replicas detected; stop writers before recovery');
+      if (count > 1) throw new DeploymentGateError('Multiple replicas detected; stop writers before recovery');
       if (count === 1 && state === 'Running') return;
     } else if (count === 0 && state === 'Stopped') return;
-    if (action === 'verify' || now() >= deadline) throw new Error('Writer exclusion could not be verified');
+    if (action === 'verify' || now() >= deadline) throw new DeploymentGateError('Writer exclusion could not be verified');
     await (options.sleep ?? sleep)(5000);
   }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  run(process.argv[2] ?? '').catch(() => {
-    console.error('ERROR: Deployment gate failed; verify approved workflow settings and inventory');
+  run(process.argv[2] ?? '').catch((error: unknown) => {
+    const detail = error instanceof DeploymentGateError ? error.message
+      : error instanceof z.ZodError ? `Azure inventory response failed validation: ${inventory_diagnostic(error)}; see the last logged Azure operation`
+        : 'Unexpected deployment gate failure; raw error details withheld';
+    console.error(`ERROR: Deployment gate failed: ${detail}`);
     process.exitCode = 1;
   });
 }

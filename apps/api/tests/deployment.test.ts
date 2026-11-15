@@ -1,4 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { delimiter, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { run, type Azure } from '../../../scripts/deployment_gate.js';
 
 const subscription = 'subscription';
@@ -87,7 +92,97 @@ function fixture() {
   return { environ, calls, azure, network };
 }
 
+/** Runs the real CLI with a temporary fake az executable; it cannot reach Azure. */
+function run_cli(environ: Record<string, string>, overrides: Record<string, {
+  stdout?: string; stderr?: string; status?: number;
+}> = {}) {
+  const directory = mkdtempSync(join(tmpdir(), 'earwyrm-deployment-cli-'));
+  const responses = {
+    'account show': { stdout: JSON.stringify({
+      id: subscription, tenantId: 'tenant', user: { type: 'servicePrincipal', name: 'client' },
+    }) },
+    'keyvault show': { stdout: JSON.stringify({
+      properties: { enableRbacAuthorization: true, enabledForTemplateDeployment: true },
+    }) },
+    'keyvault secret show': { stdout: JSON.stringify(`https://vault.vault.azure.net/secrets/password/${'a'.repeat(32)}`) },
+    'group exists': { stdout: 'false' },
+    ...overrides,
+  };
+  try {
+    writeFileSync(join(directory, 'az'), `#!${process.execPath}
+const args = process.argv.slice(2);
+const flag = args.findIndex((argument) => argument.startsWith('-'));
+const command = args.slice(0, flag === -1 ? args.length : flag).join(' ');
+const response = ${JSON.stringify(responses)}[command];
+if (!response) { process.stderr.write('Unexpected fake Azure command'); process.exit(99); }
+process.stdout.write(response.stdout ?? '');
+process.stderr.write(response.stderr ?? '');
+process.exitCode = response.status ?? 0;
+`, { mode: 0o700 });
+    const result = spawnSync(process.execPath, ['--import', 'tsx', 'scripts/deployment_gate.ts', 'quiesce'], {
+      cwd: fileURLToPath(new URL('../../../', import.meta.url)),
+      env: { ...environ, HOME: directory, PATH: `${directory}${delimiter}${process.env.PATH ?? ''}` },
+      encoding: 'utf8', timeout: 15_000, maxBuffer: 1024 * 1024,
+    });
+    expect(result.error).toBeUndefined();
+    return result;
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+}
+
 describe('deployment maintenance gate without Azure access', () => {
+  it('prints the missing setting name and exits nonzero before invoking Azure', () => {
+    const test = fixture();
+    delete test.environ.AZURE_KEY_VAULT_NAME;
+    const result = run_cli(test.environ);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('Required deployment setting is missing: AZURE_KEY_VAULT_NAME');
+    expect(result.stderr).not.toContain('INFO: Azure operation:');
+  });
+  it('prints the failed Azure command, exit code and recognized error code without raw output', () => {
+    const result = run_cli(fixture().environ, {
+      'keyvault show': {
+        status: 3, stdout: 'do-not-log-this-stdout',
+        stderr: 'ERROR: (Forbidden) do-not-log-this-credential',
+      },
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('az keyvault show failed (exit 3; Forbidden)');
+    expect(result.stderr).not.toContain('do-not-log-this');
+    expect(result.stderr).not.toContain('--subscription');
+    expect(result.stderr).not.toContain('--resource-group');
+  });
+  it('does not expose malformed Azure JSON in diagnostics', () => {
+    const result = run_cli(fixture().environ, { 'account show': { stdout: '{"token":"do-not-log-this' } });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('az account show returned invalid JSON');
+    expect(result.stderr).not.toContain('do-not-log-this');
+  });
+  it('identifies an invalid response field without logging its value', () => {
+    const result = run_cli(fixture().environ, {
+      'keyvault show': { stdout: JSON.stringify({
+        properties: { enableRbacAuthorization: true, enabledForTemplateDeployment: 'do-not-log-this' },
+      }) },
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('INFO: Azure operation: az keyvault show');
+    expect(result.stderr).toContain('properties.enabledForTemplateDeployment (invalid_type)');
+    expect(result.stderr).not.toContain('do-not-log-this');
+  });
+  it('does not expose user-defined inventory keys in schema diagnostics', () => {
+    const result = run_cli(fixture().environ, {
+      'group exists': { stdout: 'true' },
+      'containerapp list': { stdout: JSON.stringify([{ ...app, tags: { 'do-not-log-this-key': 123 } }]) },
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('tags.[redacted-key]');
+    expect(result.stderr).not.toContain('do-not-log-this');
+  });
+  it('keeps successful fresh-target preflight working through the actual CLI', () => {
+    const result = run_cli(fixture().environ);
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain('No existing web app in the selected isolated target');
+    expect(result.stderr).not.toContain('ERROR:');
+  });
   it.each([
     'GITHUB_ACTIONS', 'ACTIONS_ID_TOKEN_REQUEST_TOKEN',
     'EARWYRM_MAINTENANCE_APPROVED', 'EARWYRM_OTHER_WRITERS_STOPPED',
