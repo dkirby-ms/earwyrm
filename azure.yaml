@@ -6,12 +6,12 @@ infra:
 hooks:
   preprovision:
     shell: sh
-    run: uv run --no-sync python scripts/deployment_gate.py verify
+    run: npm run deployment-gate -- verify
     continueOnError: false
     interactive: false
   predeploy:
     shell: sh
-    run: uv run --no-sync python scripts/deployment_gate.py verify
+    run: npm run deployment-gate -- verify
     continueOnError: false
     interactive: false
 services:

@@ -5,7 +5,7 @@ description: Render original MIDI and synthesized instruments with paired Azure 
 
 ## What this produces
 
-The local Python renderer uses only original note patterns, harmonic oscillators,
+The local TypeScript renderer uses only original note patterns, harmonic oscillators,
 a synthesized kick and seeded noise. It loads no samples or SoundFonts and has
 no cloning, custom voice or artist-imitation interface.
 
@@ -26,7 +26,11 @@ Each new render now chooses a fresh recorded composition seed, rather than
 rotating or transposing a fixed tune. The hook's intervals and rhythm, chord
 progression, voicings and contrasting section vary. The vocal carrier develops
 the same musical identity. `composition.json` retains the seed and bounded
-similarity report; identical seeds remain reproducible.
+similarity report; identical seeds remain reproducible within this TypeScript
+implementation. The native generator and DSP do not reproduce the former
+NumPy random stream or historical waveform bytes. Existing artifacts and
+stored scores retain their provenance; do not compare a newly rendered seed
+with a historical audio digest as though it were the same renderer version.
 
 The CLI stores melody history in `renders/.melody-history` (under the selected
 output root); the web app uses its private `melody` store. Both screen against
@@ -37,22 +41,22 @@ Deleting a store discards that store's history. See the
 
 ## Install and render without Azure
 
-From the repository root, with Python 3.11+ and
-[uv](https://docs.astral.sh/uv/) installed:
+From the repository root, with Node.js 24, npm and Linux util-linux `flock`
+installed (used for private melody-history serialization):
 
 ```bash
-uv sync --locked
-uv run python -m audio_poc --instrumental-only
+npm ci
+npm run render -- --instrumental-only
 ```
 
 The log identifies the run directory. Open each brief's `instrumental.wav` to
 hear the bed and `score.mid` to inspect its notes. Generated files and the local
-virtual environment are ignored by Git.
+build outputs are ignored by Git.
 
 ```bash
-uv run pytest -q
-uv run ruff check audio_poc tests
-uv run ruff format --check audio_poc tests
+npm run typecheck
+npm test
+npm run build
 ```
 
 Tests generate their own tone-only speech substitute. Those test outputs are
@@ -104,7 +108,7 @@ Relevant sources:
 After checking the evidence, explicitly authorize a budget in the command:
 
 ```bash
-uv run python -m audio_poc --azure \
+npm run render -- --azure \
   --evidence renders/speech-evidence.json \
   --max-cost-usd 0.05
 ```
@@ -173,14 +177,13 @@ never sets the output or overall POC to Pass.
 
 ## Software and origin evidence
 
-The MIDI and WAV writers use Python's standard library. DSP uses NumPy and
-SciPy; Speech uses Microsoft's SDK. These are software tools, not licensed
+The MIDI and WAV writers, synthesis and DSP are native TypeScript using Node.js
+and typed arrays; Speech uses Microsoft's official JavaScript SDK. These are
+software tools, not licensed
 musical samples. Dependency versions and hashes are pinned by the repository's
-`uv.lock`; retain dependency license notices if redistributing the software.
+`package-lock.json`; retain dependency license notices if redistributing the software.
 
-* [Python license](https://docs.python.org/3/license.html)
-* [NumPy BSD license](https://numpy.org/doc/stable/license.html)
-* [SciPy license](https://github.com/scipy/scipy/blob/main/LICENSE.txt)
+* [Node.js license](https://github.com/nodejs/node/blob/main/LICENSE)
 * [Speech SDK license terms](https://aka.ms/csspeech/license)
 
 The repository does not yet grant a blanket distribution license for generated

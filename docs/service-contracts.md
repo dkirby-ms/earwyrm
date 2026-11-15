@@ -5,32 +5,33 @@ description: Canonical creative schemas, render envelopes, quality, provenance a
 
 ## Canonical definitions
 
-[audio_poc/contracts.py](../audio_poc/contracts.py) composes the platform schema
-catalog from the existing Pydantic definitions. Consumers can fetch JSON Schema
+[apps/api/src/contracts.ts](../apps/api/src/contracts.ts) composes the platform schema
+catalog from the canonical Zod definitions. Consumers can fetch JSON Schema
 from an authenticated scaffold's `/contracts` route or generate it locally:
 
 ```bash
-uv run --locked python -c 'import json; from audio_poc.contracts import ServiceContracts; print(json.dumps(ServiceContracts.model_json_schema(), indent=2))'
+npm ci
+npm run contracts
 ```
 
 Do not maintain a second handwritten JSON schema. The catalog is a definition
-bundle, not the HTTP body expected by every service. Existing local POC imports
-and request shapes are preserved.
+bundle, not the HTTP body expected by every service. Existing local POC request
+shapes and snake_case wire fields are preserved.
 
 | Contract | Canonical module | Purpose |
 |---|---|---|
-| `AdvertiserBrief`, `LyricRequest`, `LyricResult` | [lyrics.py](../audio_poc/lyrics.py) | Synthetic briefs, constrained lyric generation and checks |
-| `CompositionRequest`, `SyllableNote` | [melody.py](../audio_poc/melody.py) | Deterministic arrangement input and syllable timing |
-| `CompositionResult`, `Component` | [melody_service.py](../audio_poc/melody_service.py) | Composition output and audio component provenance |
-| `VersionIdentity`, `ServiceError`, `BlobArtifact` | [contracts.py](../audio_poc/contracts.py) | Candidate identity, safe errors and authenticated artifact references |
-| `RenderMessage`, `JobRecord` | [contracts.py](../audio_poc/contracts.py) | Queue envelope and separate durable status |
-| `QualityCheck`, `QualityReport` | [contracts.py](../audio_poc/contracts.py) | Measurements, explicit bounds and fail/pending/pass aggregation |
-| `RenderManifest`, `ApprovalRecord` | [contracts.py](../audio_poc/contracts.py) | Provenance, disclosure and version-bound human decisions |
+| `AdvertiserBrief`, `LyricRequest`, `LyricResult` | [lyrics.ts](../apps/api/src/lyrics.ts) | Synthetic briefs, constrained lyric generation and checks |
+| `CompositionRequest`, `SyllableNote` | [melody.ts](../apps/api/src/melody.ts) | Deterministic arrangement input and syllable timing |
+| `CompositionResult`, `Component` | [melody_service.ts](../apps/api/src/melody_service.ts) | Composition output and audio component provenance |
+| `VersionIdentity`, `ServiceError`, `BlobArtifact` | [contracts.ts](../apps/api/src/contracts.ts) | Candidate identity, safe errors and authenticated artifact references |
+| `RenderMessage`, `JobRecord` | [contracts.ts](../apps/api/src/contracts.ts) | Queue envelope and separate durable status |
+| `QualityCheck`, `QualityReport` | [contracts.ts](../apps/api/src/contracts.ts) | Measurements, explicit bounds and fail/pending/pass aggregation |
+| `RenderManifest`, `ApprovalRecord` | [contracts.ts](../apps/api/src/contracts.ts) | Provenance, disclosure and version-bound human decisions |
 
 Platform records carry `schema_version: 1` where applicable. Existing creative
 contracts remain their canonical shapes rather than being copied into new
 wrappers. Unknown fields and non-finite numeric values are rejected through the
-existing shared `Contract` configuration.
+canonical strict Zod schemas.
 
 ## Identity, queue and status
 
@@ -83,7 +84,7 @@ schemas do not authenticate the actor or grant approval privileges.
 
 ## Runtime and integration boundaries
 
-[platform_service.py](../audio_poc/platform_service.py) starts `web`, `lyric` and
+[platform_service.ts](../apps/api/src/platform_service.ts) starts `web`, `lyric` and
 `melody` roles on port 8080, bound to loopback locally. The container binds to
 all interfaces; Azure ingress supplies HTTPS and Entra authentication.
 

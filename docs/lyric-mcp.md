@@ -18,13 +18,17 @@ the workflow must supply syllable text and timing windows separately.
 ## Setup and transport
 
 ```bash
-uv sync --locked
+npm ci
 az login
 export LYRIC_FOUNDRY_ENDPOINT="https://YOUR-RESOURCE.openai.azure.com"
 export LYRIC_MODEL_DEPLOYMENT="YOUR-STRUCTURED-OUTPUT-DEPLOYMENT"
 export LYRIC_CONTENT_SAFETY_ENDPOINT="https://YOUR-SAFETY.cognitiveservices.azure.com"
-uv run python -m audio_poc.lyric_mcp
+npm run lyric-mcp
 ```
+
+For an MCP client, first run `npm run build`, then configure command `node`
+with argument `apps/api/dist/lyric_mcp.js` and this repository as its working
+directory. This avoids npm lifecycle banners on the stdio protocol stream.
 
 Endpoints must be HTTPS resource roots, without paths, credentials, query strings
 or fragments. The Foundry adapter uses Azure OpenAI's `/openai/v1/chat/completions`
@@ -41,7 +45,7 @@ remain separate platform work.
 For local Streamable HTTP:
 
 ```bash
-uv run python -m audio_poc.lyric_mcp --transport streamable-http --port 8002
+npm run lyric-mcp -- --transport streamable-http --port 8002
 ```
 
 The endpoint is `http://127.0.0.1:8002/mcp`. Do not expose this unauthenticated
@@ -184,8 +188,8 @@ clearance are not established by local mocked tests.
 ## Validation and observability
 
 ```bash
-uv run pytest -q tests/test_lyrics.py tests/test_lyric_cloud.py tests/test_lyric_service.py tests/test_lyric_mcp.py
-uv run ruff check audio_poc/lyric*.py tests/test_lyric*.py tests/conftest.py
+npm test
+npm run typecheck
 ```
 
 OpenTelemetry emits a server span for `create.lyrics` and client spans for HTTP

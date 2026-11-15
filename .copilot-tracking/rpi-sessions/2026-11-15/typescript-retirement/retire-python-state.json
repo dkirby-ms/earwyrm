@@ -1,0 +1,40 @@
+{
+  "task_id": "retire-python",
+  "task_slug": "retire-python",
+  "session_name": "TypeScript retirement",
+  "parent_task": null,
+  "child_tasks": [],
+  "mode": "automatic",
+  "active_phase": "Follow-up",
+  "status": "completed",
+  "session_status": "stopped",
+  "artifact_paths": {
+    "research": ".copilot-tracking/research/2026-11-15/retire-python-research.md",
+    "plan": ".copilot-tracking/plans/2026-11-15/retire-python-plan.md",
+    "critique": ".copilot-tracking/reviews/plans/2026-11-15/retire-python-plan-critique.md",
+    "changes": ".copilot-tracking/changes/2026-11-15/retire-python-changes.md",
+    "review": ".copilot-tracking/reviews/logs/2026-11-15/retire-python-review.md"
+  },
+  "documents": {
+    "research": [".copilot-tracking/research/2026-11-15/retire-python-research.md"],
+    "plan": [".copilot-tracking/plans/2026-11-15/retire-python-plan.md"],
+    "critique": [".copilot-tracking/reviews/plans/2026-11-15/retire-python-plan-critique.md"],
+    "changes": [".copilot-tracking/changes/2026-11-15/retire-python-changes.md"],
+    "review": [".copilot-tracking/reviews/logs/2026-11-15/retire-python-review.md"]
+  },
+  "confirmed_decisions": [
+    {"decision":"Automatic session scope","status":"current","evidence":"User requests full Python retirement, including APIs and MCP, preserving existing Vite/TypeScript frontend and behavior. Root task retire-python. Local source, tests, build, deployment configuration and related documentation writes authorized; no deployment, push, data destruction or unrelated changes."},
+    {"decision":"Automatic progression boundary","status":"through-review","evidence":"User selected Handle it end to end."},
+    {"decision":"Research decision participation","status":"agent-owned","evidence":"Handle it end to end."},
+    {"decision":"Planning decision participation","status":"agent-owned","evidence":"Handle it end to end."},
+    {"decision":"Review decision participation","status":"agent-owned","evidence":"Handle it end to end."},
+    {"decision":"Follow-up decision participation","status":"agent-owned","evidence":"Handle it end to end."},
+    {"decision":"Planning critique","status":"standard","evidence":"First-task default."},
+    {"decision":"Review step","status":"run","evidence":"First-task default."},
+    {"decision":"Canvas","status":"current","evidence":"instanceId rpi-retire-python; handle B9HK; extensionId plugin:hve-core:rpi-workflow."},
+    {"decision":"Historical seed precision","status":"confirmed","evidence":"User chose Support oversized seeds as lossless decimal strings (recommended). Safe seeds remain numbers; historical oversized 63-bit seeds use exact decimal strings without rounding or source-data mutation."}
+  ],
+  "blockers": [],
+  "next_action": {"phase":"Follow-up","action":"Completed and accepted; no user action required. Review execution Complete, outcome Conformant; no required follow-ups remain."},
+  "prioritized_follow_ups": []
+}

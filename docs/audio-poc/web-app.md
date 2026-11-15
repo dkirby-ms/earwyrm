@@ -10,7 +10,7 @@ ms.topic: how-to
 The web POC adds a same-origin browser workflow to the local audio proof. It
 supports Entra External ID sign-in, synthetic brief selection, offline
 instrumental rendering, comparison, unblinded evaluation, and protected audio
-and evidence downloads. The Python API validates access tokens and delegated
+and evidence downloads. The TypeScript API validates access tokens and delegated
 permissions; Speech credentials, evaluator answers, audio, and evaluation
 records remain server-side.
 
@@ -29,17 +29,40 @@ single queue ownership and similarity-screening limitations.
 
 ## Install and start locally
 
-From the repository root, install the locked dependencies and start Uvicorn on
-loopback:
+The applications are sibling npm workspaces:
 
-```bash
-uv sync --locked
-uv run uvicorn audio_poc.web_app:app --host localhost --port 8000
+```text
+apps/
+  api/          Node API, MCP services, audio tools and backend tests
+  web/          React/Vite client and browser tests
+infra/          Azure infrastructure
+scripts/        Repository-level deployment tooling
 ```
 
-Open `http://localhost:8000/` in your browser. The app uses the browser's
-current origin for its sign-in callback, so use `localhost` rather than an IP
-address. Register `http://localhost:8000/auth-callback.html` in Entra.
+Run npm commands from the repository root. One root lockfile installs both
+workspaces; isolated dependency trees preserve their existing toolchain versions.
+Fixtures and private data remain at their existing repository-root locations.
+
+Run the Express API on loopback with Node.js 24 on Linux from the repository
+root. Private-store serialization requires util-linux `flock`; both container
+images include it:
+
+```bash
+npm ci
+npm run dev:api
+```
+
+In a second terminal, start the React/Vite client:
+
+```bash
+npm run dev:web
+```
+
+Open `http://localhost:8000/` in your browser. Vite serves the client and
+proxies same-origin `/api/` requests to Express on port `8001`. The app uses
+the browser's current origin for its sign-in callback, so use `localhost`
+rather than an IP address. Keep the existing Entra redirect URI
+`http://localhost:8000/auth-callback.html`.
 
 The process reads configuration from its environment. It does not automatically
 load `.env` files. Supply tenant values through your local shell or an approved
@@ -65,7 +88,7 @@ In a shell, load the trusted file before starting the server:
 set -a
 source .env
 set +a
-uv run uvicorn audio_poc.web_app:app --host localhost --port 8000
+npm run dev:api
 ```
 
 `source` executes shell syntax, so load only a file you trust and quote values
@@ -158,10 +181,136 @@ scope URI for each operation. It uses MSAL Browser authorization-code/PKCE
 flow, session storage, and a same-origin redirect URI. Tokens are sent in
 `Authorization` headers, never in URLs.
 
+## Configure hosted PostgreSQL
+
+The Azure Container App receives `EARWYRM_DATABASE_HOST`,
+`EARWYRM_DATABASE_NAME`, and `EARWYRM_DATABASE_USER` as non-secret settings.
+Its `EARWYRM_DATABASE_PASSWORD` comes from a version-pinned Key Vault reference
+through the app's user-assigned managed identity. Do not copy the password into
+GitHub variables, an azd environment, a Bicep parameter file, or command
+arguments. The deployment identity and app identity have separate roles: the
+deployment identity reads the secret for the secure provisioning reference;
+the app identity reads only that secret at its scope.
+
+When all four separate database fields are configured, the application builds
+the PostgreSQL connection string with `sslmode=verify-full` and the system
+certificate bundle. Configuration using `EARWYRM_DATABASE_URL` remains
+available for local tools and tests, but it cannot be mixed with those fields.
+Every URL that is not demonstrably loopback or a Unix socket must explicitly
+set `sslmode=verify-full`. If `sslrootcert` is omitted, the application uses
+the same system certificate bundle as the field-based path; a supplied CA path
+is preserved. A non-TLS mode is allowed only for a clearly local target.
+Unknown or conflicting host settings are treated as remote. Never use
+`sslmode=disable` or `sslmode=require` for a remote database as a substitute
+for certificate and hostname verification.
+
+The mounted `/mnt/earwyrm` directory holds private media and working files;
+PostgreSQL holds structured application records. Keep backups of both the
+database and file data, including the original SQLite sources until cutover is
+separately approved. Follow the [Azure deployment guide](../azure-deployment.md)
+for the approved preview, provision, initialization/import, and deploy sequence,
+network allowlist, and coordinated password rotation. The web app refuses to
+serve a missing or incomplete PostgreSQL initialization; provisioning alone
+does not initialize the application store.
+
+## Authorize application users
+
+Valid External ID authentication and delegated scopes do not automatically
+grant application access. A user who is unknown or disabled is denied access.
+After signing in, use a protected API client to call `/api/identity` with the
+`briefs.read` delegated scope. It returns only the caller's validated issuer and
+subject. Verify those two values with the operator through a trusted channel;
+do not share the access token.
+
+For an operator command against PostgreSQL, set `EARWYRM_DATA_DIR` to an
+existing, empty absolute directory and set `EARWYRM_DATABASE_URL` securely in
+the process environment. Require `sslmode=verify-full` and a trusted CA
+certificate for the server. Initialize an empty target schema before
+bootstrapping the owner:
+
+```bash
+npm run database -- initialize-fresh
+```
+
+This command refuses an existing source or target and does not migrate SQLite
+data. Use it only when the source data directory and PostgreSQL target are both
+empty. It is not a cutover command.
+
+### Import existing SQLite data
+
+Use the import command only after a separately approved maintenance window. Stop
+and verify all app revisions, workers, and other writers before importing. Follow
+the [deployment maintenance](../azure-deployment.md#safe-updates-and-maintenance)
+and [backup and restore](../azure-deployment.md#backup-and-restore) procedures.
+The backup must include the complete stopped data directory, including hidden
+files, SQLite journals, the initialization marker, audio, and melody artifacts.
+
+Set `EARWYRM_DATA_DIR` to the existing absolute data directory and provide
+`EARWYRM_DATABASE_URL` through a secure process environment or secret reference.
+Require `sslmode=verify-full` and a trusted CA certificate. The URL must point
+to an empty PostgreSQL schema. Do not put database credentials in command
+arguments, shell history, or logs. Then run:
+
+```bash
+npm run database -- import-sqlite
+```
+
+The command requires the existing `.earwyrm-initialized` marker and both SQLite
+databases. It refuses to run while a cooperating writer holds the data-directory
+lock, rejects unsupported or inconsistent schemas, and verifies database
+integrity, relationships, JSON records, output manifests, referenced audio, and
+melody artifact hashes. It creates both PostgreSQL schemas, imports the records,
+checks row counts, and writes the PostgreSQL initialization marker last in one
+transaction. A failure rolls back the PostgreSQL schema and data. The SQLite
+databases, marker, and media remain in place; the command never switches the app
+or deletes source data. A second import is refused because the target is no
+longer empty.
+
+Review the import result and verify the PostgreSQL-backed app before an
+independently approved cutover. Keep the SQLite sources and backup. Returning to
+SQLite is safe only before PostgreSQL accepts new writes. After that point, use a
+separately approved reverse migration and reconciliation; do not point the app
+at stale SQLite data.
+
+Start the local web app once to create its local database. With
+`ENTRA_EXPECTED_ISSUER` configured and `EARWYRM_DATA_DIR` set to the existing
+absolute data directory, an operator can initialize the first account:
+
+```bash
+npm run database -- bootstrap-owner \
+  --issuer 'https://verified-issuer.example.invalid' \
+  --subject 'verified-subject'
+```
+
+Replace both example values with the verified caller's values. Bootstrap
+creates exactly one enabled administrator with paid Speech entitlement and
+refuses to run again, even if that account is later disabled. It does not
+enable Speech spending. The issuer is bound to the store; another issuer
+cannot be enrolled into it.
+
+Operators can inspect and explicitly set access:
+
+```bash
+npm run database -- list-users
+npm run database -- set-user \
+  --issuer 'https://verified-issuer.example.invalid' \
+  --subject 'verified-subject' --enabled yes --admin no --paid-speech no
+```
+
+The issuer must match `ENTRA_EXPECTED_ISSUER`. These commands manage only
+application permissions; they do not create or alter External ID accounts.
+Limit operator access to the private host and database.
+
+An enabled administrator can also choose **Manage access** in the signed-in
+workspace, review users, and set enabled, administrator, and paid Speech
+permissions. Verify a new user's issuer and subject before saving. An
+administrator who removes their own access may need an operator to restore it.
+The API checks administrator privileges for every management request.
+
 The vendored `@azure/msal-browser` assets are version `5.29.0`, from the npm
 package's `lib/msal-browser.min.js` and
 `lib/redirect-bridge/msal-redirect-bridge.min.js`, with the package MIT license at
-[`audio_poc/web/vendor/LICENSE`](../../audio_poc/web/vendor/LICENSE). Its
+[`apps/web/public/vendor/LICENSE`](../../apps/web/public/vendor/LICENSE). Its
 SHA-384 checksums are:
 
 ```text
@@ -172,7 +321,7 @@ a0cbfc7c857fa442839e4abb4eaf0eb47d073f3192a7dabf39368660baace44e88045e71eef26d14
 Verify the vendored file with:
 
 ```bash
-sha384sum audio_poc/web/vendor/msal-browser.min.js audio_poc/web/vendor/msal-redirect-bridge.min.js
+sha384sum apps/web/public/vendor/msal-browser.min.js apps/web/public/vendor/msal-redirect-bridge.min.js
 ```
 
 The Content Security Policy serves scripts, styles, and default resources from
@@ -237,7 +386,7 @@ server-side prerequisites.
 The paid path requires:
 
 * `SPEECH_ENABLED=true`
-* `SPEECH_ALLOWED_SUBJECT` set to the one permitted access-token `sub`
+* An enabled application user with paid Speech entitlement
 * `SPEECH_KEY` and `SPEECH_REGION` in the server environment
 * `SPEECH_PER_RUN_CAP_USD` and `SPEECH_TOTAL_BUDGET_USD` set to finite,
   positive limits
@@ -262,9 +411,9 @@ recover run status; do not submit another request.
 With the server running and tenant values unset, check the loopback endpoints:
 
 ```bash
-curl --fail http://localhost:8000/healthz
-curl --fail http://localhost:8000/api/config
-curl --include http://localhost:8000/api/briefs
+curl --fail http://localhost:8001/healthz
+curl --fail http://localhost:8001/api/config
+curl --include http://localhost:8001/api/briefs
 ```
 
 The health check returns `200`. The configuration response reports
@@ -276,18 +425,15 @@ without the required delegated scope returns `403`.
 Run the local tests and checks without contacting a tenant or Speech service:
 
 ```bash
-uv run pytest -q
-uv run ruff check audio_poc tests
-uv run ruff format --check audio_poc tests
-uv lock --check
-uv sync --locked
+npm ci
+npm run typecheck
+npm test
+npm run build
 ```
+
+These root checks cover both workspaces. Use `npm run test:api` or
+`npm run test:web` for a targeted suite, or pass `--workspace @earwyrm/api`
+or `--workspace @earwyrm/web` to an individual workspace script.
 
 Use fake MSAL and API responses for browser workflow checks. Do not use a real
 tenant token or enable paid Speech as part of routine validation.
-
-Run the workspace navigation test with Node.js:
-
-```bash
-node --test tests/test_web_navigation.cjs
-```

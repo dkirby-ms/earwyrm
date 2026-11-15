@@ -1,5 +1,5 @@
 metadata name = 'Earwyrm web service'
-metadata description = 'Same-origin web UI and API backed by a mounted Azure file share.'
+metadata description = 'Same-origin web UI and API backed by PostgreSQL and a mounted Azure file share.'
 
 @description('Container app name.')
 param name string
@@ -31,6 +31,14 @@ param entraExpectedIssuer string
 param entraAudience string
 @description('API scope prefix.')
 param entraApiScopePrefix string
+@description('PostgreSQL Flexible Server hostname.')
+param databaseHost string
+@description('PostgreSQL database name.')
+param databaseName string
+@description('PostgreSQL administrator login.')
+param databaseAdminLogin string
+@description('Version-pinned Key Vault URI for the PostgreSQL password.')
+param databasePasswordSecretUri string
 
 var hostname = '${name}.${environmentDomain}'
 
@@ -51,6 +59,13 @@ resource app 'Microsoft.App/containerApps@2026-07-01' = {
     environmentId: environmentId
     configuration: {
       activeRevisionsMode: 'Single'
+      secrets: [
+        {
+          name: 'postgres-admin-password'
+          keyVaultUrl: databasePasswordSecretUri
+          identity: pullIdentityId
+        }
+      ]
       ingress: {
         external: true
         allowInsecure: false
@@ -71,6 +86,10 @@ resource app 'Microsoft.App/containerApps@2026-07-01' = {
             { name: 'ENTRA_EXPECTED_ISSUER', value: entraExpectedIssuer }
             { name: 'ENTRA_AUDIENCE', value: entraAudience }
             { name: 'ENTRA_API_SCOPE_PREFIX', value: entraApiScopePrefix }
+            { name: 'EARWYRM_DATABASE_HOST', value: databaseHost }
+            { name: 'EARWYRM_DATABASE_NAME', value: databaseName }
+            { name: 'EARWYRM_DATABASE_USER', value: databaseAdminLogin }
+            { name: 'EARWYRM_DATABASE_PASSWORD', secretRef: 'postgres-admin-password' }
             { name: 'EARWYRM_DATA_DIR', value: '/mnt/earwyrm' }
             { name: 'SPEECH_ENABLED', value: 'false' }
           ]

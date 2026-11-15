@@ -1,0 +1,46 @@
+{
+  "name": "@earwyrm/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "dev": "tsx src/web_app.ts",
+    "start": "node dist/web_app.js",
+    "platform": "tsx src/platform_service.ts",
+    "lyric-mcp": "tsx src/lyric_mcp.ts",
+    "melody-mcp": "tsx src/melody_mcp.ts",
+    "render": "tsx src/cli.ts",
+    "database": "tsx src/bootstrap_database.ts",
+    "contracts": "tsx src/contracts.ts"
+  },
+  "dependencies": {
+    "@azure/core-auth": "^1.11.0",
+    "@azure/core-rest-pipeline": "^1.25.1",
+    "@azure/identity": "^4.13.0",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "@opentelemetry/api": "^1.9.0",
+    "cmu-pronouncing-dictionary": "^3.0.0",
+    "decimal.js": "^10.6.0",
+    "express": "^5.3.0",
+    "jose": "^6.2.17",
+    "microsoft-cognitiveservices-speech-sdk": "^1.53.0",
+    "pg": "^8.23.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^24.0.0",
+    "@types/pg": "^8.15.0",
+    "@types/supertest": "^6.0.0",
+    "supertest": "^7.1.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.0"
+  }
+}

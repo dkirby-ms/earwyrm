@@ -1,0 +1,123 @@
+import { z } from "zod";
+import { dictionary } from "cmu-pronouncing-dictionary";
+import { ProductPath } from "./melody.js";
+
+/** Generation-facing text, bounded to 400 characters without coercion. */
+export const Text = z.string().min(1).max(400);
+export type Text = z.infer<typeof Text>;
+export const WORD = /[A-Za-z]+(?:'[A-Za-z]+)?/g;
+export const SPOKEN_TEXT = /^[A-Za-z' ,.!?;:\-\n]+$/;
+export const VOWELS = new Set(["AA", "AE", "AH", "AO", "AW", "AY", "EH", "ER", "EY", "IH", "IY", "OW", "OY", "UH", "UW"]);
+export const CONSONANTS = new Set(["B", "CH", "D", "DH", "F", "G", "HH", "JH", "K", "L", "M", "N", "NG", "P", "R", "S", "SH", "T", "TH", "V", "W", "Y", "Z", "ZH"]);
+export const PHONEMES = new Set([...CONSONANTS, ...[...VOWELS].flatMap(vowel => ["0", "1", "2"].map(stress => vowel + stress))]);
+/** Fixed English prosody policy; these rules are recomputed, never trusted from a model. */
+export const POLICIES = {
+  spoken: { lines: 2, min_syllables: 8, max_syllables: 20, rhyme_scheme: "--" },
+  vocoded: { lines: 4, min_syllables: 8, max_syllables: 12, rhyme_scheme: "AABB" },
+} as const;
+/** Base strict lyric JSON contract; concrete objects reject extra properties. */
+export const LyricContract = z.strictObject({});
+export type LyricContract = z.infer<typeof LyricContract>;
+/** Contact facts are data only; never spoken as symbolic notation. */
+export const ContactDetails = z.strictObject({ email: Text, phone: Text });
+export type ContactDetails = z.infer<typeof ContactDetails>;
+/** Seven approved generation-facing fields from a synthetic advertiser brief. */
+export const AdvertiserBrief = z.strictObject({
+  brief_id: z.string().regex(/^brief-[0-9]{3}$/),
+  name: Text, offer: Text, location: Text, contact_details: ContactDetails, tone: Text,
+  approved_claims: z.array(Text).min(1).max(20),
+});
+export type AdvertiserBrief = z.infer<typeof AdvertiserBrief>;
+
+function pronounceable(text: string): boolean {
+  return SPOKEN_TEXT.test(text) && !/[A-Za-z]\.[A-Za-z]/.test(text);
+}
+
+/** Fixed English advertising request with explicit stressed ARPABET overrides. */
+export const LyricRequest = z.strictObject({
+  schema_version: z.literal(1).default(1), brief: AdvertiserBrief, product_path: ProductPath, cta: Text,
+  language: z.literal("en").default("en"), duration_seconds: z.literal(30).default(30),
+  style: z.literal("retro-synth").default("retro-synth"),
+  pronunciations: z.record(z.string(), z.array(z.string())).default({}),
+}).superRefine((request, ctx) => {
+  const { brief } = request;
+  const values = [brief.name, brief.offer, brief.location, brief.tone, brief.contact_details.email, brief.contact_details.phone, request.cta, ...brief.approved_claims];
+  if (values.some(value => !value.trim() || !/^[\x20-\x7e]+$/.test(value))) ctx.addIssue({ code: "custom", message: "Brief and CTA must contain single-line printable ASCII text" });
+  if (!words(brief.name).length) ctx.addIssue({ code: "custom", message: "Brand must contain English words" });
+  if (!pronounceable(brief.name) || !pronounceable(request.cta)) ctx.addIssue({ code: "custom", message: "Brand and CTA must spell out numbers and symbols" });
+  if (Object.keys(request.pronunciations).length > 40) ctx.addIssue({ code: "custom", message: "Supply at most 40 pronunciation overrides" });
+  for (const [word, phones] of Object.entries(request.pronunciations)) {
+    if (!/^[a-z]+(?:'[a-z]+)?$/.test(word) || phones.length < 1 || phones.length > 40 || phones.some(phone => !PHONEMES.has(phone)) || !phones.some(phone => /[012]$/.test(phone))) ctx.addIssue({ code: "custom", message: "Pronunciations require lowercase words and valid stressed ARPABET" });
+  }
+});
+export type LyricRequest = z.infer<typeof LyricRequest>;
+/** Six fixed model fields; prosody and brand metadata must be independently recomputed. */
+export const LyricDraft = z.strictObject({
+  hook: Text, lyrics: z.string().min(1).max(400), syllables_per_line: z.array(z.number().int()).min(2).max(4),
+  rhyme_scheme: z.enum(["--", "AABB"]), brand_count: z.number().int().min(0).max(20), cta: Text,
+});
+export type LyricDraft = z.infer<typeof LyricDraft>;
+/** Only technically accepted or human-held results may contain screened text. */
+export const LyricResult = z.strictObject({
+  schema_version: z.literal(1).default(1),
+  status: z.enum(["accepted", "human_review_required", "rejected", "retry_exhausted", "unavailable"]),
+  attempts: z.number().int().min(0).max(4), output: LyricDraft.nullable().default(null),
+  reasons: z.array(z.string()).default([]), ai_generated: z.literal(true).default(true),
+  broadcast_approval_required: z.literal(true).default(true),
+}).superRefine((result, ctx) => {
+  if ((result.output !== null) !== ["accepted", "human_review_required"].includes(result.status)) ctx.addIssue({ code: "custom", message: "Only validated or human-held outcomes can carry lyrics" });
+  if (result.status !== "accepted" && !result.reasons.length) ctx.addIssue({ code: "custom", message: "Non-accepted outcomes require an explicit reason" });
+});
+export type LyricResult = z.infer<typeof LyricResult>;
+
+/** Content-free retryable rule code, never rejected model text. */
+export class LyricRuleError extends Error {
+  constructor(code: string) { super(code); this.name = "LyricRuleError"; }
+}
+
+/** Normalize English words for dictionary lookup and full-token brand matching. */
+export function words(text: string): string[] {
+  return text.toLowerCase().match(WORD) ?? [];
+}
+
+function pronunciation(word: string, overrides: Record<string, string[]>): string[] {
+  if (Object.hasOwn(overrides, word)) return overrides[word];
+  const phones = dictionary[word];
+  if (!phones) throw new LyricRuleError("unknown_pronunciation");
+  return phones.split(" ");
+}
+
+function rhyme(phones: string[]): string {
+  for (let i = phones.length - 1; i >= 0; i--) {
+    if (/[12]$/.test(phones[i])) return phones.slice(i).map(phone => phone.replace(/[012]/g, "")).join(" ");
+  }
+  throw new LyricRuleError("unstressed_rhyme");
+}
+
+/** Recompute meter, phonetic rhyme, brand occurrences and fixed CTA/hook placement.
+ * @throws LyricRuleError with a safe code for a failed lexical or prosody rule.
+ */
+export function validate_draft(request: LyricRequest, draft: LyricDraft): LyricDraft {
+  const policy = POLICIES[request.product_path], lines = draft.lyrics.split("\n");
+  if (lines.length !== policy.lines || !/^[\x00-\x7f]*$/.test(draft.lyrics) || lines.some(line => !line.trim() || line !== line.trim()) || /[\x00-\x09\x0b-\x1f\x7f]/.test(draft.lyrics)) throw new LyricRuleError("line_format");
+  if (draft.cta !== request.cta || lines.at(-1) !== request.cta || lines.filter(line => line === request.cta).length !== 1) throw new LyricRuleError("cta_placement");
+  if (!lines.slice(0, -1).includes(draft.hook)) throw new LyricRuleError("hook_placement");
+  const token_lines = lines.map(words);
+  if (token_lines.some(tokens => !tokens.length) || !pronounceable(draft.lyrics)) throw new LyricRuleError("use_pronounceable_words");
+  const phones = token_lines.map(tokens => tokens.map(word => pronunciation(word, request.pronunciations)));
+  const counts = phones.map(row => row.flat().filter(phone => /[012]$/.test(phone)).length);
+  if (counts.some(count => count < policy.min_syllables || count > policy.max_syllables)) throw new LyricRuleError("meter");
+  if (JSON.stringify(counts) !== JSON.stringify(draft.syllables_per_line)) throw new LyricRuleError("syllable_metadata");
+  if (draft.rhyme_scheme !== policy.rhyme_scheme) throw new LyricRuleError("rhyme_metadata");
+  if (request.product_path === "vocoded") {
+    const tails = phones.map(row => rhyme(row.at(-1)!));
+    if (tails[0] !== tails[1] || tails[2] !== tails[3] || tails[0] === tails[2] || token_lines[0].at(-1) === token_lines[1].at(-1) || token_lines[2].at(-1) === token_lines[3].at(-1)) throw new LyricRuleError("rhyme");
+  }
+  const brand = words(request.brief.name);
+  let brand_count = 0;
+  for (const tokens of token_lines) for (let i = 0; i <= tokens.length - brand.length; i++) {
+    if (brand.every((word, j) => tokens[i + j] === word)) brand_count++;
+  }
+  if (brand_count !== 2 || draft.brand_count !== brand_count) throw new LyricRuleError("brand_count");
+  return draft;
+}

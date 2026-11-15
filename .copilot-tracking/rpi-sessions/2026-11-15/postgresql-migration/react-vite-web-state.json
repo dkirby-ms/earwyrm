@@ -1,0 +1,158 @@
+{
+  "task_id": "react-vite-web",
+  "task_slug": "react-vite-web",
+  "session_name": "PostgreSQL migration",
+  "parent_task": {
+    "task_id": "postgresql-review-fixes",
+    "task_slug": "postgresql-review-fixes",
+    "state_path": ".copilot-tracking/rpi-sessions/2026-11-15/postgresql-migration/postgresql-review-fixes-state.json"
+  },
+  "child_tasks": [],
+  "mode": "automatic",
+  "active_phase": "Follow-up",
+  "status": "completed",
+  "session_status": "stopped",
+  "artifact_paths": {
+    "research": ".copilot-tracking/research/2026-11-15/react-vite-web-research.md",
+    "plan": ".copilot-tracking/plans/2026-11-15/react-vite-web-plan.md",
+    "critique": null,
+    "changes": ".copilot-tracking/changes/2026-11-15/react-vite-web-changes.md",
+    "review": null
+  },
+  "documents": {
+    "research": [
+      ".copilot-tracking/research/2026-11-15/react-vite-web-research.md"
+    ],
+    "plan": [
+      ".copilot-tracking/plans/2026-11-15/react-vite-web-plan.md"
+    ],
+    "critique": [],
+    "changes": [
+      ".copilot-tracking/changes/2026-11-15/react-vite-web-changes.md"
+    ],
+    "review": []
+  },
+  "confirmed_decisions": [
+    {
+      "decision": "Canvas",
+      "status": "current",
+      "evidence": "Reopened successfully on resume 2026-11-15: instance rpi-postgresql-migration; handle JQHN; provider plugin:hve-core:rpi-workflow."
+    },
+    {
+      "decision": "Automatic session scope",
+      "status": "current",
+      "evidence": "Inherited from root task postgresql-migration at .copilot-tracking/rpi-sessions/2026-11-15/postgresql-migration/postgresql-migration-state.json. Complete the user's requested PostgreSQL code work and React/Vite browser-app rewrite, including moving the Python package to src/audio_poc/ while preserving its audio_poc import name. For React/Vite, build the new version without migrating existing data. The user authorized repository implementation and validation; live Azure provisioning, destructive data actions, tenant changes, and other external mutations require separate confirmation. Research must establish the backend boundary before implementation."
+    },
+    {
+      "decision": "Automatic progression boundary",
+      "status": "through-review",
+      "evidence": "Inherited from user choice Handle it end to end on 2026-11-15."
+    },
+    {
+      "decision": "Research decision participation",
+      "status": "agent-owned",
+      "evidence": "Inherited from the confirmed automatic RPI session."
+    },
+    {
+      "decision": "Planning decision participation",
+      "status": "agent-owned",
+      "evidence": "Inherited from the confirmed automatic RPI session."
+    },
+    {
+      "decision": "Review decision participation",
+      "status": "agent-owned",
+      "evidence": "Inherited from the confirmed automatic RPI session."
+    },
+    {
+      "decision": "Follow-up decision participation",
+      "status": "agent-owned",
+      "evidence": "Inherited from the confirmed automatic RPI session."
+    },
+    {
+      "decision": "Planning critique",
+      "status": "skip",
+      "evidence": "Child-task default; the user did not request another critique."
+    },
+    {
+      "decision": "Review step",
+      "status": "skip",
+      "evidence": "Child-task default; the user did not request another Review."
+    },
+    {
+      "decision": "React/Vite legacy-data boundary",
+      "status": "confirmed",
+      "evidence": "User request 2026-11-15: this is a POC; focus on coding the new version and do not spend effort migrating existing data."
+    },
+    {
+      "decision": "Source folder layout",
+      "status": "confirmed",
+      "evidence": "User selected python_src_audio_poc on 2026-11-15: place the Python package at src/audio_poc/, preserve its audio_poc import name, and use a separate source directory for React/Vite."
+    },
+    {
+      "decision": "Selected follow-up",
+      "status": "assigned",
+      "evidence": "Review Parent Decision Record RD-012 and RD-013; RV-001 and RV-002 were resolved in the repository. This task continues in Research without legacy-data migration."
+    },
+    {
+      "decision": "React/Vite architecture boundary",
+      "status": "selected",
+      "evidence": "Research .copilot-tracking/research/2026-11-15/react-vite-web-research.md, D10 and F7-F10/C16-C24: use a TypeScript React/Vite browser client on the same origin; retain FastAPI and Python domain services."
+    },
+    {
+      "decision": "Full TypeScript scope",
+      "status": "deferred",
+      "evidence": "Research .copilot-tracking/research/2026-11-15/react-vite-web-research.md, D11: this task does not replace the Python API, CLI/MCP tools, or audio runtime; a full rewrite needs a separate scope decision."
+    },
+    {
+      "decision": "Research disposition and Planning Readiness",
+      "status": "executed; Ready",
+      "evidence": "Research .copilot-tracking/research/2026-11-15/react-vite-web-research.md: complete Wider, Deeper, and Contrarian cycle; Q6-Q10 answered; no blockers."
+    },
+    {
+      "decision": "Planning decision participation",
+      "status": "agent-owned",
+      "evidence": "Inherited from the confirmed automatic RPI session."
+    },
+    {
+      "decision": "Planning critique",
+      "status": "skip",
+      "evidence": "Child-task default; the user did not request another critique."
+    },
+    {
+      "decision": "Plan state",
+      "status": "Complete; Ready; critique skipped",
+      "evidence": ".copilot-tracking/plans/2026-11-15/react-vite-web-plan.md defines P07-T01, P08-T01, and P09-T01, their requirements and dependencies, test ownership, change map, and handoff. No blockers remain."
+    },
+    {
+      "decision": "Planning decision D8: Local development callback origin",
+      "status": "selected",
+      "evidence": ".copilot-tracking/plans/2026-11-15/react-vite-web-plan.md D8: preserve localhost:8000/auth-callback.html by running Vite on port 8000 and proxying same-origin API requests to FastAPI on a separate local port; no tenant update."
+    },
+    {
+      "decision": "Planning decision D9: Legacy data migration",
+      "status": "confirmed",
+      "evidence": "User request 2026-11-15 and .copilot-tracking/plans/2026-11-15/react-vite-web-plan.md D9: no legacy-data migration for this POC; fresh schema initialization remains required."
+    },
+    {
+      "decision": "Session recovery and continuation",
+      "status": "reconciled",
+      "evidence": "User requested continuation of previous work and selected Handle it end to end on 2026-11-15. Previous conversation and matching canonical artifacts identify react-vite-web as the completed active child. P07-P09 are complete; normalize legacy status values and resume Follow-up, not Implement. Preserve the existing repository-only boundary, retained decisions, and skipped child Review."
+    },
+    {
+      "decision": "Current validation",
+      "status": "passed-with-skips",
+      "evidence": "Resume validation 2026-11-15: cd frontend && npm run build && npm test -- --run passed, including TypeScript compilation, production assets, and 3 interaction tests. env -u EARWYRM_TEST_DATABASE_URL uv run pytest -q passed with 271 passed, 27 skipped, and one upstream Starlette/httpx deprecation warning. uv run ruff check src/audio_poc tests scripts; uv run ruff format --check src/audio_poc tests scripts (39 files); uv lock --check; and git diff --check passed. No live database, Azure provisioning, tenant, or paid Speech operation was performed. Existing changes evidence retains Docker build/runtime-content and MSAL checksum results; those checks were not rerun because no implementation files changed during recovery."
+    },
+    {
+      "decision": "Follow-up assessment",
+      "status": "repository-scope-complete",
+      "evidence": "Root Review Parent Decision Record RD-014/RD-015 records acceptance of completed P07-P09 and current regression validation; inherited RV-001/RV-002 were already resolved in repository under RD-010/RD-011. No required repository follow-ups remain. The child Review remains skipped, and the original review outcome is not relabeled. Historical research citations to moved or retired source files are preserved as pre-implementation evidence rather than rewritten."
+    }
+  ],
+  "blockers": [],
+  "next_action": {
+    "phase": "Follow-up",
+    "action": "Repository-scope session complete under root Review Parent Decision Record RD-015; no user action required. Child changes are validated, not reviewed; a new Review or live deployment requires an explicit request."
+  },
+  "prioritized_follow_ups": []
+}

@@ -1,0 +1,141 @@
+{
+  "task_id": "postgresql-migration",
+  "task_slug": "postgresql-migration",
+  "session_name": "PostgreSQL migration",
+  "parent_task": null,
+  "mode": "automatic",
+  "active_phase": "Follow-up",
+  "status": "completed",
+  "session_status": "stopped",
+  "child_tasks": [
+    {
+      "task_id": "postgresql-review-fixes",
+      "task_slug": "postgresql-review-fixes",
+      "state_path": ".copilot-tracking/rpi-sessions/2026-11-15/postgresql-migration/postgresql-review-fixes-state.json"
+    }
+  ],
+  "artifact_paths": {
+    "research": ".copilot-tracking/research/2026-11-15/postgresql-migration-research.md",
+    "plan": ".copilot-tracking/plans/2026-11-15/postgresql-migration-plan.md",
+    "critique": ".copilot-tracking/reviews/plans/2026-11-15/postgresql-migration-plan-critique.md",
+    "changes": ".copilot-tracking/changes/2026-11-15/postgresql-migration-changes.md",
+    "review": ".copilot-tracking/reviews/logs/2026-11-15/postgresql-migration-review.md"
+  },
+  "documents": {
+    "research": [".copilot-tracking/research/2026-11-15/postgresql-migration-research.md"],
+    "plan": [".copilot-tracking/plans/2026-11-15/postgresql-migration-plan.md"],
+    "critique": [".copilot-tracking/reviews/plans/2026-11-15/postgresql-migration-plan-critique.md"],
+    "changes": [".copilot-tracking/changes/2026-11-15/postgresql-migration-changes.md"],
+    "review": [
+      ".copilot-tracking/reviews/logs/2026-11-15/postgresql-migration-review.md"
+    ]
+  },
+  "confirmed_decisions": [
+    {
+      "decision": "Canvas",
+      "status": "current",
+      "evidence": "Instance rpi-postgresql-migration; handle JQHN; provider plugin:hve-core:rpi-workflow."
+    },
+    {
+      "decision": "Automatic session scope",
+      "status": "current",
+      "evidence": "User request 2026-11-15: move SQLite to a dedicated lowest-cost Azure PostgreSQL Flexible Server, use a database password stored in existing Key Vault, provide user auth management, and bootstrap the user as the sole user with paid speech access. Implement and validate repository changes; external provisioning and other exceptional actions require separate confirmation. The user also requested a separate React/Vite browser-application migration, selected src/audio_poc/ for the Python package, and asked that it follow PostgreSQL Review; Research will determine the backend boundary. On 2026-11-15 the user clarified that the POC React/Vite work should focus on coding the new version and must not spend effort migrating existing data."
+    },
+    {
+      "decision": "Automatic progression boundary",
+      "status": "through-review",
+      "evidence": "User chose Handle it end to end on 2026-11-15."
+    },
+    {
+      "decision": "Research decision participation",
+      "status": "agent-owned",
+      "evidence": "Handle it end to end."
+    },
+    {
+      "decision": "Planning decision participation",
+      "status": "agent-owned",
+      "evidence": "Handle it end to end."
+    },
+    {
+      "decision": "Review decision participation",
+      "status": "agent-owned",
+      "evidence": "Handle it end to end."
+    },
+    {
+      "decision": "Follow-up decision participation",
+      "status": "agent-owned",
+      "evidence": "Handle it end to end."
+    },
+    {
+      "decision": "Planning critique",
+      "status": "standard",
+      "evidence": "First-task default."
+    },
+    {
+      "decision": "Review step",
+      "status": "run",
+      "evidence": "First-task default."
+    },
+    {
+      "decision": "Research disposition",
+      "status": "executed",
+      "evidence": "Planning Ready: .copilot-tracking/research/2026-11-15/postgresql-migration-research.md; C1-C7, W1-W5. Live identity, vault, data, network, pricing and approvals remain deployment gates."
+    },
+    {
+      "decision": "User management interface",
+      "status": "both",
+      "evidence": "User selected both web admin page and operator commands on 2026-11-15."
+    },
+    {
+      "decision": "Plan readiness",
+      "status": "ready",
+      "evidence": "Plan critique Complete/Revise; four High findings resolved in .copilot-tracking/plans/2026-11-15/postgresql-migration-plan.md."
+    },
+    {
+      "decision": "Child research disposition: postgresql-review-fixes",
+      "status": "executed; Planning Ready",
+      "evidence": ".copilot-tracking/research/2026-11-15/postgresql-review-fixes-research.md; F5-F6, C8-C15, W6-W12, D5-D7. The child is in Plan. Actual test-server TLS settings and live Azure inventory/propagation remain implementation or deployment validation gates."
+    },
+    {
+      "decision": "Child plan disposition: postgresql-review-fixes",
+      "status": "Complete; Ready; critique skipped",
+      "evidence": ".copilot-tracking/plans/2026-11-15/postgresql-review-fixes-plan.md; P06-T01 and P06-T02 cover RV-001 and RV-002 within the repository-only boundary."
+    },
+    {
+      "decision": "Child implementation: postgresql-review-fixes",
+      "status": "completed; findings resolved in repository",
+      "evidence": ".copilot-tracking/changes/2026-11-15/postgresql-review-fixes-changes.md and review Parent Decision Record RD-010/RD-011; P06 implementation and planned validation complete. Live Azure inventory and database connectivity remain owner gates."
+    },
+    {
+      "decision": "React/Vite web migration follow-up",
+      "status": "confirmed",
+      "evidence": "User requests 2026-11-15. Keep the React/Vite browser migration and audio_poc-to-src move outside the active PostgreSQL plan; create a child Research task named react-vite-web after PostgreSQL Review."
+    },
+    {
+      "decision": "React/Vite legacy-data boundary",
+      "status": "confirmed",
+      "evidence": "User request 2026-11-15: this is a POC; focus on coding the new version and do not spend effort migrating existing data. The separate React/Vite Research and Plan will define the new code path; this does not authorize destructive data actions."
+    },
+    {
+      "decision": "React/Vite continuation",
+      "status": "selected",
+      "evidence": "Review Parent Decision Record RD-012 and RD-013; continue with child task react-vite-web in Research after RV-001 and RV-002 were resolved in the repository."
+    },
+    {
+      "decision": "Source folder layout",
+      "status": "confirmed",
+      "evidence": "The user selected python_src_audio_poc on 2026-11-15: place the Python package at src/audio_poc/, preserve its audio_poc import name, and use a separate source directory for React/Vite."
+    },
+    {
+      "decision": "Session acceptance",
+      "status": "repository-scope-complete",
+      "evidence": "Review Parent Decision Record RD-010 through RD-015 resolves both accepted findings and the completed React/Vite follow-up. Resume validation: frontend build/typecheck and 3 tests passed; Python 271 passed, 27 skipped with no live database; Ruff check/format, lock, and whitespace checks passed. Child implementations were validated but not reviewed again. The user requested continuation in Handle it end to end mode; no required repository work remains. Live Azure provisioning, Entra, paid Speech, and live database connectivity remain outside acceptance and separately gated."
+    }
+  ],
+  "blockers": [],
+  "next_action": {
+    "phase": "Follow-up",
+    "action": "Repository-scope session complete under Review Parent Decision Record RD-015; no user action required. Live deployment or a new Review requires a separate explicit request."
+  },
+  "prioritized_follow_ups": []
+}

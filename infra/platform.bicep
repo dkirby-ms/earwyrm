@@ -1,5 +1,5 @@
 metadata name = 'Earwyrm web platform'
-metadata description = 'Container Apps, registry and managed-identity Azure Files for the web proof.'
+metadata description = 'Container Apps, PostgreSQL, registry, managed secrets and Azure Files for the web proof.'
 
 @description('azd environment name.')
 param environmentName string
@@ -7,6 +7,18 @@ param environmentName string
 param location string
 @description('Deployment principal object ID.')
 param principalId string
+@description('Existing Key Vault name containing the PostgreSQL password.')
+param keyVaultName string
+@description('Resource group containing the existing Key Vault.')
+param keyVaultResourceGroupName string
+@description('Existing Key Vault secret name for the PostgreSQL administrator password.')
+param databasePasswordSecretName string
+@description('Version of the Key Vault secret used by the app.')
+param databasePasswordSecretVersion string
+@description('PostgreSQL administrator login.')
+param databaseAdminLogin string
+@description('Comma-separated verified PostgreSQL firewall IPv4 addresses.')
+param databaseOutboundIpv4s string
 @description('Browser SPA client ID.')
 param entraClientId string
 @description('External ID CIAM authority.')
@@ -26,6 +38,13 @@ var suffix = uniqueString(subscription().id, resourceGroup().id)
 var tags = { 'azd-env-name': environmentName }
 var shareName = 'earwyrm'
 var environmentStorageName = 'earwyrmfiles'
+var postgresName = 'psql${suffix}'
+var databasePasswordSecretUri = '${credentialVault.properties.vaultUri}secrets/${databasePasswordSecretName}/${databasePasswordSecretVersion}'
+
+resource credentialVault 'Microsoft.KeyVault/vaults@2026-05-15' existing = {
+  scope: resourceGroup(keyVaultResourceGroupName)
+  name: keyVaultName
+}
 
 resource registry 'Microsoft.ContainerRegistry/registries@2025-11-01' = {
   name: 'crewyrm${suffix}'
@@ -39,6 +58,15 @@ resource pullIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2024-11-
   name: 'id-pull-${suffix}'
   location: location
   tags: tags
+}
+
+module databasePasswordReader './keyvault-secret-reader.bicep' = {
+  scope: resourceGroup(keyVaultResourceGroupName)
+  params: {
+    vaultName: keyVaultName
+    secretName: databasePasswordSecretName
+    principalId: pullIdentity.properties.principalId
+  }
 }
 
 resource pullRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
@@ -156,6 +184,17 @@ resource environmentStorage 'Microsoft.App/managedEnvironments/storages@2026-03-
   dependsOn: [fileRole]
 }
 
+module postgres './postgresql.bicep' = {
+  params: {
+    name: postgresName
+    location: location
+    environmentName: environmentName
+    administratorLogin: databaseAdminLogin
+    administratorPassword: credentialVault.getSecret(databasePasswordSecretName)
+    outboundIpv4s: databaseOutboundIpv4s
+  }
+}
+
 module web './service.bicep' = {
   params: {
     name: 'ca-app-${suffix}'
@@ -173,8 +212,12 @@ module web './service.bicep' = {
     entraExpectedIssuer: entraExpectedIssuer
     entraAudience: entraAudience
     entraApiScopePrefix: entraApiScopePrefix
+    databaseHost: postgres.outputs.hostName
+    databaseName: postgres.outputs.databaseName
+    databaseAdminLogin: databaseAdminLogin
+    databasePasswordSecretUri: databasePasswordSecretUri
   }
-  dependsOn: [pullRole]
+  dependsOn: [pullRole, databasePasswordReader]
 }
 
 @description('Registry hostname.')
@@ -189,3 +232,7 @@ output shareName string = share.name
 output environmentName string = containerEnvironment.name
 @description('Container app name.')
 output appName string = web.outputs.appName
+@description('PostgreSQL Flexible Server hostname.')
+output postgresHostName string = postgres.outputs.hostName
+@description('PostgreSQL database name.')
+output postgresDatabaseName string = postgres.outputs.databaseName

@@ -1,0 +1,127 @@
+/** Non-secret settings returned by the TypeScript `/api/config` endpoint. */
+export interface PublicConfig {
+  readonly setup_status: 'ready' | 'setup-needed' | 'unavailable'
+  readonly client_id: string | null
+  readonly authority: string | null
+  readonly scope_prefix: string | null
+}
+
+/** A synthetic brief available to an authenticated workspace user. */
+export interface Brief {
+  readonly brief_id: string
+  readonly name?: string
+  readonly description?: string
+}
+
+/** The current permissions for the signed-in application identity. */
+export interface Access {
+  readonly issuer: string
+  readonly subject: string
+  readonly admin: boolean
+  readonly paid_speech: boolean
+}
+
+/** An identity and its application-scoped permissions. */
+export interface UserAccess {
+  readonly issuer: string
+  readonly subject: string
+  readonly enabled: boolean
+  readonly admin: boolean
+  readonly paid_speech: boolean
+}
+
+/** A component and its rights or provenance evidence. */
+export interface AudioComponent {
+  readonly component?: string
+  readonly name?: string
+  readonly component_id?: string
+  readonly status: string
+  readonly origin?: unknown
+  readonly evidence?: unknown
+  readonly commercial_use_basis?: unknown
+}
+
+/** Provider usage and reconciliation fields included in output metadata. */
+export interface AzureUsage {
+  readonly submitted_characters?: number
+  readonly attempt_id?: string | null
+  readonly rate_evidence?: unknown
+  readonly billing_reconciled?: boolean
+  readonly actual_allocated_cost_usd?: string | number | null
+  readonly reconciliation_reference?: string | null
+}
+
+/** A submitted evaluation attached to a rendered output. */
+export interface Evaluation {
+  readonly brand_transcription: string
+  readonly cta_transcription: string
+  readonly self_rating: string
+  readonly brand_match: boolean
+  readonly cta_match: boolean
+  readonly created_at?: string
+}
+
+/** A rendered output, including links that remain protected by the API. */
+export interface Output {
+  readonly output_id: string
+  readonly run_id: string
+  readonly brief_id: string
+  readonly variant: string
+  readonly duration_seconds: number
+  readonly render_seconds: number
+  readonly numeric_gates: unknown
+  readonly components: readonly AudioComponent[]
+  readonly azure_usage: AzureUsage
+  readonly evaluation: Evaluation | null
+  readonly status: string
+  readonly audio_url: string
+  readonly evidence_url: string
+}
+
+/** A paid attempt that may require usage reconciliation. */
+export interface PaidAttempt {
+  readonly attempt_id: string
+  readonly status: string
+  readonly estimated_cost_usd: string
+}
+
+/** A user-owned render run and its optional paid attempt. */
+export interface RenderRun {
+  readonly run_id: string
+  readonly mode: string
+  readonly brief_ids: readonly string[]
+  readonly status: string
+  readonly attempt?: PaidAttempt
+}
+
+/** The per-brief and overall evaluation rollup. */
+export interface StatusRollup {
+  readonly status: string
+  readonly briefs: readonly {
+    readonly brief_id: string
+    readonly status: string
+    readonly outputs: readonly Output[]
+  }[]
+}
+
+/** The server-computed paid-render estimate that the user must confirm. */
+export interface RenderEstimate {
+  readonly brief_ids: readonly string[]
+  readonly estimated_cost_usd: string
+}
+
+/** Draft values for an output evaluation form. */
+export interface EvaluationDraft {
+  readonly brand_transcription: string
+  readonly cta_transcription: string
+  readonly self_rating: string
+}
+
+/** Draft values for application access administration. */
+export interface UserAccessDraft {
+  readonly issuer: string
+  readonly subject: string
+  readonly enabled: boolean
+  readonly admin: boolean
+  readonly paid_speech: boolean
+}

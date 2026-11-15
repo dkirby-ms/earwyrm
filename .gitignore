@@ -8,3 +8,6 @@ renders/
 .env
 .env.*
 !.env.example
+node_modules/
+dist/
+*.tsbuildinfo

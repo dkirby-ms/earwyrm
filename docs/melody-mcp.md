@@ -32,19 +32,22 @@ vocal worker remain separate platform/render work.
 
 ## Start locally
 
+Use Node.js 24 on Linux with util-linux `flock` for cross-process private-store
+serialization. The Node container images include this dependency.
+
 ```bash
-uv sync --locked
-uv run python -m audio_poc.melody_mcp
+npm ci
+npm run melody-mcp
 ```
 
-The default transport is MCP stdio. Configure an MCP client with command `uv`
-and arguments `run`, `python`, `-m`, `audio_poc.melody_mcp`, using this repository
+The default transport is MCP stdio. Configure an MCP client with command `node`
+and arguments `apps/api/dist/melody_mcp.js` after `npm run build`, using this repository
 as its working directory. Logs go to stderr, not the protocol stream.
 
 For Streamable HTTP:
 
 ```bash
-uv run python -m audio_poc.melody_mcp \
+npm run melody-mcp -- \
   --transport streamable-http --port 8001 \
   --data-dir .earwyrm-data/melody
 ```
@@ -82,9 +85,14 @@ private MCP resources, not public download links.
 }
 ```
 
-Optional `seed` is an integer from 0 to 9223372036854775807. Omit it for a fresh
-composition. The returned seed is retained even when a lost-response retry
-again omits the seed.
+Optional `seed` is a safe integer from 0 to 9007199254740991. Larger seeds
+through 9223372036854775807 must be exact decimal strings, for example
+`"9223372036854775807"`; unsafe JSON numbers, signs, leading zeros and exponents
+are rejected. Historical numeric seeds above the safe range are returned as
+lossless decimal strings without rewriting the original records or media.
+Omit the seed for a fresh composition. The returned seed is retained even when
+a lost-response retry again omits the seed. Repeatability is scoped to the new
+TypeScript generator, not the historical random stream or audio bytes.
 
 Rules:
 
@@ -173,14 +181,15 @@ database to work around a rejected melody.
 Policy `earwyrm-reference-v1` screens every seven-interval (eight-note) window,
 using signed semitone differences between successive pitches. For every
 candidate/reference window pair it measures the ordered matching-interval ratio
-with Python `SequenceMatcher(autojunk=False)`, taking the maximum. Equal
+with the ordered matching-block ratio (equivalent to
+`SequenceMatcher(autojunk=False)`), taking the maximum. Equal
 transpositions score 1.0; six matching intervals out of seven score about 0.857.
 The arrangement fails at a score **greater than or equal to 0.85**, for either
 the lead or guide vocal. Rhythm is deliberately ignored so tempo/rhythm changes
 cannot hide the same pitch sequence. Shorter melodies are rejected as unfit.
 
 The versioned, manually encoded composition excerpts in
-[similarity.py](../audio_poc/similarity.py) are:
+[similarity.ts](../apps/api/src/similarity.ts) are:
 
 | Reference | Composition origin | Scope |
 |---|---|---|
@@ -210,9 +219,9 @@ listening, advertiser and rights review remain required before distribution.
 ## Validation and operations
 
 ```bash
-uv run pytest -q
-uv run ruff check audio_poc tests
-uv run ruff format --check audio_poc tests
+npm run typecheck
+npm test
+npm run build
 ```
 
 Tests measure variation in normalized intervals and rhythm, syllable timing fit,
@@ -221,7 +230,7 @@ restart idempotency, failure rollback, and actual MCP tool/resource sessions.
 Tone-only speech tests do not establish singing quality or Azure proof success.
 
 The service emits OpenTelemetry `server` and `producer` spans for composition
-and queue submission through `opentelemetry-api`; an embedding deployment must
+and queue submission through `@opentelemetry/api`; an embedding deployment must
 configure its tracer provider/exporter and resource attributes (`service.name`,
 `service.version`, `deployment.environment`). No telemetry exporter or network
 collector runs by default. Local logs report lifecycle/failure categories, not

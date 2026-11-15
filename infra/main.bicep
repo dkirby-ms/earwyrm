@@ -14,6 +14,33 @@ param location string
 @description('Object ID of the deployment principal for registry publishing.')
 param principalId string
 
+@description('Existing Key Vault name containing the PostgreSQL password.')
+@minLength(3)
+@maxLength(24)
+param keyVaultName string
+
+@description('Resource group containing the existing Key Vault.')
+@minLength(1)
+param keyVaultResourceGroupName string
+
+@description('Existing Key Vault secret name for the PostgreSQL administrator password.')
+@minLength(1)
+@maxLength(127)
+param databasePasswordSecretName string
+
+@description('Version of the existing Key Vault secret used by the app.')
+@minLength(1)
+param databasePasswordSecretVersion string
+
+@description('PostgreSQL administrator login.')
+@minLength(1)
+@maxLength(63)
+param databaseAdminLogin string
+
+@description('Comma-separated, verified outbound IPv4 addresses allowed to reach PostgreSQL.')
+@minLength(1)
+param databaseOutboundIpv4s string
+
 @description('Existing browser SPA application client ID.')
 @minLength(1)
 param entraClientId string
@@ -53,6 +80,12 @@ module platform './platform.bicep' = {
     environmentName: environmentName
     location: location
     principalId: principalId
+    keyVaultName: keyVaultName
+    keyVaultResourceGroupName: keyVaultResourceGroupName
+    databasePasswordSecretName: databasePasswordSecretName
+    databasePasswordSecretVersion: databasePasswordSecretVersion
+    databaseAdminLogin: databaseAdminLogin
+    databaseOutboundIpv4s: databaseOutboundIpv4s
     entraClientId: entraClientId
     entraAuthority: entraAuthority
     entraMetadataUrl: entraMetadataUrl
@@ -77,3 +110,7 @@ output AZURE_FILE_SHARE_NAME string = platform.outputs.shareName
 output AZURE_CONTAINER_ENVIRONMENT_NAME string = platform.outputs.environmentName
 @description('Container app name.')
 output AZURE_CONTAINER_APP_NAME string = platform.outputs.appName
+@description('PostgreSQL Flexible Server hostname.')
+output AZURE_POSTGRESQL_HOST string = platform.outputs.postgresHostName
+@description('PostgreSQL database name.')
+output AZURE_POSTGRESQL_DATABASE string = platform.outputs.postgresDatabaseName

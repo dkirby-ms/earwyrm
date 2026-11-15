@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: Preview first; deploy only after reviewing that preview
+        description: Preview first, provision separately, and deploy only after migration
         type: choice
-        options: [preview, deploy]
+        options: [preview, provision, deploy]
         default: preview
       maintenance_approved:
         description: Approve downtime and this run's cloud operations
@@ -17,7 +17,11 @@ on:
         type: boolean
         default: false
       preview_reviewed:
-        description: For deploy, the target's current preview was reviewed and approved
+        description: The target's current preview was reviewed and approved
+        type: boolean
+        default: false
+      postgres_store_initialized:
+        description: PostgreSQL was initialized or imported and independently verified
         type: boolean
         default: false
 
@@ -33,7 +37,10 @@ jobs:
   deploy:
     if: >-
       inputs.maintenance_approved && inputs.other_writers_stopped &&
-      (inputs.action == 'preview' || inputs.preview_reviewed)
+      (inputs.action == 'preview' ||
+       (inputs.preview_reviewed &&
+        (inputs.action == 'provision' ||
+         (inputs.action == 'deploy' && inputs.postgres_store_initialized))))
     runs-on: ubuntu-latest
     environment: earwyrm-web
     env:
@@ -43,6 +50,12 @@ jobs:
       AZURE_PRINCIPAL_ID: ${{ vars.AZURE_PRINCIPAL_ID }}
       AZURE_ENV_NAME: ${{ vars.AZURE_ENV_NAME }}
       AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+      AZURE_KEY_VAULT_NAME: ${{ vars.AZURE_KEY_VAULT_NAME }}
+      AZURE_KEY_VAULT_RESOURCE_GROUP: ${{ vars.AZURE_KEY_VAULT_RESOURCE_GROUP }}
+      AZURE_POSTGRESQL_PASSWORD_SECRET_NAME: ${{ vars.AZURE_POSTGRESQL_PASSWORD_SECRET_NAME }}
+      AZURE_POSTGRESQL_PASSWORD_SECRET_VERSION: ${{ vars.AZURE_POSTGRESQL_PASSWORD_SECRET_VERSION }}
+      AZURE_POSTGRESQL_ADMIN_LOGIN: ${{ vars.AZURE_POSTGRESQL_ADMIN_LOGIN }}
+      AZURE_POSTGRESQL_OUTBOUND_IPS: ${{ vars.AZURE_POSTGRESQL_OUTBOUND_IPS }}
       ENTRA_CLIENT_ID: ${{ vars.ENTRA_CLIENT_ID }}
       ENTRA_AUTHORITY: ${{ vars.ENTRA_AUTHORITY }}
       ENTRA_METADATA_URL: ${{ vars.ENTRA_METADATA_URL }}
@@ -54,9 +67,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: Azure/setup-azd@v2.3.0
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
       - name: Install locked tooling
-        run: uv sync --locked
+        run: npm ci --no-audit --no-fund
       - name: GitHub OIDC login for Azure CLI
         uses: azure/login@v2
         with:
@@ -76,6 +92,12 @@ jobs:
           azd env set AZURE_SUBSCRIPTION_ID "$AZURE_SUBSCRIPTION_ID"
           azd env set AZURE_LOCATION "$AZURE_LOCATION"
           azd env set AZURE_PRINCIPAL_ID "$AZURE_PRINCIPAL_ID"
+          azd env set AZURE_KEY_VAULT_NAME "$AZURE_KEY_VAULT_NAME"
+          azd env set AZURE_KEY_VAULT_RESOURCE_GROUP "$AZURE_KEY_VAULT_RESOURCE_GROUP"
+          azd env set AZURE_POSTGRESQL_PASSWORD_SECRET_NAME "$AZURE_POSTGRESQL_PASSWORD_SECRET_NAME"
+          azd env set AZURE_POSTGRESQL_PASSWORD_SECRET_VERSION "$AZURE_POSTGRESQL_PASSWORD_SECRET_VERSION"
+          azd env set AZURE_POSTGRESQL_ADMIN_LOGIN "$AZURE_POSTGRESQL_ADMIN_LOGIN"
+          azd env set AZURE_POSTGRESQL_OUTBOUND_IPS "$AZURE_POSTGRESQL_OUTBOUND_IPS"
           azd env set ENTRA_CLIENT_ID "$ENTRA_CLIENT_ID"
           azd env set ENTRA_AUTHORITY "$ENTRA_AUTHORITY"
           azd env set ENTRA_METADATA_URL "$ENTRA_METADATA_URL"
@@ -83,19 +105,22 @@ jobs:
           azd env set ENTRA_AUDIENCE "$ENTRA_AUDIENCE"
           azd env set ENTRA_API_SCOPE_PREFIX "$ENTRA_API_SCOPE_PREFIX"
       - name: Stop and verify existing writers
-        run: uv run --no-sync python scripts/deployment_gate.py quiesce
+        run: npm run deployment-gate -- quiesce
       - name: Preview resources
         if: inputs.action == 'preview'
         run: azd provision --preview --no-prompt
       - name: Provision approved resources
-        if: inputs.action == 'deploy'
+        if: inputs.action == 'provision' || inputs.action == 'deploy'
         run: azd provision --no-prompt
       - name: Stop and verify bootstrap or replacement writers
-        if: inputs.action == 'deploy'
-        run: uv run --no-sync python scripts/deployment_gate.py quiesce
+        if: inputs.action == 'provision' || inputs.action == 'deploy'
+        run: npm run deployment-gate -- quiesce
+      - name: Reconcile PostgreSQL firewall rules
+        if: inputs.action == 'provision' || inputs.action == 'deploy'
+        run: npm run deployment-gate -- reconcile-firewall
       - name: Deploy approved web image
         if: inputs.action == 'deploy'
         run: azd deploy web --no-prompt
       - name: Resume and check replica count
         if: inputs.action == 'deploy'
-        run: uv run --no-sync python scripts/deployment_gate.py resume
+        run: npm run deployment-gate -- resume
