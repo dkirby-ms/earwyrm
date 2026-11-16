@@ -1,10 +1,31 @@
-name: Bootstrap web credentials
+name: Bootstrap web prerequisites
 
 on:
   workflow_dispatch:
     inputs:
+      action:
+        description: Create credentials before provisioning, or initialize an empty database after provisioning
+        type: choice
+        options: [credentials, initialize-database]
+        default: credentials
       bootstrap_approved:
         description: Approve credential resource creation and scoped Key Vault role assignments
+        type: boolean
+        default: false
+      database_initialization_approved:
+        description: Approve image build, temporary private job, and PostgreSQL schema creation
+        type: boolean
+        default: false
+      empty_store_confirmed:
+        description: The target database schema and media share are empty (a writer lock file is allowed)
+        type: boolean
+        default: false
+      maintenance_approved:
+        description: Approve stopping the app; it remains stopped after initialization
+        type: boolean
+        default: false
+      other_writers_stopped:
+        description: All other clients writing to this isolated share are stopped
         type: boolean
         default: false
 
@@ -18,9 +39,13 @@ concurrency:
 
 jobs:
   bootstrap:
-    if: inputs.bootstrap_approved
+    if: >-
+      (inputs.action == 'credentials' && inputs.bootstrap_approved) ||
+      (inputs.action == 'initialize-database' &&
+       inputs.database_initialization_approved && inputs.empty_store_confirmed &&
+       inputs.maintenance_approved && inputs.other_writers_stopped)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     environment: earwyrm-web
     env:
       AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
@@ -28,11 +53,16 @@ jobs:
       AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       AZURE_PRINCIPAL_ID: ${{ vars.AZURE_PRINCIPAL_ID }}
       AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+      AZURE_ENV_NAME: ${{ vars.AZURE_ENV_NAME }}
       AZURE_KEY_VAULT_NAME: ${{ vars.AZURE_KEY_VAULT_NAME }}
       AZURE_KEY_VAULT_RESOURCE_GROUP: ${{ vars.AZURE_KEY_VAULT_RESOURCE_GROUP }}
       AZURE_POSTGRESQL_PASSWORD_SECRET_NAME: ${{ vars.AZURE_POSTGRESQL_PASSWORD_SECRET_NAME }}
       AZURE_POSTGRESQL_ADMIN_LOGIN: ${{ vars.AZURE_POSTGRESQL_ADMIN_LOGIN }}
-      EARWYRM_BOOTSTRAP_APPROVED: "true"
+      EARWYRM_BOOTSTRAP_APPROVED: ${{ inputs.bootstrap_approved }}
+      EARWYRM_DATABASE_INITIALIZATION_APPROVED: ${{ inputs.database_initialization_approved }}
+      EARWYRM_EMPTY_STORE_CONFIRMED: ${{ inputs.empty_store_confirmed }}
+      EARWYRM_MAINTENANCE_APPROVED: ${{ inputs.maintenance_approved }}
+      EARWYRM_OTHER_WRITERS_STOPPED: ${{ inputs.other_writers_stopped }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -48,4 +78,11 @@ jobs:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       - name: Bootstrap credential prerequisites without rotating passwords
+        if: inputs.action == 'credentials'
         run: npm run bootstrap-deployment
+      - name: Install Container Apps CLI for initialization inventory
+        if: inputs.action == 'initialize-database'
+        run: az extension add --name containerapp --upgrade
+      - name: Initialize and validate the empty PostgreSQL store over the private network
+        if: inputs.action == 'initialize-database'
+        run: npm run initialize-deployment

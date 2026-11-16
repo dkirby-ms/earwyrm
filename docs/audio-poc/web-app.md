@@ -230,6 +230,13 @@ approved host with VNet connectivity and private DNS resolution. A standard
 GitHub-hosted runner or internet-only laptop cannot reach the database; do not
 enable public access as a workaround.
 
+For a fresh Azure deployment without an administration host, the existing
+bootstrap workflow provides a separately approved
+[`initialize-database` action](../azure-deployment.md#initialize-a-fresh-postgresql-store).
+It runs only empty-store initialization in a temporary private Container Apps
+Job and leaves the app stopped. Imports and owner administration are separate
+operations; initialization does not enroll users.
+
 For an operator command against PostgreSQL, set `EARWYRM_DATA_DIR` to an
 existing, empty absolute directory and set `EARWYRM_DATABASE_URL` securely in
 the process environment. Require `sslmode=verify-full` and a trusted CA

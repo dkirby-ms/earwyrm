@@ -30,6 +30,7 @@ const AZURE_OPERATIONS = new Set([
   'containerapp list', 'containerapp show', 'containerapp revision list', 'containerapp replica list',
   'postgres flexible-server list', 'postgres flexible-server show', 'rest',
   'group create', 'keyvault list', 'keyvault create', 'keyvault secret set', 'role assignment create',
+  'acr show', 'acr build', 'acr task show-run', 'acr repository show',
 ]);
 const AZURE_ERROR_CODES = new Set([
   'AuthorizationFailed', 'AuthenticationFailed', 'Forbidden', 'ForbiddenByRbac', 'ForbiddenByFirewall',
@@ -43,6 +44,10 @@ const INVENTORY_FIELDS = new Set([
   'subnet', 'privateLinkServiceConnections', 'privateLinkServiceId', 'groupIds',
   'privateLinkServiceConnectionState', 'status', 'privateDnsZoneConfigs', 'privateDnsZoneId',
   'virtualNetworkLinkState', 'virtualNetwork', 'runningStatus',
+  'location', 'identity', 'userAssignedIdentities', 'configuration', 'registries', 'server',
+  'secrets', 'keyVaultUrl', 'template', 'containers', 'env', 'secretRef', 'volumeMounts',
+  'volumeName', 'mountPath', 'subPath', 'volumes', 'storageName', 'storageType', 'mountOptions',
+  'loginServer', 'fullyQualifiedDomainName', 'runId',
 ]);
 
 /** Logs only recognized command prefixes, never flags, values or REST URLs. */

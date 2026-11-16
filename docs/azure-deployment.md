@@ -112,8 +112,10 @@ must run from an approved host in this VNet, a peered VNet, or a VPN-connected
 network with private DNS resolution. A standard GitHub-hosted runner and a
 normal internet-connected laptop cannot connect directly. Provisioning and the
 workflow's network checks use Azure management APIs, so they do not require
-database network access. The workflow does not provision an administration VM,
-VPN or self-hosted runner, and does not initialize the database.
+database network access. The deployment workflow does not provision an
+administration VM, VPN or self-hosted runner. For a fresh store, the bootstrap
+workflow can run initialization inside a temporary Container Apps Job in the
+existing private environment, without giving the GitHub runner database access.
 
 See [ACA VNet requirements](https://learn.microsoft.com/azure/container-apps/custom-virtual-networks)
 and [PostgreSQL Private Link](https://learn.microsoft.com/azure/postgresql/network/concepts-networking-private-link).
@@ -183,11 +185,11 @@ Set these non-secret GitHub environment variables:
 ### Bootstrap credential prerequisites
 
 Before the first deployment preview, dispatch
-[Bootstrap web credentials](../.github/workflows/bootstrap-web.yml) and select
-`bootstrap_approved`. Publish the workflow to the default branch first so
-GitHub exposes its manual dispatch. It uses the same protected `earwyrm-web`
+[Bootstrap web prerequisites](../.github/workflows/bootstrap-web.yml), choose
+`action: credentials`, and select `bootstrap_approved`. Publish the workflow to
+the default branch first so GitHub exposes its manual dispatch. It uses the same protected `earwyrm-web`
 environment, OIDC deployment identity and concurrency lock as deployment.
-It does not create an identity, app, PostgreSQL server or network.
+The credentials action does not create an identity, app, PostgreSQL server or network.
 
 The workflow creates the configured vault resource group and vault only when
 missing. New vaults use Standard SKU, Azure RBAC, template-deployment access,
@@ -227,6 +229,61 @@ See [Key Vault RBAC](https://learn.microsoft.com/azure/key-vault/general/rbac-gu
 After bootstrap succeeds, dispatch a new `preview` in the deployment workflow.
 Bootstrap success does not authorize provisioning or deployment.
 
+### Initialize a fresh PostgreSQL store
+
+After provisioning, dispatch [Bootstrap web prerequisites](../.github/workflows/bootstrap-web.yml)
+again from the approved deployment branch, selecting `action: initialize-database`.
+Select `database_initialization_approved`, `empty_store_confirmed`,
+`maintenance_approved` and `other_writers_stopped` only after verifying their
+conditions. This action does not run credential bootstrap or rotate passwords.
+It is for a new, empty PostgreSQL schema and media share, not migrations,
+repairs or repeat initialization.
+
+The action verifies the isolated target, private PostgreSQL networking, app
+database settings, managed identity, Key Vault reference, registry and media
+mount. It stops the app and verifies zero replicas across all revisions. It
+then builds the selected checkout's `Dockerfile.web` in the existing ACR and
+pins the resulting digest in a temporary Container Apps Job. Building the
+initializer allows this action to run while the app still uses the temporary
+nginx image after provisioning; no application-image deployment is required first.
+The selected checkout must match the application version you intend to deploy.
+
+The manual job runs `node apps/api/dist/bootstrap_database.js initialize-fresh`
+inside the existing VNet-connected environment. It uses the app's user-assigned
+registry identity, versionless Key Vault secret reference and existing Azure
+Files mount. No password is retrieved by the runner, placed in arguments or
+printed. Only required database and data-directory settings are copied. The job
+has one replica, one required completion, no automatic retries and a five-minute
+replica timeout. The existing initializer requires an empty schema and share
+(apart from the writer lock), creates both schemas transactionally, writes the
+initialization marker last and validates the store before reporting success.
+It does not create application users or grant owner access.
+
+The action waits for successful execution and verifies temporary job deletion.
+Failure or timeout fails the workflow. Once quiesced, the app is never
+automatically resumed, whether initialization succeeds or fails.
+Job logs may contain private details; inspect them only
+through approved, restricted Azure access, not by dumping them into Actions.
+A pre-existing initialization job blocks another run. Cancellation or runner
+loss can interrupt cleanup: an owner must inspect the named job and database
+state, verify all executions have stopped, and remove the leftover job before
+retrying. Never infer that a failed workflow means the schema transaction did
+not commit, and never delete data to make a retry pass.
+
+The deployment principal needs permission to queue/read ACR Tasks builds,
+read image metadata, use the existing managed identity, manage and execute jobs,
+and stop/inventory the app, in addition to the deployment gate's existing
+permissions. No new role assignments are created by this action. Builds, job
+execution and retained registry images incur charges; the uniquely tagged
+bootstrap image remains in ACR and requires separately approved retention or
+cleanup. The private network and managed-identity share mount still require
+validation in your Azure environment.
+
+After success, review a new deployment preview, then deploy with
+`postgres_store_initialized` confirmed. Re-running initialization on a populated
+store intentionally fails. For existing SQLite data, use the approved import
+procedure from a privately connected administration host instead.
+
 ### Preview and provision
 
 The workflow logs both Azure CLI and azd in through GitHub OIDC. Its maintenance
@@ -256,8 +313,10 @@ After approving the preview, dispatch `provision`. This creates or updates the
 resources without deploying the application image, then stops and verifies the
 temporary bootstrap app. The app remains stopped. The workflow verifies the
 private endpoint, DNS linkage and disabled public database access. Verify vault
-permissions and the latest Key Vault secret version. From the approved
-VNet-connected administration host, initialize
+permissions and the latest Key Vault secret version. For a fresh, empty store,
+run the bootstrap workflow's
+[`initialize-database` action](#initialize-a-fresh-postgresql-store).
+Alternatively, from an approved VNet-connected administration host, initialize
 an explicitly empty store or import the backed-up SQLite stores by following
 the [database migration runbook](./audio-poc/web-app.md#import-existing-sqlite-data).
 The host must resolve the ordinary server hostname to the private endpoint
@@ -369,9 +428,10 @@ The `resume` action repeats these checks before starting the app. No firewall
 rules are created or deleted.
 
 These are management-plane checks, not proof of live DNS resolution, routing
-or database authentication. Before deployment, verify the ordinary PostgreSQL
-hostname resolves privately from the VNet-connected administration host and
-verify an actual connection with full TLS certificate and hostname validation.
+or database authentication. Before deployment, verify an actual connection with
+full TLS certificate and hostname validation. The fresh-store initialization
+job makes that connection inside the private environment; imports and other
+administration require equivalent verification from the VNet-connected host.
 After deploying, check app startup and a protected database-backed operation;
 `/healthz` alone does not establish database readiness.
 
