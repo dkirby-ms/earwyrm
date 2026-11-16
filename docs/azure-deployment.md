@@ -247,6 +247,17 @@ pins the resulting digest in a temporary Container Apps Job. Building the
 initializer allows this action to run while the app still uses the temporary
 nginx image after provisioning; no application-image deployment is required first.
 The selected checkout must match the application version you intend to deploy.
+The build waits with `--no-logs`, a ten-minute server build timeout and a
+twelve-minute CLI timeout. The action requires its final status to be
+`Succeeded` before resolving the image digest. It does not use `--no-wait`,
+which suppresses the CLI's JSON result.
+
+If an older run failed with `az acr build returned invalid JSON` before the
+temporary-job creation line, that action did not run database initialization.
+The ACR build may still have been queued. Publish the fix and dispatch a new
+initialization run from the updated branch after confirming the store is still
+empty; re-running the old Actions run uses its original code. No reprovisioning
+is needed for this command-output failure.
 
 The manual job runs `node apps/api/dist/bootstrap_database.js initialize-fresh`
 inside the existing VNet-connected environment. It uses the app's user-assigned

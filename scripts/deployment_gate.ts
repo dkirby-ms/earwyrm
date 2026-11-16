@@ -30,7 +30,7 @@ const AZURE_OPERATIONS = new Set([
   'containerapp list', 'containerapp show', 'containerapp revision list', 'containerapp replica list',
   'postgres flexible-server list', 'postgres flexible-server show', 'rest',
   'group create', 'keyvault list', 'keyvault create', 'keyvault secret set', 'role assignment create',
-  'acr show', 'acr build', 'acr task show-run', 'acr repository show',
+  'acr show', 'acr build', 'acr repository show',
 ]);
 const AZURE_ERROR_CODES = new Set([
   'AuthorizationFailed', 'AuthenticationFailed', 'Forbidden', 'ForbiddenByRbac', 'ForbiddenByFirewall',
@@ -66,7 +66,7 @@ function inventory_diagnostic(error: z.ZodError): string {
   }).join(', ');
 }
 
-/** Executes against an explicit subscription; never forwards CLI stderr or credentials. */
+/** Executes against an explicit subscription; allows 12 minutes for ACR builds, otherwise two; never forwards raw stderr. */
 export const azure: Azure = async (subscription, ...arguments_) => {
   const operation = azure_operation(arguments_);
   console.error(`INFO: Azure operation: ${operation}`);
@@ -74,7 +74,10 @@ export const azure: Azure = async (subscription, ...arguments_) => {
   try {
     ({ stdout } = await execute('az', [
       ...arguments_, '--subscription', subscription, '--output', 'json',
-    ], { timeout: 120_000, maxBuffer: 8 * 1024 * 1024 }));
+    ], {
+      timeout: arguments_[0] === 'acr' && arguments_[1] === 'build' ? 720_000 : 120_000,
+      maxBuffer: 8 * 1024 * 1024,
+    }));
   } catch (error) {
     const diagnostics: string[] = [];
     let azureCode: string | undefined;

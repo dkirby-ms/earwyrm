@@ -131,15 +131,10 @@ export async function initialize_deployment(options: {
   const suffix = randomUUID();
   const image_tag = `earwyrm/database-bootstrap:${suffix}`;
   console.error('INFO: Building the selected checkout for private database initialization');
-  const build = z.object({ runId: z.string().regex(/^[a-zA-Z0-9]+$/) }).parse(await call(subscription,
+  const build = z.object({ status: z.enum(['Queued', 'Started', 'Running', 'Succeeded', 'Failed', 'Canceled', 'Error', 'Timeout']) }).parse(await call(subscription,
     'acr', 'build', '--registry', registry_name, '--image', image_tag, '--file', 'Dockerfile.web',
-    '--no-wait', '--no-logs', '.'));
-  await wait('Initialization image build', 600_000, async () => {
-    const result = z.object({ status: z.enum(['Queued', 'Started', 'Running', 'Succeeded', 'Failed', 'Canceled', 'Error', 'Timeout']) })
-      .parse(await call(subscription, 'acr', 'task', 'show-run', '--registry', registry_name, '--run-id', build.runId));
-    if (['Failed', 'Canceled', 'Error', 'Timeout'].includes(result.status)) throw new DeploymentGateError('Initialization image build failed; raw build output withheld');
-    return result.status === 'Succeeded';
-  });
+    '--no-logs', '--timeout', '600', '.'));
+  if (build.status !== 'Succeeded') throw new DeploymentGateError('Initialization image build failed or did not finish; raw build output withheld');
   const digest = z.string().regex(/^sha256:[0-9a-f]{64}$/).parse(await call(subscription,
     'acr', 'repository', 'show', '--name', registry_name, '--image', image_tag, '--query', 'digest'));
   const job_name = `db-init-${suffix.slice(0, 8)}`;

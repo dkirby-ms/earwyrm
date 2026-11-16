@@ -1,8 +1,10 @@
-import { access, readFile, stat } from 'node:fs/promises';
+import { access, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { delimiter, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { initialize_deployment } from '../../../scripts/initialize_deployment.js';
 import {
-  deployment_target, DeploymentGateError, run, verify_private_network, type Azure,
+  azure as execute_azure, deployment_target, DeploymentGateError, run, verify_private_network, type Azure,
 } from '../../../scripts/deployment_gate.js';
 
 vi.mock('../../../scripts/deployment_gate.js', async importOriginal => ({
@@ -67,8 +69,7 @@ function fixture() {
     calls.push(args);
     const command = args.slice(0, args.findIndex(argument => argument.startsWith('--'))).join(' ');
     if (command === 'acr show') return { id: `${group_id}/providers/Microsoft.ContainerRegistry/registries/registry`, loginServer: 'registry.azurecr.io' };
-    if (command === 'acr build') { order.push('build'); return { runId: 'run123' }; }
-    if (command === 'acr task show-run') return { status: state.build };
+    if (command === 'acr build') { order.push('build'); return { status: state.build }; }
     if (command === 'acr repository show') return `sha256:${'a'.repeat(64)}`;
     if (command === 'postgres flexible-server list') return [{
       id: `${group_id}/providers/Microsoft.DBforPostgreSQL/flexibleServers/postgres`, name: 'postgres',
@@ -111,6 +112,7 @@ function fixture() {
 afterEach(() => {
   vi.restoreAllMocks();
   vi.resetAllMocks();
+  vi.unstubAllEnvs();
 });
 
 describe('private database bootstrap without Azure access', () => {
@@ -228,19 +230,18 @@ describe('private database bootstrap without Azure access', () => {
     await expect(access(test.state.path)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
-  it('does not create a job when the image build fails', async () => {
+  it.each(['Failed', 'Running'])('does not create a job when the build result is %s', async status => {
     const test = fixture();
-    test.state.build = 'Failed';
+    test.state.build = status;
     await expect(initialize_deployment(test)).rejects.toThrow('image build failed');
     expect(test.order).toEqual(['network', 'quiesce', 'build']);
   });
 
-  it('waits through asynchronous build, provisioning and initially absent execution results', async () => {
+  it('waits through asynchronous provisioning and initially absent execution results', async () => {
     const test = fixture();
-    let builds = 0, provisions = 0, executions = 0;
+    let provisions = 0, executions = 0;
     const azure: Azure = async (subscription, ...args) => {
       const response = await test.azure(subscription, ...args);
-      if (args.slice(0, 3).join(' ') === 'acr task show-run' && builds++ === 0) return { status: 'Running' };
       if (args[0] === 'rest' && args[2] === 'get') {
         const path = new URL(args[args.indexOf('--url') + 1]).pathname;
         if (path.endsWith('/executions') && executions++ === 0) return { value: [] };
@@ -249,7 +250,29 @@ describe('private database bootstrap without Azure access', () => {
       return response;
     };
     await initialize_deployment({ ...test, azure });
-    expect(test.sleep).toHaveBeenCalledTimes(3);
+    expect(test.sleep).toHaveBeenCalledTimes(2);
     expect(test.order).toEqual(['network', 'quiesce', 'build', 'create', 'verify', 'start', 'delete']);
+  });
+
+  it('uses the real CLI wrapper with no-wait output suppression reproduced by a fake az', async () => {
+    const test = fixture();
+    const directory = await mkdtemp(join(tmpdir(), 'earwyrm-acr-cli-'));
+    try {
+      await writeFile(join(directory, 'az'), `#!${process.execPath}
+const args = process.argv.slice(2);
+if (args[0] !== 'acr' || args[1] !== 'build') process.exit(99);
+if (args.includes('--no-wait')) process.exit(0);
+if (!args.includes('--no-logs') || args[args.indexOf('--timeout') + 1] !== '600') process.exit(98);
+process.stderr.write('do-not-log-build-output');
+process.stdout.write(JSON.stringify({ status: 'Succeeded' }));
+`, { mode: 0o700 });
+      vi.stubEnv('PATH', `${directory}${delimiter}${process.env.PATH ?? ''}`);
+      const azure: Azure = async (subscription, ...args) => args[0] === 'acr' && args[1] === 'build'
+        ? execute_azure(subscription, ...args) : test.azure(subscription, ...args);
+      await initialize_deployment({ ...test, azure });
+      expect(test.order).toContain('start');
+      expect(JSON.stringify(test.log.mock.calls)).not.toContain('do-not-log-build-output');
+      expect(JSON.stringify(test.log.mock.calls)).toContain('PostgreSQL initialized and validated');
+    } finally { await rm(directory, { recursive: true, force: true }); }
   });
 });
