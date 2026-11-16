@@ -301,6 +301,33 @@ not the storage mount or a successful user login.
 
 ## Safe updates and maintenance
 
+### Diagnose container startup failures
+
+The supervisor logs `Cloud web startup or worker failed` with the failing
+`stage` and recognized error codes, without raw exception messages, connection
+strings, credentials or filesystem paths. Worker failures also report the exit
+status and signal. Earlier images emit only the generic failure message; that
+message alone does not establish a cause. Deploy the diagnostics update through
+the approved workflow before collecting the new fields.
+
+* `configuration`: Check that `EARWYRM_DATA_DIR` is configured.
+* `writer-lock`: Check the mounted share, UID permissions, competing writers and
+  availability of `flock`. `EARWYRM_DATA_NOT_MOUNTED` means the path is not a
+  mount in the container's mount table. Do not remove the lock or bypass checks.
+* `database-configuration`: Check mutually exclusive URL/field settings,
+  required fields and TLS configuration without printing their values.
+* `database-preparation`: Check private DNS, connectivity, TLS and database
+  authentication using the reported code. `28P01` indicates invalid database
+  password authentication. An uninitialized/incomplete-store diagnostic requires
+  reviewing the explicit initialization/import step; startup never initializes
+  PostgreSQL automatically. Do not reinitialize an existing store.
+* `worker`: Inspect the preceding worker logs and exit status or signal.
+
+Unrecognized errors are withheld rather than logged verbatim. Share only the
+stage, recognized codes, exit status and signal when requesting diagnostics.
+
+### Maintain writer exclusion
+
 [azure.yaml](../azure.yaml) registers fail-closed `preprovision` and `predeploy`
 hooks using [deployment_gate.ts](../scripts/deployment_gate.ts). These hooks
 require the approved GitHub OIDC context, the approved vault configuration and a resolvable latest
