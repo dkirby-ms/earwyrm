@@ -71,8 +71,8 @@ maintenance procedure below even when the lock appears to work.
 * Review pricing and obtain billing approval before provisioning. The app keeps
   one replica running; PostgreSQL, Container Apps, Azure Files, ACR builds and
   storage, Log Analytics, and networking can incur charges. The initial
-  PostgreSQL candidate is Burstable B1ms with 32 GiB storage, seven-day local
-  backups, and no geo-redundant backup. B1ms has one vCore and 2 GiB of memory;
+  PostgreSQL candidate is Burstable B2s with 32 GiB storage, seven-day local
+  backups, and no geo-redundant backup. B2s has two vCores and 4 GiB of memory;
   burst-credit exhaustion can reduce performance. Storage auto-growth can
   increase charges. Check regional availability and the complete regional
   price before approving the preview.

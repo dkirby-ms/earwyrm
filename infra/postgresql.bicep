@@ -25,7 +25,7 @@ resource server 'Microsoft.DBforPostgreSQL/flexibleServers@2026-10-01' = {
   location: location
   tags: tags
   sku: {
-    name: 'Standard_B1ms'
+    name: 'Standard_B2s'
     tier: 'Burstable'
   }
   properties: {
