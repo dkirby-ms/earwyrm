@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { closeSync, constants, lstatSync, openSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { closeSync, constants, lstatSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs";
 import { isAbsolute, join, basename } from "node:path";
 import { spawnSync } from "node:child_process";
 import { parseArgs } from "node:util";
@@ -51,28 +51,57 @@ function require_root(root: string): string {
   }
   return realpathSync(root);
 }
-async function require_empty_target(c: Connection): Promise<void> {
+const RESET_TABLES = [
+  "application_users", "application_identity", "evaluations", "outputs", "paid_attempts",
+  "runs", "local_outputs", "render_jobs", "earwyrm_store_metadata",
+] as const;
+const RESET_DATA_ENTRIES = ["audio", "work", "melody", "earwyrm.sqlite3", ".earwyrm-initialized"] as const;
+function validate_reset_directory(root: string): void {
+  const allowed = new Set([".earwyrm-writer.lock", ...RESET_DATA_ENTRIES]);
+  if (readdirSync(root).some(name => !allowed.has(name))) throw new TypeError("Fresh bootstrap refuses to delete unrecognized data directory entries");
+  for (const name of RESET_DATA_ENTRIES) {
+    try {
+      const path = join(root, name), file = lstatSync(path);
+      if (file.isSymbolicLink() || (["audio", "work", "melody"].includes(name) ? !file.isDirectory() : !file.isFile())) {
+        throw new TypeError("Fresh bootstrap found an unsafe application data entry");
+      }
+    } catch (error) {
+      if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error;
+    }
+  }
+}
+function reset_application_data(root: string): void {
+  validate_reset_directory(root);
+  for (const name of RESET_DATA_ENTRIES) {
+    try { rmSync(join(root, name), { recursive: true }); }
+    catch (error) {
+      if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error;
+    }
+  }
+}
+async function require_empty_target(c: Connection, message = "PostgreSQL import requires an empty target schema"): Promise<void> {
   const rows = (await c.execute(`SELECT 1 FROM pg_catalog.pg_class WHERE relnamespace = current_schema()::regnamespace
     UNION ALL SELECT 1 FROM pg_catalog.pg_proc WHERE pronamespace = current_schema()::regnamespace
     UNION ALL SELECT 1 FROM pg_catalog.pg_type WHERE typnamespace = current_schema()::regnamespace LIMIT 1`)).rows;
-  if (rows.length) throw new TypeError("PostgreSQL import requires an empty target schema");
+  if (rows.length) throw new TypeError(message);
 }
 async function write_marker(c: Connection): Promise<void> {
   await c.execute("CREATE TABLE earwyrm_store_metadata (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), schema_version INTEGER NOT NULL)");
   await c.execute("INSERT INTO earwyrm_store_metadata VALUES (1, 1)");
 }
-/** Explicitly creates both PostgreSQL schemas and writes their marker last, or rolls everything back. */
-export async function initialize_fresh(directory: string, database_url: string): Promise<void> {
+/**
+ * Recreates the application schemas and initial administrator, then removes known local data files.
+ * Unknown schema objects or data-directory entries stop the reset instead of being deleted.
+ */
+export async function initialize_fresh(directory: string, database_url: string, owner: { issuer: string; subject: string }): Promise<void> {
   const root = require_root(directory), release = acquire_writer_lock(root);
   try {
-    if (readdirSync(root).some(name => name !== ".earwyrm-writer.lock")) throw new TypeError("Fresh initialization requires an empty data directory");
+    validate_reset_directory(root);
     await transaction(new PostgresConnection(database_url, 0x4557524d01), async c => {
-      try { await require_empty_target(c); }
-      catch (error) {
-        if (!(error instanceof TypeError)) throw error;
-        throw new TypeError("Fresh initialization requires an empty target schema", { cause: error });
-      }
+      for (const table of RESET_TABLES) await c.execute(`DROP TABLE IF EXISTS ${table}`);
+      await require_empty_target(c, "Fresh bootstrap requires an application-only target schema");
       await WebStorage._create_schema(c);
+      await WebStorage._bootstrap_owner(c, owner.issuer, owner.subject);
       await MelodyService._create_schema(c);
       const count = (await c.execute(`SELECT count(*) AS table_count FROM pg_catalog.pg_class
         WHERE relnamespace = current_schema()::regnamespace AND relkind IN ('r', 'p')
@@ -80,8 +109,9 @@ export async function initialize_fresh(directory: string, database_url: string):
       if (Number(count?.table_count) !== 8) throw new Error("New PostgreSQL store schema is incomplete");
       await write_marker(c);
     });
+    reset_application_data(root);
+    await validate_postgres_store(database_url);
   } finally { release(); }
-  await validate_postgres_store(database_url);
 }
 async function validate_source(c: Connection, columns: Record<string, readonly string[]>, optional = new Set<string>()): Promise<Set<string>> {
   const integrity = (await c.execute("PRAGMA integrity_check")).rows;
@@ -217,7 +247,7 @@ export async function main(args: string[] = process.argv.slice(2), environment: 
     const parsed = create_parser(args);
     const command = parsed.positionals[0], values = parsed.values;
     if (values.help) {
-      console.log("Usage: database [--data-dir DATA_DIR] {initialize-fresh,import-sqlite,bootstrap-owner,set-user,list-users}\nbootstrap-owner: --issuer ISSUER --subject SUBJECT\nset-user: --issuer ISSUER --subject SUBJECT --enabled {yes,no} --admin {yes,no} --paid-speech {yes,no}");
+      console.log("Usage: database [--data-dir DATA_DIR] {initialize-fresh,import-sqlite,bootstrap-owner,set-user,list-users}\ninitialize-fresh: requires EARWYRM_DATA_RESET_APPROVED=true and owner identity env vars matching ENTRA_EXPECTED_ISSUER\nbootstrap-owner: --issuer ISSUER --subject SUBJECT\nset-user: --issuer ISSUER --subject SUBJECT --enabled {yes,no} --admin {yes,no} --paid-speech {yes,no}");
       return 0;
     }
     if (parsed.positionals.length !== 1 || !["initialize-fresh", "import-sqlite", "bootstrap-owner", "set-user", "list-users"].includes(command ?? "")) throw new TypeError("A valid operator command is required");
@@ -226,6 +256,9 @@ export async function main(args: string[] = process.argv.slice(2), environment: 
     const permitted = new Set(["data-dir", ...(identity_command ? ["issuer", "subject"] : []), ...(command === "set-user" ? ["enabled", "admin", "paid-speech"] : [])]);
     if (Object.keys(values).some(key => !permitted.has(key))) throw new TypeError("Unrecognized arguments for this operator command");
     if (identity_command && (!value("issuer") || !value("subject"))) throw new TypeError("Issuer and subject are required");
+    if (command === "initialize-fresh" && environment.EARWYRM_DATA_RESET_APPROVED !== "true") {
+      throw new TypeError("Explicit application data reset approval is required");
+    }
     if (command === "set-user" && ["enabled", "admin", "paid-speech"].some(key => !["yes", "no"].includes(value(key) ?? ""))) throw new TypeError("enabled, admin and paid-speech must each be yes or no");
     const selectedRoot = value("data-dir") ?? environment.EARWYRM_DATA_DIR;
     if (!selectedRoot) throw new TypeError("An existing absolute data directory is required");
@@ -233,7 +266,15 @@ export async function main(args: string[] = process.argv.slice(2), environment: 
     const database_url = database_url_from_environment(environment);
     if (command === "initialize-fresh" || command === "import-sqlite") {
       if (!database_url) throw new TypeError(command === "initialize-fresh" ? "Fresh initialization requires PostgreSQL" : "SQLite import requires PostgreSQL");
-      if (command === "initialize-fresh") { await initialize_fresh(root, database_url); console.log("PostgreSQL store initialized"); }
+      if (command === "initialize-fresh") {
+        const issuer = environment.EARWYRM_BOOTSTRAP_OWNER_ISSUER;
+        const subject = environment.EARWYRM_BOOTSTRAP_OWNER_SUBJECT;
+        const expected = environment.ENTRA_EXPECTED_ISSUER?.trim();
+        if (!issuer || !subject) throw new TypeError("Fresh initialization requires a bootstrap owner issuer and subject");
+        if (!expected || issuer !== expected) throw new TypeError("Bootstrap owner issuer must match the configured External ID issuer");
+        await initialize_fresh(root, database_url, { issuer, subject });
+        console.log("PostgreSQL application reset and initialized with its bootstrap owner");
+      }
       else console.log(`SQLite records imported to PostgreSQL: ${JSON.stringify(await import_sqlite(root, database_url))}`);
       return 0;
     }

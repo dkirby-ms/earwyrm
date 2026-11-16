@@ -230,26 +230,40 @@ approved host with VNet connectivity and private DNS resolution. A standard
 GitHub-hosted runner or internet-only laptop cannot reach the database; do not
 enable public access as a workaround.
 
-For a fresh Azure deployment without an administration host, the existing
+For an Azure deployment without an administration host, the existing
 bootstrap workflow provides a separately approved
 [`initialize-database` action](../azure-deployment.md#initialize-a-fresh-postgresql-store).
-It runs only empty-store initialization in a temporary private Container Apps
-Job and leaves the app stopped. Imports and owner administration are separate
-operations; initialization does not enroll users.
+It resets the existing Earwyrm application tables and known runtime data/media
+entries, then bootstraps the supplied administrator in a temporary private
+Container Apps Job. The workflow requires explicit data-reset approval and the
+verified owner issuer and subject as manual inputs. The app remains stopped.
+Imports and administration of existing stores remain separate operations.
 
 For an operator command against PostgreSQL, set `EARWYRM_DATA_DIR` to an
-existing, empty absolute directory and set `EARWYRM_DATABASE_URL` securely in
+existing absolute directory and set `EARWYRM_DATABASE_URL` securely in
 the process environment. Require `sslmode=verify-full` and a trusted CA
-certificate for the server. Initialize an empty target schema before
-bootstrapping the owner:
+certificate for the server. To reset and initialize the PostgreSQL application
+store, provide explicit reset approval and the verified owner identity in the
+process environment along with the configured External ID issuer:
 
 ```bash
+export EARWYRM_DATA_RESET_APPROVED=true
+export ENTRA_EXPECTED_ISSUER='https://verified-issuer.example.invalid'
+export EARWYRM_BOOTSTRAP_OWNER_ISSUER="$ENTRA_EXPECTED_ISSUER"
+export EARWYRM_BOOTSTRAP_OWNER_SUBJECT='verified-subject'
 npm run database -- initialize-fresh
 ```
 
-This command refuses an existing source or target and does not migrate SQLite
-data. Use it only when the source data directory and PostgreSQL target are both
-empty. It is not a cutover command.
+This command clears the known Earwyrm application tables, audio/work/melody
+directories and local SQLite files in the configured data directory. It refuses
+unknown entries or PostgreSQL objects rather than deleting them. It then
+creates both schemas and the initial enabled administrator with admin and paid
+Speech permissions in one transaction. It verifies the owner issuer matches
+`ENTRA_EXPECTED_ISSUER`; the subject must be the exact verified value from
+`/api/identity`. The paid-Speech entitlement does not enable Speech spending.
+This operation is destructive and does not migrate or preserve existing data.
+Stop the app and all other writers before running it manually; the Azure
+workflow performs this quiescence check for you.
 
 ### Import existing SQLite data
 

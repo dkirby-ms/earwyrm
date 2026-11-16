@@ -233,11 +233,15 @@ Bootstrap success does not authorize provisioning or deployment.
 
 After provisioning, dispatch [Bootstrap web prerequisites](../.github/workflows/bootstrap-web.yml)
 again from the approved deployment branch, selecting `action: initialize-database`.
-Select `database_initialization_approved`, `empty_store_confirmed`,
+Select `database_initialization_approved`, `data_reset_approved`,
 `maintenance_approved` and `other_writers_stopped` only after verifying their
-conditions. This action does not run credential bootstrap or rotate passwords.
-It is for a new, empty PostgreSQL schema and media share, not migrations,
-repairs or repeat initialization.
+conditions. Each approved run permanently resets the Earwyrm application tables
+in the existing dedicated PostgreSQL database and clears the known Earwyrm
+runtime data and media entries on the share. This action does not run credential
+bootstrap or rotate passwords. It is not for migrations or repairs. Provide
+`owner_issuer` and `owner_subject` from the verified `/api/identity` response
+for the account that should receive initial administrator access. The workflow
+rejects an issuer that does not match the app's configured External ID issuer.
 
 The action verifies the isolated target, private PostgreSQL networking, app
 database settings, managed identity, Key Vault reference, registry and media
@@ -247,28 +251,32 @@ pins the resulting digest in a temporary Container Apps Job. Building the
 initializer allows this action to run while the app still uses the temporary
 nginx image after provisioning; no application-image deployment is required first.
 The selected checkout must match the application version you intend to deploy.
+The initializer creates the enabled administrator with paid Speech entitlement
+in the same transaction as the new schemas. It does not enable Speech spending.
+Do not provide an access token.
 The build waits with `--no-logs`, a ten-minute server build timeout and a
 twelve-minute CLI timeout. The action requires its final status to be
 `Succeeded` before resolving the image digest. It does not use `--no-wait`,
 which suppresses the CLI's JSON result.
 
 If an older run failed with `az acr build returned invalid JSON` before the
-temporary-job creation line, that action did not run database initialization.
-The ACR build may still have been queued. Publish the fix and dispatch a new
-initialization run from the updated branch after confirming the store is still
-empty; re-running the old Actions run uses its original code. No reprovisioning
-is needed for this command-output failure.
+temporary-job creation line, that action did not run the reset. The ACR build
+may still have been queued. Publish the fix and dispatch a new initialization
+run from the updated branch after verifying reset approval; re-running the old
+Actions run uses its original code. No reprovisioning is needed for this
+command-output failure.
 
 The manual job runs `node apps/api/dist/bootstrap_database.js initialize-fresh`
 inside the existing VNet-connected environment. It uses the app's user-assigned
 registry identity, versionless Key Vault secret reference and existing Azure
 Files mount. No password is retrieved by the runner, placed in arguments or
-printed. Only required database and data-directory settings are copied. The job
-has one replica, one required completion, no automatic retries and a five-minute
-replica timeout. The existing initializer requires an empty schema and share
-(apart from the writer lock), creates both schemas transactionally, writes the
+printed. Only required database, data-directory and verified owner identity
+settings are copied. The job has one replica, one required completion, no
+automatic retries and a five-minute replica timeout. The initializer drops
+only the known Earwyrm tables, refuses unexpected PostgreSQL objects or unknown
+share entries, clears known Earwyrm runtime data and media, and creates both
+schemas and the initial administrator transactionally. It writes the
 initialization marker last and validates the store before reporting success.
-It does not create application users or grant owner access.
 
 The action waits for successful execution and verifies temporary job deletion.
 Failure or timeout fails the workflow. Once quiesced, the app is never

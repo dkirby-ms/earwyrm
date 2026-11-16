@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import pg from "pg";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { acquire_writer_lock, import_sqlite, initialize_fresh } from "../src/bootstrap_database.js";
+import { acquire_writer_lock, import_sqlite, initialize_fresh, main } from "../src/bootstrap_database.js";
 import { MelodyService } from "../src/melody_service.js";
 import { CompositionRequest } from "../src/melody.js";
 import { database_url_from_environment, parse_seed_json, PostgresConnection, postgres_connection_options, StoreNotInitialized, validate_postgres_store, type QueryResult, type Row } from "../src/persistence.js";
@@ -139,33 +139,77 @@ describe("operator transactions and read-only import", () => {
     expect(() => acquire_writer_lock(root)).toThrow("active writer");
     release(); acquire_writer_lock(root)();
   });
-  it("initializes all eight tables before publishing its marker and does not create local databases", async () => {
+  it("recreates the application tables and owner without creating local databases", async () => {
     const db = postgres_target(), root = directory();
-    await initialize_fresh(root, local);
+    await initialize_fresh(root, local, { issuer: "issuer", subject: "owner" });
     expect(user_tables(db)).toHaveLength(9);
+    expect(db.prepare("SELECT issuer, subject, enabled, admin, paid_speech FROM application_users").get()).toMatchObject({
+      issuer: "issuer", subject: "owner", enabled: 1, admin: 1, paid_speech: 1,
+    });
     await validate_postgres_store(local);
     expect(readdirSync(root)).toEqual([".earwyrm-writer.lock"]);
-    await expect(initialize_fresh(root, local)).rejects.toThrow("empty target");
+    db.prepare("UPDATE application_users SET enabled=0, admin=0, paid_speech=0").run();
+    db.prepare("INSERT INTO application_users VALUES ('issuer', 'former-user', 0, 0, 0, 'old')").run();
+    db.prepare("INSERT INTO runs VALUES ('old-run', 'owner', 'instrumental', '[]', 'complete', 'old')").run();
+    await initialize_fresh(root, local, { issuer: "issuer", subject: "owner" });
+    expect(user_tables(db)).toHaveLength(9);
+    expect(db.prepare("SELECT count(*) AS count FROM application_users").get()!.count).toBe(1);
+    expect(db.prepare("SELECT count(*) AS count FROM runs").get()!.count).toBe(0);
+    expect(db.prepare("SELECT enabled, admin, paid_speech FROM application_users").get()).toEqual({
+      enabled: 1, admin: 1, paid_speech: 1,
+    });
+    await validate_postgres_store(local);
   });
   it("rolls back all new schema when creation fails or leaves tables missing", async () => {
     const db = postgres_target(), root = directory();
     vi.spyOn(MelodyService, "_create_schema").mockRejectedValueOnce(new Error("simulated failure"));
-    await expect(initialize_fresh(root, local)).rejects.toThrow("simulated failure");
+    await expect(initialize_fresh(root, local, { issuer: "issuer", subject: "owner" })).rejects.toThrow("simulated failure");
     expect(user_tables(db)).toEqual([]);
     vi.spyOn(MelodyService, "_create_schema").mockResolvedValueOnce();
-    await expect(initialize_fresh(root, local)).rejects.toThrow("schema is incomplete");
+    await expect(initialize_fresh(root, local, { issuer: "issuer", subject: "owner" })).rejects.toThrow("schema is incomplete");
     expect(user_tables(db)).toEqual([]);
     await expect(validate_postgres_store(local)).rejects.toBeInstanceOf(StoreNotInitialized);
-  });
-  it("refuses existing data and active writer without touching the target", async () => {
-    const db = postgres_target(), root = directory();
-    writeFileSync(join(root, ".earwyrm-initialized"), "");
-    await expect(initialize_fresh(root, local)).rejects.toThrow("empty data directory");
+    vi.spyOn(WebStorage, "_bootstrap_owner").mockRejectedValueOnce(new Error("simulated owner failure"));
+    await expect(initialize_fresh(root, local, { issuer: "issuer", subject: "owner" })).rejects.toThrow("owner failure");
     expect(user_tables(db)).toEqual([]);
-    rmSync(join(root, ".earwyrm-initialized"));
+  });
+  it("resets known application data and refuses unknown share entries or active writers", async () => {
+    const db = postgres_target(), root = directory();
+    mkdirSync(join(root, "audio"));
+    mkdirSync(join(root, "work"));
+    mkdirSync(join(root, "melody", "artifacts"), { recursive: true });
+    writeFileSync(join(root, "audio", "old.wav"), "old audio");
+    writeFileSync(join(root, "work", "stale.tmp"), "stale work");
+    writeFileSync(join(root, "melody", "artifacts", "old.mid"), "old melody");
+    writeFileSync(join(root, "earwyrm.sqlite3"), "old database");
+    writeFileSync(join(root, ".earwyrm-initialized"), "");
+    await initialize_fresh(root, local, { issuer: "issuer", subject: "owner" });
+    expect(readdirSync(root)).toEqual([".earwyrm-writer.lock"]);
+    expect(user_tables(db)).toHaveLength(9);
+    writeFileSync(join(root, "unrecognized.txt"), "preserve");
+    await expect(initialize_fresh(root, local, { issuer: "issuer", subject: "owner" })).rejects.toThrow("unrecognized data directory entries");
+    expect(user_tables(db)).toHaveLength(9);
+    rmSync(join(root, "unrecognized.txt"));
     const release = acquire_writer_lock(root);
-    await expect(initialize_fresh(root, local)).rejects.toThrow("active writer");
+    await expect(initialize_fresh(root, local, { issuer: "issuer", subject: "owner" })).rejects.toThrow("active writer");
     release();
+  });
+  it("initializes from operator inputs only when the owner issuer matches External ID", async () => {
+    const db = postgres_target(), root = directory();
+    const env = {
+      EARWYRM_DATA_DIR: root, EARWYRM_DATABASE_URL: local, EARWYRM_DATA_RESET_APPROVED: "true",
+      ENTRA_EXPECTED_ISSUER: "issuer",
+      EARWYRM_BOOTSTRAP_OWNER_ISSUER: "issuer",
+      EARWYRM_BOOTSTRAP_OWNER_SUBJECT: "verified-subject",
+    };
+    expect(await main(["initialize-fresh"], { ...env, EARWYRM_DATA_RESET_APPROVED: undefined })).toBe(2);
+    expect(user_tables(db)).toEqual([]);
+    expect(await main(["initialize-fresh"], { ...env, EARWYRM_BOOTSTRAP_OWNER_ISSUER: "other-issuer" })).toBe(2);
+    expect(user_tables(db)).toEqual([]);
+    expect(await main(["initialize-fresh"], env)).toBe(0);
+    expect(db.prepare("SELECT issuer, subject, enabled, admin, paid_speech FROM application_users").get()).toMatchObject({
+      issuer: "issuer", subject: "verified-subject", enabled: 1, admin: 1, paid_speech: 1,
+    });
   });
   it("imports compatible records and durable identities without modifying source databases or media", async () => {
     const root = directory(), { web, melody, output, job, request } = await source(root, "9223372036854775807");
@@ -240,7 +284,7 @@ it.skipIf(!process.env.EARWYRM_TEST_DATABASE_URL)("uses real PostgreSQL for boot
       : `${url} options='-csearch_path=${schema}'`;
     const test_url = schema_url(schemas[0]!);
     const root = directory();
-    await initialize_fresh(root, test_url);
+    await initialize_fresh(root, test_url, { issuer: "issuer", subject: "owner" });
     await validate_postgres_store(test_url);
     const raw = '{"seed":9223372036854775807}', wire = new PostgresConnection(test_url, 0x4557524d02);
     try {
@@ -309,7 +353,7 @@ it.skipIf(!process.env.EARWYRM_TEST_DATABASE_URL)("uses real PostgreSQL for boot
     expect((await admin.query("SELECT to_regclass($1) AS table_name", [`${schemas[2]}.earwyrm_store_metadata`])).rows[0].table_name).toBeNull();
     expect(readFileSync(legacy.web.database_path)).toEqual(webBefore);
     const schemaFailure = vi.spyOn(MelodyService, "_create_schema").mockRejectedValueOnce(new Error("simulated schema failure"));
-    await expect(initialize_fresh(directory(), rollback_url)).rejects.toThrow("schema failure");
+    await expect(initialize_fresh(directory(), rollback_url, { issuer: "issuer", subject: "owner" })).rejects.toThrow("schema failure");
     schemaFailure.mockRestore();
     await expect(validate_postgres_store(rollback_url)).rejects.toBeInstanceOf(StoreNotInitialized);
 

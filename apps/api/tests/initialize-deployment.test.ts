@@ -20,7 +20,9 @@ function fixture() {
   const app_id = `${group_id}/providers/Microsoft.App/containerApps/web`;
   const identity = `${group_id}/providers/Microsoft.ManagedIdentity/userAssignedIdentities/pull`;
   const environ: Record<string, string> = {
-    EARWYRM_DATABASE_INITIALIZATION_APPROVED: 'true', EARWYRM_EMPTY_STORE_CONFIRMED: 'true',
+    EARWYRM_DATABASE_INITIALIZATION_APPROVED: 'true', EARWYRM_DATA_RESET_APPROVED: 'true',
+    EARWYRM_BOOTSTRAP_OWNER_ISSUER: 'https://issuer.example.test',
+    EARWYRM_BOOTSTRAP_OWNER_SUBJECT: 'verified-subject',
     EARWYRM_MAINTENANCE_APPROVED: 'true', EARWYRM_OTHER_WRITERS_STOPPED: 'true',
     AZURE_ENV_NAME: 'test', AZURE_KEY_VAULT_NAME: 'vault',
     AZURE_POSTGRESQL_PASSWORD_SECRET_NAME: 'password', AZURE_POSTGRESQL_ADMIN_LOGIN: 'admin',
@@ -41,6 +43,7 @@ function fixture() {
             { name: 'EARWYRM_DATABASE_HOST', value: 'postgres.postgres.database.azure.com' },
             { name: 'EARWYRM_DATABASE_NAME', value: 'earwyrm' },
             { name: 'EARWYRM_DATABASE_USER', value: 'admin' },
+            { name: 'ENTRA_EXPECTED_ISSUER', value: 'https://issuer.example.test' },
             { name: 'EARWYRM_DATABASE_PASSWORD', secretRef: 'postgres-password' },
             { name: 'EARWYRM_DATA_DIR', value: '/mnt/earwyrm' },
             { name: 'UNRELATED_SETTING', value: 'do-not-copy' },
@@ -136,6 +139,10 @@ describe('private database bootstrap without Azure access', () => {
             env: expect.arrayContaining([
               { name: 'EARWYRM_DATABASE_PASSWORD', secretRef: 'postgres-password' },
               { name: 'EARWYRM_DATA_DIR', value: '/mnt/earwyrm' },
+              { name: 'ENTRA_EXPECTED_ISSUER', value: 'https://issuer.example.test' },
+              { name: 'EARWYRM_BOOTSTRAP_OWNER_ISSUER', value: 'https://issuer.example.test' },
+              { name: 'EARWYRM_BOOTSTRAP_OWNER_SUBJECT', value: 'verified-subject' },
+              { name: 'EARWYRM_DATA_RESET_APPROVED', value: 'true' },
             ]),
             volumeMounts: test.app.properties.template.containers[0].volumeMounts,
           }],
@@ -146,19 +153,32 @@ describe('private database bootstrap without Azure access', () => {
     expect(test.state.mode).toBe(0o600);
     expect(JSON.stringify(test.state.body)).not.toContain('do-not-copy');
     expect(JSON.stringify(test.log.mock.calls)).not.toContain('do-not-copy');
+    expect(JSON.stringify(test.log.mock.calls)).not.toContain('verified-subject');
     expect(test.calls.some(args => args.includes('list-secrets') || args.includes('secret') || args.includes('firewall-rule'))).toBe(false);
     await expect(access(test.state.path)).rejects.toMatchObject({ code: 'ENOENT' });
     expect(JSON.stringify(test.log.mock.calls)).toContain('PostgreSQL initialized and validated');
   });
 
-  it.each(['EARWYRM_DATABASE_INITIALIZATION_APPROVED', 'EARWYRM_EMPTY_STORE_CONFIRMED'])(
+  it.each(['EARWYRM_DATABASE_INITIALIZATION_APPROVED', 'EARWYRM_DATA_RESET_APPROVED'])(
     'rejects missing %s before invoking Azure', async setting => {
       const test = fixture();
       delete test.environ[setting];
-      await expect(initialize_deployment(test)).rejects.toThrow('approval and empty-store confirmation');
+      await expect(initialize_deployment(test)).rejects.toThrow('initialization and application data reset approvals');
       expect(deployment_target).not.toHaveBeenCalled();
       expect(test.calls).toEqual([]);
     });
+
+  it('requires an exact owner identity before making Azure calls', async () => {
+    const test = fixture();
+    delete test.environ.EARWYRM_BOOTSTRAP_OWNER_SUBJECT;
+    await expect(initialize_deployment(test)).rejects.toThrow('EARWYRM_BOOTSTRAP_OWNER_SUBJECT');
+    expect(deployment_target).not.toHaveBeenCalled();
+    expect(test.calls).toEqual([]);
+    test.environ.EARWYRM_BOOTSTRAP_OWNER_SUBJECT = 'verified-subject';
+    test.environ.EARWYRM_BOOTSTRAP_OWNER_ISSUER = 'https://other.example.test';
+    await expect(initialize_deployment(test)).rejects.toThrow('issuer does not match');
+    expect(test.order).not.toContain('network');
+  });
 
   it('refuses an unprovisioned target without building or creating resources', async () => {
     const test = fixture();

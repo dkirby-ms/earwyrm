@@ -45,7 +45,7 @@ const App = Resource.extend({
 });
 const JobList = z.object({ nextLink: z.null().optional(), value: z.array(Resource) });
 
-/** Initializes only an empty store via a private, single-execution job; never resumes the web app. */
+/** Resets application-owned database/media data through a private job; never resumes the web app. */
 export async function initialize_deployment(options: {
   environ?: Readonly<Record<string, string | undefined>>;
   azure?: Azure;
@@ -53,8 +53,14 @@ export async function initialize_deployment(options: {
   sleep?: (milliseconds: number) => Promise<unknown>;
 } = {}): Promise<void> {
   const environ = options.environ ?? process.env, call = options.azure ?? azure;
-  if (environ.EARWYRM_DATABASE_INITIALIZATION_APPROVED !== 'true' || environ.EARWYRM_EMPTY_STORE_CONFIRMED !== 'true') {
-    throw new DeploymentGateError('Explicit database initialization approval and empty-store confirmation are required');
+  if (environ.EARWYRM_DATABASE_INITIALIZATION_APPROVED !== 'true' || environ.EARWYRM_DATA_RESET_APPROVED !== 'true') {
+    throw new DeploymentGateError('Explicit database initialization and application data reset approvals are required');
+  }
+  const owner_issuer = required_setting(environ, 'EARWYRM_BOOTSTRAP_OWNER_ISSUER');
+  const owner_subject = required_setting(environ, 'EARWYRM_BOOTSTRAP_OWNER_SUBJECT');
+  if (owner_issuer !== owner_issuer.trim() || owner_subject !== owner_subject.trim() ||
+    [...owner_issuer].length > 1024 || [...owner_subject].length > 1024) {
+    throw new DeploymentGateError('Bootstrap owner identity must contain exact issuer and subject values');
   }
   const [subscription, group, target] = await deployment_target(environ, call);
   if (!target) throw new DeploymentGateError('Provision the web environment before initializing PostgreSQL');
@@ -80,12 +86,15 @@ export async function initialize_deployment(options: {
     if (matches.length !== 1) throw new DeploymentGateError(`App initialization setting is absent or ambiguous: ${name}`);
     return matches[0];
   };
-  const fields = ['EARWYRM_DATABASE_HOST', 'EARWYRM_DATABASE_NAME', 'EARWYRM_DATABASE_USER', 'EARWYRM_DATA_DIR'];
+  const fields = ['EARWYRM_DATABASE_HOST', 'EARWYRM_DATABASE_NAME', 'EARWYRM_DATABASE_USER', 'EARWYRM_DATA_DIR', 'ENTRA_EXPECTED_ISSUER'];
   const env = fields.map(name => {
     const field = setting(name);
     if (!field.value?.trim() || field.secretRef !== undefined) throw new DeploymentGateError(`Invalid app initialization setting: ${name}`);
     return { name, value: field.value };
   });
+  if (owner_issuer !== setting('ENTRA_EXPECTED_ISSUER').value) {
+    throw new DeploymentGateError('Bootstrap owner issuer does not match the app External ID issuer');
+  }
   if (container.env.some(value => value.name === 'EARWYRM_DATABASE_URL') ||
     setting('EARWYRM_DATA_DIR').value !== '/mnt/earwyrm' ||
     setting('EARWYRM_DATABASE_NAME').value !== 'earwyrm' ||
@@ -156,7 +165,13 @@ export async function initialize_deployment(options: {
         containers: [{
           name: 'main', image: `${registry.server}/earwyrm/database-bootstrap@${digest}`,
           command: ['node'], args: ['apps/api/dist/bootstrap_database.js', 'initialize-fresh'],
-          env: [...env, { name: 'EARWYRM_DATABASE_PASSWORD', secretRef: password.secretRef }],
+          env: [
+            ...env,
+            { name: 'EARWYRM_BOOTSTRAP_OWNER_ISSUER', value: owner_issuer },
+            { name: 'EARWYRM_BOOTSTRAP_OWNER_SUBJECT', value: owner_subject },
+            { name: 'EARWYRM_DATA_RESET_APPROVED', value: 'true' },
+            { name: 'EARWYRM_DATABASE_PASSWORD', secretRef: password.secretRef },
+          ],
           resources: { cpu: 0.5, memory: '1Gi' }, volumeMounts: container.volumeMounts,
         }],
         volumes: [volume],

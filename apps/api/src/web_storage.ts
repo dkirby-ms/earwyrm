@@ -161,22 +161,25 @@ export class WebStorage {
     await this.initialized();
     return serialized(this.database_path, async () => transaction(await this._connect(), operation));
   }
-  private validate_identity(issuer: string, subject: string): void {
+  private static validate_identity(issuer: string, subject: string): void {
     if ([issuer, subject].some(v => !v || v !== v.trim() || [...v].length > 1024)) throw new TypeError("Issuer and subject must be nonempty exact values");
+  }
+  /** Adds the sole enabled administrator inside a caller-owned transaction. */
+  static async _bootstrap_owner(connection: Connection, issuer: string, subject: string): Promise<void> {
+    WebStorage.validate_identity(issuer, subject);
+    if ((await connection.execute("SELECT 1 FROM application_identity")).rows.length) throw new StorageConflict("Application identity is already initialized");
+    if ((await connection.execute("SELECT 1 FROM application_users LIMIT 1")).rows.length) throw new StorageConflict("Application users are not empty");
+    await connection.execute("INSERT INTO application_identity VALUES (1, ?)", [issuer]);
+    await connection.execute("INSERT INTO application_users VALUES (?, ?, 1, 1, 1, ?)", [issuer, subject, new Date().toISOString()]);
   }
   /** Creates the sole initial admin once; revocation never enables bootstrap replay. */
   async bootstrap_owner(issuer: string, subject: string): Promise<void> {
-    this.validate_identity(issuer, subject);
-    await this.write(async c => {
-      if ((await c.execute("SELECT 1 FROM application_identity")).rows.length) throw new StorageConflict("Application identity is already initialized");
-      if ((await c.execute("SELECT 1 FROM application_users LIMIT 1")).rows.length) throw new StorageConflict("Application users are not empty");
-      await c.execute("INSERT INTO application_identity VALUES (1, ?)", [issuer]);
-      await c.execute("INSERT INTO application_users VALUES (?, ?, 1, 1, 1, ?)", [issuer, subject, new Date().toISOString()]);
-    });
+    WebStorage.validate_identity(issuer, subject);
+    await this.write(c => WebStorage._bootstrap_owner(c, issuer, subject));
   }
   /** Exact issuer-and-subject lookup; null never grants access. */
   async get_user(issuer: string, subject: string): Promise<UserRecord | null> {
-    this.validate_identity(issuer, subject);
+    WebStorage.validate_identity(issuer, subject);
     return this.read(async c => (await c.execute("SELECT * FROM application_users WHERE issuer = ? AND subject = ?", [issuer, subject])).rows[0] as UserRecord ?? null);
   }
   /** Operator-only listing in issuer/subject order; HTTP callers must use the admin variant. */
@@ -189,7 +192,7 @@ export class WebStorage {
   }
   /** Atomically rechecks admin access before disclosing the user list. */
   async list_users_as_admin(issuer: string, subject: string): Promise<UserRecord[]> {
-    this.validate_identity(issuer, subject);
+    WebStorage.validate_identity(issuer, subject);
     return this.write(async c => {
       await this.require_admin(c, issuer, subject);
       return (await c.execute("SELECT * FROM application_users ORDER BY issuer, subject")).rows as UserRecord[];
@@ -205,12 +208,12 @@ export class WebStorage {
   }
   /** Operator-only upsert bound to the bootstrapped issuer. */
   async set_user(issuer: string, subject: string, options: UserPermissions): Promise<void> {
-    this.validate_identity(issuer, subject);
+    WebStorage.validate_identity(issuer, subject);
     await this.write(c => this.set_locked(c, issuer, subject, options));
   }
   /** Rechecks the acting administrator under the same lock as the update. */
   async set_user_as_admin(actor_issuer: string, actor_subject: string, issuer: string, subject: string, options: UserPermissions): Promise<void> {
-    this.validate_identity(actor_issuer, actor_subject); this.validate_identity(issuer, subject);
+    WebStorage.validate_identity(actor_issuer, actor_subject); WebStorage.validate_identity(issuer, subject);
     await this.write(async c => { await this.require_admin(c, actor_issuer, actor_subject); await this.set_locked(c, issuer, subject, options); });
   }
   /** Starts an instrumental run without making a paid reservation. */

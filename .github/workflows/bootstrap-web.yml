@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: Create credentials before provisioning, or initialize an empty database after provisioning
+        description: Create credentials before provisioning, or reset and initialize the application after provisioning
         type: choice
         options: [credentials, initialize-database]
         default: credentials
@@ -13,11 +13,11 @@ on:
         type: boolean
         default: false
       database_initialization_approved:
-        description: Approve image build, temporary private job, and PostgreSQL schema creation
+        description: Approve image build, temporary private job, and PostgreSQL application reset
         type: boolean
         default: false
-      empty_store_confirmed:
-        description: The target database schema and media share are empty (a writer lock file is allowed)
+      data_reset_approved:
+        description: Approve permanent reset of Earwyrm PostgreSQL data and app media files
         type: boolean
         default: false
       maintenance_approved:
@@ -28,6 +28,14 @@ on:
         description: All other clients writing to this isolated share are stopped
         type: boolean
         default: false
+      owner_issuer:
+        description: Verified issuer returned by /api/identity for the initial administrator
+        type: string
+        default: ''
+      owner_subject:
+        description: Verified subject returned by /api/identity for the initial administrator
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -42,7 +50,7 @@ jobs:
     if: >-
       (inputs.action == 'credentials' && inputs.bootstrap_approved) ||
       (inputs.action == 'initialize-database' &&
-       inputs.database_initialization_approved && inputs.empty_store_confirmed &&
+       inputs.database_initialization_approved && inputs.data_reset_approved &&
        inputs.maintenance_approved && inputs.other_writers_stopped)
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -60,9 +68,11 @@ jobs:
       AZURE_POSTGRESQL_ADMIN_LOGIN: ${{ vars.AZURE_POSTGRESQL_ADMIN_LOGIN }}
       EARWYRM_BOOTSTRAP_APPROVED: ${{ inputs.bootstrap_approved }}
       EARWYRM_DATABASE_INITIALIZATION_APPROVED: ${{ inputs.database_initialization_approved }}
-      EARWYRM_EMPTY_STORE_CONFIRMED: ${{ inputs.empty_store_confirmed }}
+      EARWYRM_DATA_RESET_APPROVED: ${{ inputs.data_reset_approved }}
       EARWYRM_MAINTENANCE_APPROVED: ${{ inputs.maintenance_approved }}
       EARWYRM_OTHER_WRITERS_STOPPED: ${{ inputs.other_writers_stopped }}
+      EARWYRM_BOOTSTRAP_OWNER_ISSUER: ${{ inputs.owner_issuer }}
+      EARWYRM_BOOTSTRAP_OWNER_SUBJECT: ${{ inputs.owner_subject }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -83,6 +93,6 @@ jobs:
       - name: Install Container Apps CLI for initialization inventory
         if: inputs.action == 'initialize-database'
         run: az extension add --name containerapp --upgrade
-      - name: Initialize and validate the empty PostgreSQL store over the private network
+      - name: Reset and initialize the PostgreSQL store over the private network
         if: inputs.action == 'initialize-database'
         run: npm run initialize-deployment
