@@ -25,3 +25,4 @@
 !docs/
 !docs/audio-poc/
 !docs/audio-poc/*.json
+**/node_modules

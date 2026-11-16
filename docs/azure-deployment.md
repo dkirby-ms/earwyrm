@@ -1,7 +1,7 @@
 ---
 title: Deploy the web proof to Azure
 description: Deploy the existing External ID web proof with PostgreSQL, Key Vault, and Azure Files media storage.
-ms.date: 2026-11-15
+ms.date: 2026-11-16
 ms.topic: how-to
 ---
 
@@ -148,6 +148,12 @@ Deployment is supported only through the manually dispatched
 federation to a dedicated deployment service principal. Interactive `az login`
 or `azd auth login`, client secrets, and automatic push-triggered deployments
 are not supported. This does not change how browser users sign in to External ID.
+
+Remote image builds use the root [.dockerignore](../.dockerignore). Keep
+`**/node_modules` after the directory inclusion rules so workspace dependencies
+and their npm symlinks stay out of the uploaded context. Otherwise azd packaging
+can fail with `archive/tar: write too long`. The Dockerfile installs dependencies
+from the lockfile inside the build stages.
 
 After separate owner approval, create a GitHub environment named `earwyrm-web`
 with required reviewers and restrict it to your approved deployment branch.
