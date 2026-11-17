@@ -50,6 +50,12 @@ async function requestApi(
         typeof payload.detail.message === 'string'
       ) {
         detail = payload.detail.message
+      } else if (isRecord(payload) && Array.isArray(payload.detail)) {
+        const issues = payload.detail
+          .filter(isRecord)
+          .map(issue => typeof issue.msg === 'string' ? issue.msg : '')
+          .filter(Boolean)
+        if (issues.length) detail = issues.join('; ')
       }
     } catch (error) {
       if (!(error instanceof SyntaxError)) throw error

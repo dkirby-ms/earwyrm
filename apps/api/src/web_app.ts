@@ -7,6 +7,11 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Decimal } from 'decimal.js';
 import { z } from 'zod';
+import { DefaultAzureCredential } from '@azure/identity';
+import { AzureLyricBackend, CloudFailure, LyricCloudSettings, type LyricBackend } from './lyric_cloud.js';
+import { LyricWriter } from './lyric_service.js';
+import { LyricRequest, LyricResult } from './lyrics.js';
+import { BriefDetails, CustomBrief, create_custom_brief, custom_script, input_fingerprint, validate_custom_brief } from './workspace_briefs.js';
 import {
   FIXTURES, REPOSITORY_ROOT, cost_for, load_evidence, load_inputs, render_brief,
   type SpeechEvidence,
@@ -31,11 +36,17 @@ export const EVIDENCE_FIELDS = [
   'rate_source', 'rate_checked_on', 'commercial_use_basis',
 ] as const;
 
-/** Bounded canonical brief IDs; duplicate and unknown IDs are rejected against the fixtures. */
-export const BriefSelection = z.object({ brief_ids: z.array(z.string()).min(1).max(3) });
+/** Bounded distinct fixture/custom IDs; custom contents are validated before dispatch. */
+export const BriefSelection = z.object({
+  brief_ids: z.array(z.string()).min(1).max(3),
+  custom_briefs: z.array(CustomBrief).max(3).optional(),
+});
 export type BriefSelection = z.infer<typeof BriefSelection>;
 /** Must match canonical server ordering and the exact decimal estimate, not browser arithmetic. */
-export const RenderConfirmation = BriefSelection.extend({ estimated_cost_usd: z.string().min(1).max(64) });
+export const RenderConfirmation = BriefSelection.extend({
+  estimated_cost_usd: z.string().min(1).max(64),
+  input_fingerprint: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+});
 export type RenderConfirmation = z.infer<typeof RenderConfirmation>;
 /** Offline renders reject paid confirmations; Azure remains disabled unless all server gates pass. */
 export const RenderRequest = BriefSelection.extend({
@@ -118,9 +129,20 @@ function paid_settings(source: Environment, entitled: boolean): [SpeechEvidence,
   return [sanitized, positive_decimal(source, 'SPEECH_PER_RUN_CAP_USD'), positive_decimal(source, 'SPEECH_TOTAL_BUDGET_USD')];
 }
 
-function selected_inputs(requested_ids: string[]) {
+function selected_inputs(requested_ids: string[], custom_briefs: CustomBrief[] = []) {
   if (new Set(requested_ids).size !== requested_ids.length) throw new HttpError(422, 'Brief IDs must be unique');
-  const selected = load_inputs().map(([brief, text], index) => ({ index, brief, text }))
+  const custom = custom_briefs.map(value => {
+    try { return validate_custom_brief(value); }
+    catch (error) { if (error instanceof TypeError) throw new HttpError(422, error.message); throw error; }
+  });
+  if (new Set(custom.map(value => value.brief.brief_id)).size !== custom.length ||
+      custom.some(value => !requested_ids.includes(value.brief.brief_id))) {
+    throw new HttpError(422, 'Custom briefs must be unique and selected');
+  }
+  const selected = [
+    ...load_inputs().map(([brief, text], index) => ({ index, brief, text, custom: null as CustomBrief | null })),
+    ...custom.map((value, index) => ({ index: index + 3, brief: value.brief, text: custom_script(value), custom: value })),
+  ]
     .filter(({ brief }) => requested_ids.includes(brief.brief_id));
   if (selected.length !== requested_ids.length) throw new HttpError(422, 'Unknown brief ID');
   return selected;
@@ -204,6 +226,8 @@ export interface CreateAppOptions {
   speech_factory?: () => SpeechProvider | Promise<SpeechProvider>;
   speech_provider_factory?: () => SpeechProvider | Promise<SpeechProvider>;
   render?: typeof render_brief;
+  /** Test adapters retain the same writer gates; production configuration stays server-side. */
+  lyric_backend?: LyricBackend;
 }
 
 /** Creates the same-origin API without listening, initializing databases, constructing Speech or making paid calls. */
@@ -233,6 +257,20 @@ export function create_app(options: CreateAppOptions = {}): Express {
   let render_active = false;
   const render = options.render ?? render_brief;
   const speech_factory = options.speech_factory ?? options.speech_provider_factory ?? (() => new AzureSpeech());
+  let lyrics_active = false;
+
+  function lyric_settings(): LyricCloudSettings | null {
+    if ((source.LYRIC_ENABLED ?? 'false').trim().toLowerCase() !== 'true') return null;
+    if (options.lyric_backend) return null;
+    return LyricCloudSettings.from_env(source);
+  }
+
+  async function lyric_available(response: Response): Promise<boolean> {
+    const user = await (await storage()).get_user(identity(response).issuer, identity(response).subject);
+    if (!user?.paid_speech || (source.LYRIC_ENABLED ?? 'false').trim().toLowerCase() !== 'true') return false;
+    try { lyric_settings(); return true; }
+    catch (error) { if (error instanceof CloudFailure) return false; throw error; }
+  }
 
   async function storage(): Promise<WebAppStorage> {
     if (app.locals.storage) return app.locals.storage as WebAppStorage;
@@ -291,6 +329,8 @@ export function create_app(options: CreateAppOptions = {}): Express {
   app.use(express.json({ limit: '32kb' }));
   const methods: Array<[RegExp, string[]]> = [
     [/^\/(?:healthz|api\/(?:config|identity|access|briefs|render-options|outputs|poc\/status))$/, ['GET']],
+    [/^\/api\/briefs\/validate$/, ['POST']],
+    [/^\/api\/lyrics\/options$/, ['GET', 'POST']],
     [/^\/api\/admin\/users$/, ['GET', 'PUT']],
     [/^\/api\/renders$/, ['GET', 'POST']],
     [/^\/api\/renders\/estimate$/, ['POST']],
@@ -348,7 +388,51 @@ export function create_app(options: CreateAppOptions = {}): Express {
     catch (error) { if (error instanceof TypeError || error instanceof RangeError) throw new HttpError(422, error.message); throw error; }
     response.json({ status: 'updated' });
   });
-  app.get('/api/briefs', ...authorized('briefs.read'), (_request, response) => { response.json(load_inputs().map(([brief]) => brief)); });
+  app.get('/api/briefs', ...authorized('briefs.read'), async (_request, response) => {
+    const custom = new Map<string, CustomBrief>();
+    for (const output of await (await storage()).list_outputs(identity(response).subject)) {
+      if (output.manifest.workspace_brief === undefined) continue;
+      const value = validate_custom_brief(output.manifest.workspace_brief);
+      custom.set(value.brief.brief_id, value);
+    }
+    response.json([
+      ...load_inputs().map(([brief]) => brief),
+      ...[...custom.values()].map(value => ({ ...value.brief, cta: value.cta, source: 'custom' })),
+    ]);
+  });
+  app.post('/api/briefs/validate', ...authorized('renders.write'), (request, response) => {
+    const value = create_custom_brief(parse(BriefDetails, request.body));
+    response.json({ ...value.brief, cta: value.cta, source: 'custom' });
+  });
+  app.get('/api/lyrics/options', ...authorized('renders.read'), async (_request, response) => {
+    response.json({ available: await lyric_available(response), option_count: 3 });
+  });
+  app.post('/api/lyrics/options', ...authorized('renders.write'), async (request, response) => {
+    const payload = parse(BriefSelection.extend({ confirm_paid_generation: z.literal(true) }), request.body);
+    if (payload.brief_ids.length !== 1) throw new HttpError(422, 'Generate lyrics for one active brief at a time');
+    const [selected] = selected_inputs(payload.brief_ids, payload.custom_briefs);
+    if (!await lyric_available(response)) throw new HttpError(409, 'Paid lyric generation is disabled or unavailable for this account');
+    if (lyrics_active) throw new HttpError(409, 'Lyric generation is already active');
+    lyrics_active = true;
+    try {
+      const settings = lyric_settings();
+      const backend = options.lyric_backend ?? new AzureLyricBackend(settings!, new DefaultAzureCredential({ retryOptions: { maxRetries: 0 } }));
+      const writer = new LyricWriter(backend);
+      const cta = selected!.custom?.cta ?? selected!.text.split(/(?<=[.!?])\s+/).at(-1)!;
+      const lyric_request = parse(LyricRequest, { brief: selected!.brief, cta, product_path: 'spoken' });
+      const alternatives: LyricResult[] = [];
+      const seen = new Set<string>();
+      for (let index = 0; index < 3; index++) {
+        let result = await writer.write(lyric_request);
+        if (result.output && seen.has(result.output.lyrics)) {
+          result = LyricResult.parse({ status: 'unavailable', attempts: result.attempts, reasons: ['duplicate_option'] });
+        }
+        if (result.output) seen.add(result.output.lyrics);
+        alternatives.push(result);
+      }
+      response.json({ brief_id: selected!.brief.brief_id, options: alternatives });
+    } finally { lyrics_active = false; }
+  });
   app.get('/api/render-options', ...authorized('renders.read'), async (_request, response) => {
     const enabled = (source.SPEECH_ENABLED ?? 'false').trim().toLowerCase();
     let speech_status = 'unavailable';
@@ -360,15 +444,20 @@ export function create_app(options: CreateAppOptions = {}): Express {
     response.json({ instrumental_available: true, speech_status });
   });
   app.post('/api/renders/estimate', ...authorized('renders.write'), async (request, response) => {
-    const selected = selected_inputs(parse(BriefSelection, request.body).brief_ids);
+    const payload = parse(BriefSelection, request.body);
+    const selected = selected_inputs(payload.brief_ids, payload.custom_briefs);
     const [evidence, cap] = await paid_configuration(response);
     const estimate = selected.reduce((total, { text }) => total.add(cost_for(text, evidence)), new Decimal(0));
     if (estimate.gt(cap)) throw new HttpError(409, 'Per-run Speech cap exceeded');
-    response.json({ brief_ids: selected.map(({ brief }) => brief.brief_id), estimated_cost_usd: estimate.toString() });
+    const custom = selected.flatMap(value => value.custom ? [value.custom] : []);
+    response.json({
+      brief_ids: selected.map(({ brief }) => brief.brief_id), estimated_cost_usd: estimate.toString(),
+      ...(custom.length ? { input_fingerprint: input_fingerprint(custom) } : {}),
+    });
   });
   app.post('/api/renders', ...authorized('renders.write'), async (request, response) => {
     const payload = parse(RenderRequest, request.body);
-    const selected = selected_inputs(payload.brief_ids);
+    const selected = selected_inputs(payload.brief_ids, payload.custom_briefs);
     const brief_ids = selected.map(({ brief }) => brief.brief_id);
     const { issuer, subject: owner } = identity(response);
     const store = await storage();
@@ -389,6 +478,10 @@ export function create_app(options: CreateAppOptions = {}): Express {
       const estimate = Object.values(per_brief).reduce((total, value) => total.add(value), new Decimal(0));
       if (estimate.gt(cap)) throw new HttpError(409, 'Per-run Speech cap exceeded');
       if (!payload.confirmation) throw new HttpError(409, 'Explicit Speech confirmation is required');
+      const custom = selected.flatMap(value => value.custom ? [value.custom] : []);
+      if (custom.length && payload.confirmation.input_fingerprint !== input_fingerprint(custom)) {
+        throw new HttpError(409, 'Speech confirmation does not match custom brief contents');
+      }
       if (JSON.stringify(payload.confirmation.brief_ids) !== JSON.stringify(brief_ids)) throw new HttpError(409, 'Speech confirmation does not match briefs');
       if (!decimal(payload.confirmation.estimated_cost_usd).eq(estimate)) throw new HttpError(409, 'Speech confirmation does not match the server estimate');
       reservation = {
@@ -407,12 +500,23 @@ export function create_app(options: CreateAppOptions = {}): Express {
         temporary = await mkdtemp(join(store.work_dir, 'render-'));
         let provider: SpeechProvider | null = null;
         if (attempt_id) { await store.mark_attempt_submitted(attempt_id); provider = await speech_factory(); }
-        for (const { index, brief, text } of selected) {
+        for (const { index, brief, text, custom } of selected) {
           const directory = join(temporary, brief.brief_id);
           const rows = await render(directory, brief, text, index, provider, evidence, {
             history_dir: join(store.root, 'melody'), database_url: store.database_url,
           });
           for (const row of rows) {
+            if (custom) {
+              row.workspace_brief = custom;
+              row.script_source = 'User-supplied advertiser facts and CTA; independent lyric options are not substituted';
+              if (Array.isArray(row.components)) {
+                for (const component of row.components) {
+                  if (typeof component === 'object' && component !== null && component.component === 'script') {
+                    component.origin = 'User-supplied advertiser facts and CTA';
+                  }
+                }
+              }
+            }
             if (typeof row.file !== 'string' || isAbsolute(row.file) || row.file.includes('/') || row.file.includes('\\')) {
               throw new TypeError('Render audio filename is invalid');
             }
@@ -452,9 +556,10 @@ export function create_app(options: CreateAppOptions = {}): Express {
   });
   app.get('/api/poc/status', ...authorized('renders.read'), async (_request, response) => {
     const outputs = await (await storage()).list_outputs(identity(response).subject);
-    const briefs = load_inputs().map(([brief]) => {
-      const rows = outputs.filter(row => row.brief_id === brief.brief_id);
-      return { brief_id: brief.brief_id, status: aggregate_status(rows.map(output_status)), outputs: rows.map(public_output) };
+    const brief_ids = new Set([...load_inputs().map(([brief]) => brief.brief_id), ...outputs.map(output => output.brief_id)]);
+    const briefs = [...brief_ids].map(brief_id => {
+      const rows = outputs.filter(row => row.brief_id === brief_id);
+      return { brief_id, status: aggregate_status(rows.map(output_status)), outputs: rows.map(public_output) };
     });
     response.json({ status: aggregate_status(briefs.map(brief => brief.status)), briefs });
   });
@@ -495,7 +600,10 @@ export function create_app(options: CreateAppOptions = {}): Express {
     const output_id = String(request.params.output_id);
     const output = await store.get_output(output_id, owner);
     if (!output) throw new HttpError(404, 'Output was not found');
-    const answer = expected_answers().find(answer => answer.brief_id === output.brief_id);
+    const custom = output.manifest.workspace_brief === undefined ? null : validate_custom_brief(output.manifest.workspace_brief);
+    const answer = custom
+      ? { expected_brand: custom.brief.name, expected_cta: custom.cta, accepted_cta_variants: [] }
+      : expected_answers().find(answer => answer.brief_id === output.brief_id);
     if (!answer) throw new HttpError(503, 'Evaluation data is unavailable');
     const brand_match = normalize_answer(submission.brand_transcription) === normalize_answer(answer.expected_brand);
     const cta_match = [answer.expected_cta, ...answer.accepted_cta_variants].some(value => normalize_answer(value) === normalize_answer(submission.cta_transcription));
@@ -556,6 +664,9 @@ export function create_app(options: CreateAppOptions = {}): Express {
   const errors: ErrorRequestHandler = (error: unknown, _request, response, next) => {
     if (response.headersSent) { next(error); return; }
     if (error instanceof HttpError) { response.status(error.status).json({ detail: error.detail }); return; }
+    if (error instanceof z.ZodError) {
+      response.status(422).json({ detail: error.issues.map(issue => issue.message).join('; ') }); return;
+    }
     if (error instanceof StorageAccessDenied) { response.status(403).json({ detail: error.message }); return; }
     if (error instanceof StorageConflict) { response.status(409).json({ detail: error.message }); return; }
     if (error instanceof StoreNotInitialized || is_storage_error(error)) {

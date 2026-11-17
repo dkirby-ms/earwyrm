@@ -6,11 +6,27 @@ export interface PublicConfig {
   readonly scope_prefix: string | null
 }
 
-/** A synthetic brief available to an authenticated workspace user. */
+/** A sample or immutable custom brief; unrendered custom drafts live in the browser session. */
 export interface Brief {
   readonly brief_id: string
   readonly name?: string
   readonly description?: string
+  readonly offer?: string
+  readonly location?: string
+  readonly contact_details?: { readonly email: string; readonly phone: string }
+  readonly tone?: string
+  readonly approved_claims?: readonly string[]
+  readonly cta?: string
+  readonly source?: 'custom'
+}
+
+/** Independent writer outcomes; only screened or explicitly held results contain text. */
+export interface LyricOption {
+  readonly status: 'accepted' | 'human_review_required' | 'rejected' | 'retry_exhausted' | 'unavailable'
+  readonly output: { readonly hook: string; readonly lyrics: string } | null
+  readonly reasons: readonly string[]
+  readonly ai_generated: true
+  readonly broadcast_approval_required: true
 }
 
 /** The current permissions for the signed-in application identity. */
@@ -108,6 +124,7 @@ export interface StatusRollup {
 export interface RenderEstimate {
   readonly brief_ids: readonly string[]
   readonly estimated_cost_usd: string
+  readonly input_fingerprint?: string
 }
 
 /** Draft values for an output evaluation form. */

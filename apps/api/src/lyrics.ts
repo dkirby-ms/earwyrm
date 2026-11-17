@@ -21,9 +21,9 @@ export type LyricContract = z.infer<typeof LyricContract>;
 /** Contact facts are data only; never spoken as symbolic notation. */
 export const ContactDetails = z.strictObject({ email: Text, phone: Text });
 export type ContactDetails = z.infer<typeof ContactDetails>;
-/** Seven approved generation-facing fields from a synthetic advertiser brief. */
+/** Generation-facing advertiser facts with fixture or immutable custom identities. */
 export const AdvertiserBrief = z.strictObject({
-  brief_id: z.string().regex(/^brief-[0-9]{3}$/),
+  brief_id: z.string().regex(/^(?:brief-[0-9]{3}|custom-[a-f0-9]{32})$/),
   name: Text, offer: Text, location: Text, contact_details: ContactDetails, tone: Text,
   approved_claims: z.array(Text).min(1).max(20),
 });

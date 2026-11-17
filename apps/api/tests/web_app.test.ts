@@ -13,6 +13,7 @@ import { STATIC_ROOT, WebStorage } from '../src/web_storage.js';
 import { acquire_writer_lock, prepare_databases } from '../src/cloud_web.js';
 import { write_wav } from '../src/dsp.js';
 import { render_brief } from '../src/render.js';
+import type { LyricBackend } from '../src/lyric_cloud.js';
 
 const issuer = 'https://tenant.example.test/tenant/v2.0';
 const authority = 'https://tenant.example.test/tenant';
@@ -90,6 +91,107 @@ function speech_environment(root: string, overrides: Record<string, string> = {}
 }
 
 describe('same-origin Express API', () => {
+  const custom_details = {
+    name: 'Bright Bike', offer: 'Bike tune ups', location: 'Lakeview',
+    contact_details: { email: 'shop@example.com', phone: '+1-202-555-0101' },
+    tone: 'Friendly and practical', approved_claims: ['Bike tune ups are available'],
+    cta: 'Call Bright Bike to plan your next ride',
+  };
+
+  it('validates custom input and rejects changed identities, invalid text and fixture overrides', async () => {
+    const render = vi.fn(fake_render);
+    const { app, access_token } = await fixture({ render });
+    const validate = () => request(app).post('/api/briefs/validate').auth(access_token, { type: 'bearer' });
+    const loaded = await validate().send(custom_details);
+    expect(loaded.status).toBe(200);
+    expect(loaded.body.brief_id).toMatch(/^custom-[a-f0-9]{32}$/);
+    expect((await validate().send(custom_details)).body.brief_id).toBe(loaded.body.brief_id);
+    for (const bad of [
+      { ...custom_details, name: ' ' }, { ...custom_details, cta: 'Call 24/7' },
+      { ...custom_details, approved_claims: [] }, { ...custom_details, offer: 'a'.repeat(400) },
+    ]) expect((await validate().send(bad)).status).toBe(422);
+    const { source: _source, cta, ...brief } = loaded.body;
+    for (const changed of [{ ...brief, offer: 'Changed facts' }, { ...brief, brief_id: 'brief-001' }]) {
+      expect((await request(app).post('/api/renders').auth(access_token, { type: 'bearer' }).send({
+        mode: 'instrumental', brief_ids: [changed.brief_id], custom_briefs: [{ brief: changed, cta }],
+      })).status).toBe(422);
+    }
+    expect((await request(app).post('/api/briefs/validate').auth(await token('disabled'), { type: 'bearer' }).send(custom_details)).status).toBe(403);
+    expect(render).not.toHaveBeenCalled();
+  });
+
+  it('renders mixed custom/sample selections and recovers immutable custom facts and evaluations by owner', async () => {
+    const renderer = vi.fn(fake_render);
+    const { app, store, access_token } = await fixture({ render: renderer });
+    const loaded = (await request(app).post('/api/briefs/validate').auth(access_token, { type: 'bearer' }).send(custom_details)).body;
+    const { source: _source, cta, ...brief } = loaded;
+    const rendered = await request(app).post('/api/renders').auth(access_token, { type: 'bearer' }).send({
+      mode: 'instrumental', brief_ids: [brief.brief_id, 'brief-002'], custom_briefs: [{ brief, cta }],
+    });
+    expect(rendered.status).toBe(200);
+    expect(renderer.mock.calls.map(call => call[1].brief_id)).toEqual(['brief-002', brief.brief_id]);
+    expect(renderer.mock.calls[1]?.[2]).toBe(`${brief.name}. ${brief.offer}. ${cta}`);
+    const output = rendered.body.outputs.find((item: { brief_id: string }) => item.brief_id === brief.brief_id);
+    expect((await store.get_output(output.output_id, 'user-a'))?.manifest.workspace_brief).toEqual({ brief, cta });
+    expect((await request(app).get('/api/briefs').auth(access_token, { type: 'bearer' })).body).toContainEqual(loaded);
+    expect((await request(app).get('/api/briefs').auth(await token('user-b'), { type: 'bearer' })).body).toHaveLength(3);
+    const evaluated = await request(app).post(`/api/outputs/${output.output_id}/evaluation`).auth(access_token, { type: 'bearer' }).send({
+      brand_transcription: brief.name, cta_transcription: cta, self_rating: 'usable with minor edits',
+    });
+    expect(evaluated.status).toBe(200);
+    expect(evaluated.body).toMatchObject({ brand_match: true, cta_match: true, status: 'Pending' });
+    expect((await request(app).get('/api/poc/status').auth(access_token, { type: 'bearer' })).body.briefs)
+      .toContainEqual(expect.objectContaining({ brief_id: brief.brief_id, status: 'Pending' }));
+  });
+
+  it('requires a content-bound paid confirmation for custom briefs before constructing Speech', async () => {
+    const root = root_dir();
+    const { app, access_token, speech_factory } = await fixture({
+      data_dir: root, environ: speech_environment(root, { SPEECH_TOTAL_BUDGET_USD: '2' }),
+    });
+    const loaded = (await request(app).post('/api/briefs/validate').auth(access_token, { type: 'bearer' }).send(custom_details)).body;
+    const { source: _source, cta, ...brief } = loaded;
+    const selection = { brief_ids: [brief.brief_id], custom_briefs: [{ brief, cta }] };
+    const estimate = (await request(app).post('/api/renders/estimate').auth(access_token, { type: 'bearer' }).send(selection)).body;
+    expect(estimate.input_fingerprint).toMatch(/^[a-f0-9]{64}$/);
+    const { input_fingerprint: _fingerprint, ...old_confirmation } = estimate;
+    for (const confirmation of [old_confirmation, { ...estimate, input_fingerprint: '0'.repeat(64) }]) {
+      expect((await request(app).post('/api/renders').auth(access_token, { type: 'bearer' }).send({
+        ...selection, mode: 'azure', confirmation,
+      })).status).toBe(409);
+    }
+    expect(speech_factory).not.toHaveBeenCalled();
+  });
+
+  it('gates lyric options on consent, enablement and entitlement and preserves screened duplicate outcomes', async () => {
+    const backend: LyricBackend = {
+      preflight: vi.fn(async () => ({ english: true, artist_imitation: false, risky_claims: false })),
+      generate: vi.fn(async () => JSON.stringify({
+        hook: 'Bright Bike, a tune up for your ride',
+        lyrics: `Bright Bike, a tune up for your ride\n${custom_details.cta}`,
+        syllables_per_line: [8, 8], rhyme_scheme: '--', brand_count: 2, cta: custom_details.cta,
+      })),
+      assess: vi.fn(async () => ({ english: true, grounded: true, risky_claims: false })),
+      screen: vi.fn(async () => ({ moderation_passed: true, protected_material_detected: false })),
+    };
+    const { app, access_token } = await fixture({ environ: { ...auth_environment, LYRIC_ENABLED: 'true' }, lyric_backend: backend });
+    const loaded = (await request(app).post('/api/briefs/validate').auth(access_token, { type: 'bearer' }).send(custom_details)).body;
+    const { source: _source, cta, ...brief } = loaded;
+    const payload = { brief_ids: [brief.brief_id], custom_briefs: [{ brief, cta }], confirm_paid_generation: true };
+    expect((await request(app).post('/api/lyrics/options').auth(access_token, { type: 'bearer' }).send({ ...payload, confirm_paid_generation: false })).status).toBe(422);
+    expect((await request(app).post('/api/lyrics/options').auth(await token('user-b'), { type: 'bearer' }).send(payload)).status).toBe(409);
+    expect(backend.generate).not.toHaveBeenCalled();
+    const generated = await request(app).post('/api/lyrics/options').auth(access_token, { type: 'bearer' }).send(payload);
+    expect(generated.status).toBe(200);
+    expect(generated.body.options.map((item: { status: string }) => item.status)).toEqual(['accepted', 'unavailable', 'unavailable']);
+    expect(generated.body.options[0]).toMatchObject({ ai_generated: true, broadcast_approval_required: true });
+    expect(generated.body.options[1]).toMatchObject({ output: null, reasons: ['duplicate_option'] });
+    expect(backend.generate).toHaveBeenCalledTimes(3);
+    const disabled = await fixture({ lyric_backend: backend });
+    expect((await request(disabled.app).post('/api/lyrics/options').auth(disabled.access_token, { type: 'bearer' }).send(payload)).status).toBe(409);
+    expect(backend.generate).toHaveBeenCalledTimes(3);
+  });
+
   it('preserves API method errors and trailing-slash redirect statuses', async () => {
     const app = create_app({ environ: {} });
     const method = await request(app).post('/healthz');

@@ -1,15 +1,15 @@
 ---
 title: Run the protected audio web POC
 description: Configure and run the local Entra External ID web workflow without changing the tenant or enabling paid Speech requests
-ms.date: 2026-11-13
+ms.date: 2026-11-16
 ms.topic: how-to
 ---
 
 ## Scope and boundaries
 
 The web POC adds a same-origin browser workflow to the local audio proof. It
-supports Entra External ID sign-in, synthetic brief selection, offline
-instrumental rendering, comparison, unblinded evaluation, and protected audio
+supports Entra External ID sign-in, sample and custom briefs, optional screened
+lyric drafts, offline instrumental rendering, comparison, unblinded evaluation, and protected audio
 and evidence downloads. The TypeScript API validates access tokens and delegated
 permissions; Speech credentials, evaluator answers, audio, and evaluation
 records remain server-side.
@@ -169,9 +169,9 @@ The POC expects these delegated API scope suffixes:
 
 | Scope suffix | Protected operation |
 |--------------|---------------------|
-| `briefs.read` | List synthetic briefs |
+| `briefs.read` | List samples and owned rendered custom briefs |
 | `renders.read` | Read run, render-option, output, and POC status |
-| `renders.write` | Render, estimate, and reconcile a paid attempt |
+| `renders.write` | Validate custom input, generate authorized lyric drafts, render, estimate, and reconcile a paid attempt |
 | `evaluations.write` | Submit an output evaluation |
 | `outputs.read` | Fetch protected audio and evidence |
 
@@ -364,20 +364,96 @@ Audio playback uses authenticated same-origin API requests followed by local
 Blob URLs. The CSP permits these URLs only for media with
 `media-src 'self' blob:`; script and default sources remain restricted.
 
-## Listen to instrumental previews
+## Work with briefs and rendered variants
 
-Use the workspace navigation to switch between **Select briefs**,
-**Evaluation status**, **Rendered variants**, and **Recent runs** without
-losing the current selection or an unfinished evaluation. Paid usage awaiting
-reconciliation remains visible across these views.
+The **Brief workspace** keeps the loaded-brief collection, active work area,
+recent runs and render controls together. Wider screens place the collection
+and run history beside the active work area; long detail content scrolls within
+that area rather than expanding every brief and output into one page.
 
-After rendering, the workspace opens **Rendered variants** to show the
-completed outputs. Select **Load protected audio** on an output, then press
-**Play** in its audio controls. You can also select **Download WAV**.
+Select **Use sample brief** to inspect a pre-populated sample, or select a
+brief's name in **Loaded briefs**. The **Brief**, **Lyrics** and **Variants**
+controls show one kind of detail at a time. Inspecting a brief does not change
+the render batch: use the collection checkboxes to select one to three briefs.
+
+Select **Enter or upload brief** to enter advertiser facts and a call to action
+(CTA), then select **Validate and load brief**. Alternatively, upload a JSON
+file with the same fields:
+
+```json
+{
+  "name": "Bright Bike",
+  "offer": "Bike tune ups",
+  "location": "Lakeview",
+  "contact_details": {
+    "email": "shop@example.com",
+    "phone": "Call today"
+  },
+  "tone": "Friendly",
+  "approved_claims": ["Bike tune ups are available"],
+  "cta": "Call Bright Bike to plan your next ride"
+}
+```
+
+Upload one object, without an ID or extra properties. Files are limited to
+24,000 bytes. Each text field must contain single-line printable ASCII and
+fit within 400 characters; supply one to twenty approved claims. Spell out
+numbers and symbols in the brand name and CTA. The combined name, offer and CTA
+must fit the 400-character render script. Validation errors preserve the
+existing collection and unfinished manual form.
+
+Custom inputs receive content-derived IDs. Changed facts create a different
+brief rather than rewriting the original. Unrendered validated inputs remain
+in identity-scoped browser session storage, not a server draft store. Signing
+out clears those drafts; keep your original JSON if you need to reuse it.
+Rendered custom snapshots are saved with owned outputs and recovered on later
+sign-in under the existing private-storage retention policy.
+
+Select **Render instrumental preview** for the selected batch. To request paid
+voice, enable **Include vocals**, select **Estimate vocal render**, then review
+the exact batch and cost before confirming. Speech prerequisites below still
+apply. For custom inputs, confirmation also binds the immutable input contents.
+
+Completed work opens **Variants** when it belongs to the active brief and does
+not replace an unfinished form or evaluation. Otherwise, inspect it through
+**Recent render runs**. Run inspection preserves batch selection and evaluation
+drafts. Use **Results from** to filter a brief's variants, then inspect one
+output to evaluate it. Select **Load protected audio**, then press **Play** in
+its audio controls, or select **Download WAV**.
 
 **Pending** is an evaluation status, not render progress, and does not block
 playback. Instrumental previews remain Pending because they are not vocal
 proof. **Recent render runs** reports whether rendering completed.
+**Input ready** only means brief validation succeeded, not that rendered audio
+has passed evaluation. Paid usage awaiting reconciliation remains visible
+throughout the workspace.
+
+## Optional paid lyric alternatives
+
+Lyric generation is disabled unless the server has `LYRIC_ENABLED=true`,
+`LYRIC_FOUNDRY_ENDPOINT`, `LYRIC_MODEL_DEPLOYMENT` and
+`LYRIC_CONTENT_SAFETY_ENDPOINT` configured. The endpoints must be HTTPS resource
+roots. The server's existing `DefaultAzureCredential` identity needs the
+appropriate model and Content Safety permissions. The application user must
+be enabled and have the existing paid Speech entitlement; no cloud credentials
+are sent to the browser. Enablement and spending require a separate operator
+decision.
+
+Open **Lyrics** for the active brief, authorize the disclosed paid Foundry and
+Content Safety requests, then select **Generate 3 lyric options**. This action
+has no upfront cost estimate or Speech-budget reconciliation: the consent is
+for this lyric-generation action only. Each of three candidate slots uses the
+existing screened writer with at most four attempts. Duplicate, rejected or
+unavailable results are explicit outcomes, not a promise of three usable texts.
+Only screened accepted or human-held results include lyric text. Review status
+and reasons for every option; generated lyrics require human review before
+broadcast.
+
+Options are per-brief, in-memory drafts and are lost on page reload or sign-out.
+They do not automatically replace the audio script or trigger a render.
+Custom audio currently uses the supplied brand, offer and CTA; sample audio
+retains its fixture script. Missing configuration or entitlement disables
+generation rather than substituting fake local lyrics.
 
 ## Local audio and evaluation storage
 

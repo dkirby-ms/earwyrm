@@ -1,0 +1,43 @@
+{
+  "task_id": "unified-brief-workspace",
+  "task_slug": "unified-brief-workspace",
+  "session_name": "Unified brief workspace",
+  "parent_task": null,
+  "child_tasks": [
+    {"task_id": "paid-mode-recovery", "task_slug": "paid-mode-recovery", "state_path": ".copilot-tracking/rpi-sessions/2026-11-16/unified-brief-workspace/paid-mode-recovery-state.json"}
+  ],
+  "mode": "automatic",
+  "active_phase": "Follow-up",
+  "status": "completed",
+  "session_status": "stopped",
+  "artifact_paths": {
+    "research": ".copilot-tracking/research/2026-11-16/unified-brief-workspace-research.md",
+    "plan": ".copilot-tracking/plans/2026-11-16/unified-brief-workspace-plan.md",
+    "critique": ".copilot-tracking/reviews/plans/2026-11-16/unified-brief-workspace-plan-critique.md",
+    "changes": ".copilot-tracking/changes/2026-11-16/unified-brief-workspace-changes.md",
+    "review": ".copilot-tracking/reviews/logs/2026-11-16/unified-brief-workspace-review.md"
+  },
+  "documents": {
+    "research": [".copilot-tracking/research/2026-11-16/unified-brief-workspace-research.md"],
+    "plan": [".copilot-tracking/plans/2026-11-16/unified-brief-workspace-plan.md"],
+    "critique": [".copilot-tracking/reviews/plans/2026-11-16/unified-brief-workspace-plan-critique.md"],
+    "changes": [".copilot-tracking/changes/2026-11-16/unified-brief-workspace-changes.md"],
+    "review": [".copilot-tracking/reviews/logs/2026-11-16/unified-brief-workspace-review.md"]
+  },
+  "confirmed_decisions": [
+    {"decision": "Automatic session scope", "status": "current", "evidence": "User approved the unified brief workspace proposal and requested implementation with RPI on 2026-11-16. Deliver consolidated brief loading/entry/upload, selection, lyrics, optional-vocal rendering, results/evaluation and recent runs; preserve authorization and paid safeguards. Source, focused tests and directly related documentation are writable. No deployment, paid calls, remote writes or unrelated cleanup."},
+    {"decision": "Automatic progression boundary", "status": "through-review", "evidence": "User chose end-to-end."},
+    {"decision": "Research decision participation", "status": "agent-owned", "evidence": "End-to-end default."},
+    {"decision": "Planning decision participation", "status": "agent-owned", "evidence": "End-to-end default."},
+    {"decision": "Review decision participation", "status": "agent-owned", "evidence": "End-to-end default."},
+    {"decision": "Follow-up decision participation", "status": "agent-owned", "evidence": "End-to-end default."},
+    {"decision": "Planning critique", "status": "standard", "evidence": "First-task default; performed locally if no dispatch tool is available."},
+    {"decision": "Review step", "status": "run", "evidence": "First-task default."},
+    {"decision": "Subagent use", "status": "auto", "evidence": "Default; no dispatch capability exposed."},
+    {"decision": "Canvas availability", "status": "unavailable", "evidence": "Canvas type is listed but tool discovery and canvas action tools are not exposed; continue with durable files."},
+    {"decision": "UX direction", "status": "approved", "evidence": "User said approved and requested changes. The artifact human-review checkbox remains untouched; no conformance or participant validation is claimed."}
+  ],
+  "blockers": [],
+  "next_action": {"phase": "Follow-up", "action": "Complete. No required implementation action remains; visual/participant validation and live cloud enablement are not claimed."},
+  "prioritized_follow_ups": []
+}

@@ -1,0 +1,45 @@
+{
+  "task_id": "paid-mode-recovery",
+  "task_slug": "paid-mode-recovery",
+  "session_name": "Unified brief workspace",
+  "parent_task": {
+    "task_id": "unified-brief-workspace",
+    "task_slug": "unified-brief-workspace",
+    "state_path": ".copilot-tracking/rpi-sessions/2026-11-16/unified-brief-workspace/unified-brief-workspace-state.json"
+  },
+  "child_tasks": [],
+  "mode": "automatic",
+  "active_phase": "Follow-up",
+  "status": "completed",
+  "session_status": "stopped",
+  "artifact_paths": {
+    "research": ".copilot-tracking/research/2026-11-16/unified-brief-workspace-research.md",
+    "plan": ".copilot-tracking/plans/2026-11-16/paid-mode-recovery-plan.md",
+    "critique": null,
+    "changes": ".copilot-tracking/changes/2026-11-16/paid-mode-recovery-changes.md",
+    "review": null
+  },
+  "documents": {
+    "research": [".copilot-tracking/research/2026-11-16/unified-brief-workspace-research.md"],
+    "plan": [".copilot-tracking/plans/2026-11-16/paid-mode-recovery-plan.md"],
+    "critique": [],
+    "changes": [".copilot-tracking/changes/2026-11-16/paid-mode-recovery-changes.md"],
+    "review": []
+  },
+  "confirmed_decisions": [
+    {"decision": "Automatic session scope", "status": "current", "evidence": "Inherited unchanged from parent unified-brief-workspace: consolidate brief input, lyrics, optional-vocal rendering and owned evaluation/history; preserve existing authorization and paid safeguards. Source, focused tests and directly related documentation allowed. No deployment, real provider requests, paid spending, remote writes or unrelated cleanup."},
+    {"decision": "Automatic progression boundary", "status": "through-review", "evidence": "Inherited user end-to-end authorization."},
+    {"decision": "Research decision participation", "status": "agent-owned", "evidence": "Inherited."},
+    {"decision": "Planning decision participation", "status": "agent-owned", "evidence": "Inherited."},
+    {"decision": "Review decision participation", "status": "agent-owned", "evidence": "Inherited."},
+    {"decision": "Follow-up decision participation", "status": "agent-owned", "evidence": "Inherited."},
+    {"decision": "Subagent use", "status": "auto", "evidence": "Inherited; no dispatch capability."},
+    {"decision": "Planning critique", "status": "skip", "evidence": "Child-loop default; no additional critique requested."},
+    {"decision": "Review step", "status": "skip", "evidence": "Child-loop default; the session's one planned Review is complete. Validate correction without claiming a second review."},
+    {"decision": "Canvas availability", "status": "unavailable", "evidence": "Inherited tool limitation; no new capability exposed."},
+    {"decision": "Research disposition", "status": "reused", "evidence": "Parent research C1/C2 and accepted RV-001 fully establish the state owner, independent offline path and exact gate defect. Root cause is the checkbox being disabled while its selected paid mode is unavailable. Resolution is observable with the existing fake paid-flow test. No unresolved feasibility or significant decision; Planning Readiness Ready."}
+  ],
+  "blockers": [],
+  "next_action": {"phase": "Follow-up", "action": "Complete. RV-001 resolved with failing-before/passing-after regression evidence; no second Review performed."},
+  "prioritized_follow_ups": []
+}
