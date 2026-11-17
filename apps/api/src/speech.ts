@@ -1,5 +1,5 @@
 import * as sdk from "microsoft-cognitiveservices-speech-sdk";
-import { FRAMES, SAMPLE_RATE, musical_plan, tone, vocal_pitch, type Audio, type Note, type Seed } from "./dsp.js";
+import { DURATION, SAMPLE_RATE, ScoreDuration, musical_form, musical_plan, tone, vocal_pitch, type Audio, type MusicalForm, type Note, type Seed } from "./dsp.js";
 
 export const VOICE = "en-US-JennyNeural";
 
@@ -16,6 +16,13 @@ export interface SpeechProvider {
 export interface WordAlignment {
   word: string; source_offset_seconds: number; source_duration_seconds: number; text_offset: number;
   target_offset_seconds: number; target_duration_seconds: number; midi_note: number;
+}
+
+/** First hook word after the last sentence boundary; unsplit text uses its second half. */
+export function hook_word_index(utterance: Utterance, text: string): number {
+  const boundary = [...text.matchAll(/[.!?]\s+(?=[A-Za-z])/g)].at(-1);
+  const index = boundary ? utterance.words.findIndex(word => word.text_offset >= boundary.index + boundary[0].length) : -1;
+  return index > 0 ? index : Math.max(1, Math.floor(utterance.words.length / 2));
 }
 
 /** Explicit stock Azure voice adapter, with no audio device or hidden retries. */
@@ -93,23 +100,58 @@ export function validate_utterance(utterance: Utterance, text: string): void {
   }
 }
 
-/** Fit complete word intervals into quarter-second slots between seconds 3 and 25.
+/** Fit complete words to quarter-second notes, optionally separating verse and hook.
+ * @remarks Without a form, retains the legacy seconds 3-25 window and 30-second buffers.
  * @returns Owned speech modulator, harmonic carrier, notes and source-to-target mapping.
  */
-export function align(utterance: Utterance, text: string, root: number, { melody_seed = null }: { melody_seed?: Seed | null } = {}): [Audio, Audio, Note[], WordAlignment[]] {
+export function align(utterance: Utterance, text: string, root: number, { melody_seed = null, form }: { melody_seed?: Seed | null; form?: MusicalForm } = {}): [Audio, Audio, Note[], WordAlignment[]] {
   validate_utterance(utterance, text);
   if (utterance.words.length > 88) throw new RangeError("Script has too many words for the bounded vocal window");
+  if (form) {
+    const expected = musical_form(form.duration_seconds);
+    if (form.hook_start_seconds !== expected.hook_start_seconds || form.cadence_start_seconds !== expected.cadence_start_seconds) throw new RangeError("Invalid musical form");
+  }
   const slots = utterance.words.map(word => Math.max(1, Math.round(word.duration / 0.25)));
   let sum = slots.reduce((a, b) => a + b, 0);
   while (sum > 88) {
     const maximum = Math.max(...slots), index = slots.indexOf(maximum);
     slots[index]--; sum--;
   }
-  const modulator = new Float64Array(FRAMES), carrier = new Float64Array(FRAMES), notes: Note[] = [], alignment: WordAlignment[] = [];
-  let start = 3;
+  const frames = (form?.duration_seconds ?? DURATION) * SAMPLE_RATE;
+  const modulator = new Float64Array(frames), carrier = new Float64Array(frames), notes: Note[] = [], alignment: WordAlignment[] = [];
+  const starts: number[] = [];
+  const split = form ? hook_word_index(utterance, text) : utterance.words.length;
+  if (form) {
+    const rhythm = musical_plan(melody_seed ?? root).rhythm;
+    for (const [first, last, start, end] of [[0, split, 0.5, form.hook_start_seconds - 0.25],
+      [split, utterance.words.length, form.hook_start_seconds, form.cadence_start_seconds - 0.25]]) {
+      if (first === last) continue;
+      const capacity = Math.floor((end - start) * 4);
+      if (capacity < last - first) throw new RangeError("Complete verse or hook cannot fit the musical form; shorten the script");
+      for (let i = first; i < last; i++) slots[i] = 1;
+      const rests = capacity >= (last - first) * 2 ? Math.floor((last - first - 1) / 4) : 0;
+      let remaining = capacity - (last - first) - rests;
+      while (remaining > 0) {
+        const eligible = Array.from({ length: last - first }, (_, i) => first + i).filter(i => slots[i] < 4);
+        if (!eligible.length) break;
+        const index = eligible.reduce((best, i) => slots[i] / (utterance.words[i].duration * 4 + rhythm[(i - first) % 8]) <
+          slots[best] / (utterance.words[best].duration * 4 + rhythm[(best - first) % 8]) ? i : best);
+        slots[index]++; remaining--;
+      }
+      let cursor = start;
+      for (let i = first; i < last; i++) {
+        starts[i] = cursor;
+        cursor += slots[i] * 0.25;
+        if (rests && (i - first + 1) % 4 === 0 && i < last - 1) cursor += 0.25;
+      }
+    }
+  } else {
+    let cursor = 3;
+    for (let i = 0; i < slots.length; i++) { starts[i] = cursor; cursor += slots[i] * 0.25; }
+  }
   const seed = melody_seed ?? root, transpose = root - musical_plan(seed).root;
   utterance.words.forEach((word, index) => {
-    const duration = slots[index] * 0.25;
+    const start = starts[index], duration = slots[index] * 0.25;
     const source = utterance.audio.subarray(Math.round(word.offset * SAMPLE_RATE), Math.round((word.offset + word.duration) * SAMPLE_RATE));
     if (source.length < 2) throw new RangeError("Source word interval is too short");
     const count = Math.round(duration * SAMPLE_RATE), fitted = new Float64Array(count);
@@ -119,22 +161,24 @@ export function align(utterance: Utterance, text: string, root: number, { melody
     }
     const fade = Math.min(Math.round(0.005 * SAMPLE_RATE), Math.floor(count / 2));
     for (let i = 0; i < fade; i++) { const weight = i / (fade - 1); fitted[i] *= weight; fitted[count - i - 1] *= weight; }
-    const pitch = vocal_pitch(seed, index, start) + transpose;
+    const phrase_index = index >= split ? index - split : index;
+    const pitch = (form && index === utterance.words.length - 1 ? musical_plan(seed).pitch(7) :
+      vocal_pitch(seed, phrase_index, start, form?.duration_seconds)) + transpose;
     if (!Number.isInteger(pitch) || pitch < 0 || pitch > 127) throw new RangeError("Aligned MIDI pitch is out of range");
     const destination = Math.round(start * SAMPLE_RATE);
     modulator.set(fitted, destination); carrier.set(tone(pitch, duration), destination);
     notes.push({ start, duration, pitch, instrument: "vocal", gain: 0.25 });
     alignment.push({ word: word.text, source_offset_seconds: word.offset, source_duration_seconds: word.duration, text_offset: word.text_offset, target_offset_seconds: start, target_duration_seconds: duration, midi_note: pitch });
-    start += duration;
   });
   return [modulator, carrier, notes, alignment];
 }
 
 /** Place complete unmodified speech near the end, retaining one second of final silence. */
-export function place_spoken(utterance: Utterance): Audio {
-  if (utterance.audio.length > 25 * SAMPLE_RATE) throw new RangeError("Natural speech exceeds the 25-second window; shorten the script");
+export function place_spoken(utterance: Utterance, duration_seconds = DURATION): Audio {
+  ScoreDuration.parse(duration_seconds);
+  if (utterance.audio.length > Math.min(25, duration_seconds - 2) * SAMPLE_RATE) throw new RangeError("Natural speech exceeds the bounded 25-second maximum window; shorten the script");
   if (!utterance.audio.length || !utterance.audio.every(Number.isFinite)) throw new RangeError("Speech must be finite nonempty audio");
-  const output = new Float64Array(FRAMES);
-  output.set(utterance.audio, FRAMES - SAMPLE_RATE - utterance.audio.length);
+  const output = new Float64Array(duration_seconds * SAMPLE_RATE);
+  output.set(utterance.audio, output.length - SAMPLE_RATE - utterance.audio.length);
   return output;
 }

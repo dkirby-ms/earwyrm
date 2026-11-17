@@ -292,8 +292,8 @@ describe('same-origin Express API', () => {
     expect(audio.readUInt16LE(34)).toBe(16);
     const duration = audio.readUInt32LE(40) / (audio.readUInt32LE(24) * 2);
     expect(duration).toBe(output.duration_seconds);
-    expect(duration).toBeGreaterThanOrEqual(29.5);
-    expect(duration).toBeLessThanOrEqual(30);
+    expect(duration).toBeGreaterThanOrEqual(14);
+    expect(duration).toBeLessThanOrEqual(20);
     const persisted = await store.get_output(output.output_id, 'user-a');
     expect(persisted?.manifest.sha256).toBe(createHash('sha256').update(audio).digest('hex'));
     expect(statSync(join(root, 'audio', `${output.output_id}.wav`)).mode & 0o777).toBe(0o600);

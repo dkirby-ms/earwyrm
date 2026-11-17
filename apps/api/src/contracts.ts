@@ -95,10 +95,10 @@ export const QualityReport = z.strictObject({
   if (report.status !== expected) {
     context.addIssue({ code: 'custom', message: 'Overall quality must fail on failure and remain pending on missing evidence' });
   }
-  if (report.duration.unit !== 's' || report.duration.minimum !== 29.5 ||
+  if (report.duration.unit !== 's' || ![12, 29.5].includes(report.duration.minimum ?? NaN) ||
     report.duration.maximum !== 30 || report.loudness.unit !== 'LUFS' ||
     report.intelligibility.unit !== '1' || report.similarity.unit !== '1') {
-    context.addIssue({ code: 'custom', message: 'Quality units and duration limits must match the v1 contract' });
+    context.addIssue({ code: 'custom', message: 'Quality units and duration limits must match phrase-led or legacy limits' });
   }
 });
 

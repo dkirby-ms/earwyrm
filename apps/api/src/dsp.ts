@@ -26,6 +26,27 @@ export const DURATION = 30;
 export const FRAMES = SAMPLE_RATE * DURATION;
 /** Seconds per quarter note at 120 BPM. */
 export const BEAT = 0.5;
+/** Whole 4/4 bars at 120 BPM; reserve verse, two hook phrases and cadence within 12-30 seconds. */
+export const ScoreDuration = z.number().min(12).max(DURATION).multipleOf(2);
+
+/** Section boundaries in seconds; the final bar is reserved for a tonic cadence. */
+export interface MusicalForm {
+  duration_seconds: number;
+  hook_start_seconds: number;
+  cadence_start_seconds: number;
+}
+
+/** Describe a verse, returning chorus hook and final cadence on bar boundaries. */
+export function musical_form(duration_seconds = DURATION): MusicalForm {
+  duration_seconds = ScoreDuration.parse(duration_seconds);
+  return { duration_seconds, hook_start_seconds: Math.max(2, duration_seconds - 10), cadence_start_seconds: duration_seconds - 2 };
+}
+
+/** Choose a concise seeded form, extending by whole bars for complete speech; never truncate. */
+export function jingle_duration(seed: Seed, minimum_seconds = 0): number {
+  if (!Number.isFinite(minimum_seconds) || minimum_seconds < 0) throw new RangeError("Invalid minimum jingle duration");
+  return ScoreDuration.parse(Math.max(14 + Math.floor(seeded_random(seed)() * 3) * 2, Math.ceil(minimum_seconds / 2) * 2));
+}
 
 /** MIDI pitch and instrument event; start and duration are seconds. */
 export interface Note {
@@ -90,55 +111,89 @@ function fade_edges(audio: Audio, count: number): void {
   }
 }
 
-/** Choose repeatable root, mode, harmony, hook and eighth-note rhythm. */
+/** Choose repeatable root, mode, harmony and a syncopated call/response motif. */
 export function musical_plan(seed: Seed): MusicalPlan {
   const random = seeded_random(seed);
   const choose = <T>(values: T[]): T => values[Math.floor(random() * values.length)];
   const root = choose([45, 47, 48, 50, 52, 53, 55]);
   const scale = random() >= 0.5 ? [0, 2, 4, 5, 7, 9, 11] : [0, 2, 3, 5, 7, 8, 10];
   const progression = choose([[0, 5, 3, 4], [0, 3, 4, 0], [0, 5, 1, 4], [0, 4, 5, 3]]);
-  let degree = choose([0, 2, 4]);
-  const motif = [degree];
-  for (let i = 0; i < 6; i++) {
-    degree = Math.max(0, Math.min(9, degree + choose([-3, -2, -1, 1, 2, 3])));
-    motif.push(degree);
-  }
-  motif.push(choose([0, 2, 4]));
-  const rhythm = Array<number>(8).fill(1);
-  for (let i = 0; i < 8; i++) rhythm[Math.floor(random() * 8)]++;
+  const anchor = choose([0, 1, 2, 4]), lift = choose([2, 3, 4]), turn = choose([-2, -1, 1]);
+  const motif = [anchor, anchor + lift, anchor + lift + turn, anchor + choose([-1, 1, 2]),
+    anchor, anchor + lift, anchor + lift + choose([-2, 0, 1]), choose([1, 2, 4])];
+  const first = choose([1, 2, 3]), second = choose([1, 2, 3]);
+  const third = 1 + Math.floor(random() * (7 - first - second)), answer = choose([0, 1]), push = choose([0, 0.5]);
+  const rhythm = [first, second + push, third, 8 - first - second - third - push,
+    first, second + push, Math.max(1, third - answer), 8 - first - second - Math.max(1, third - answer) - push];
   return { root, scale, progression, motif, rhythm, pitch: degree => root + scale[((degree % 7) + 7) % 7] + Math.floor(degree / 7) * 12 };
 }
 
 /** Develop the shared hook over the chord at an onset measured in seconds. */
-export function vocal_pitch(seed: Seed, index: number, start: number): number {
+export function vocal_pitch(seed: Seed, index: number, start: number, duration_seconds = DURATION): number {
   const plan = musical_plan(seed);
-  const chord = plan.progression[Math.min(14, Math.floor(start / 2)) % 4];
+  const form = musical_form(duration_seconds);
+  const chord = chord_degree(plan, Math.floor(start / 2), form);
   let degree = plan.motif[index % 8];
-  if (start >= 14 && start < 22) degree = 7 - degree;
-  return plan.pitch(degree + chord) + 12;
+  if (start < form.hook_start_seconds) degree -= 2;
+  const answering = start >= form.hook_start_seconds + 4;
+  if (answering && index % 8 >= 6) degree = index % 8 === 7 ? 0 : 1;
+  if (index % 4 === 3) {
+    const tones = [chord - 7, chord - 5, chord - 3, chord, chord + 2, chord + 4, chord + 7];
+    degree = tones.reduce((nearest, tone) => Math.abs(tone - degree) < Math.abs(nearest - degree) ? tone : nearest);
+  }
+  return plan.pitch(degree + 7);
 }
 
-/** Compose a 30-second 120 BPM intro, returning hook, bridge and cadence. */
-export function compose(index: Seed): Note[] {
+/** Scale-degree chord root for a zero-based bar, including dominant-to-tonic closure. */
+export function chord_degree(plan: MusicalPlan, bar: number, form: MusicalForm): number {
+  if (bar * 2 >= form.cadence_start_seconds) return 0;
+  if (bar * 2 === form.cadence_start_seconds - 2) return 4;
+  return plan.progression[bar % plan.progression.length];
+}
+
+/** Compose developed two-bar phrases with sparse verse, fuller hook and tonic ending.
+ * @param duration_seconds - Whole-bar duration, 12-30 seconds; legacy callers default to 30.
+ */
+export function compose(index: Seed, duration_seconds = DURATION): Note[] {
   const plan = musical_plan(index);
+  const form = musical_form(duration_seconds);
   const notes: Note[] = [];
-  for (let bar = 0; bar < 15; bar++) {
-    const chord = bar < 14 ? plan.progression[bar % 4] : 0;
+  let voicing = [plan.pitch(0), plan.pitch(2), plan.pitch(4)];
+  for (let bar = 0; bar < duration_seconds / 2; bar++) {
+    const chord = chord_degree(plan, bar, form);
     const start = bar * 2;
-    const inversion = typeof index === "number" ? (bar + index) % 3 : Number((BigInt(index) + BigInt(bar)) % 3n);
-    [chord, chord + 2, chord + 4].forEach((degree, voice) => notes.push({ start, duration: 1.9, pitch: plan.pitch(degree) + (voice < inversion ? 12 : 0), instrument: "pad", gain: 0.045 }));
-    for (let beat = 0; beat < 4; beat++) {
-      notes.push({ start: start + beat * BEAT, duration: 0.38, pitch: plan.pitch(chord + (beat === 3 && bar % 2 ? 4 : 0)) - 12, instrument: "bass", gain: 0.15 });
-      notes.push({ start: start + beat * BEAT, duration: 0.16, pitch: 36, instrument: "kick", gain: 0.21 });
-      if (bar !== 0 && bar !== 14) notes.push({ start: start + beat * BEAT + 0.25, duration: 0.055, pitch: 42, instrument: "hat", gain: 0.028 });
+    const hook = start >= form.hook_start_seconds, closing = start === form.cadence_start_seconds;
+    const inversions = [0, 1, 2].flatMap(inversion => [-12, 0].map(octave =>
+      [0, 2, 4].map((degree, voice) => plan.pitch(chord + degree) + octave + (voice < inversion ? 12 : 0)).sort((a, b) => a - b)));
+    voicing = inversions.reduce((best, candidate) =>
+      candidate.reduce((sum, pitch, voice) => sum + Math.abs(pitch - voicing[voice]), 0) <
+      best.reduce((sum, pitch, voice) => sum + Math.abs(pitch - voicing[voice]), 0) ? candidate : best);
+    voicing.forEach(pitch => notes.push({ start, duration: closing ? 2 : 1.95, pitch, instrument: "pad", gain: hook ? 0.055 : 0.04 }));
+    for (const [step, offset] of (closing ? [0] : hook ? [0, 0.75, 1, 1.75] : [0, 1.25]).entries()) {
+      notes.push({ start: start + offset, duration: closing ? 1.6 : step % 2 ? 0.19 : 0.4,
+        pitch: plan.pitch(chord + (step % 2 ? 4 : 0)) - 12, instrument: "bass", gain: step % 2 ? 0.1 : 0.15 });
     }
-    if (bar === 0) continue;
+    for (const offset of closing ? [0] : hook ? [0, 0.75, 1] : [0, 1]) {
+      notes.push({ start: start + offset, duration: 0.16, pitch: 36, instrument: "kick", gain: offset === 0.75 ? 0.1 : 0.18 });
+    }
+    if (!closing) {
+      if (hook) for (const offset of [0.5, 1.5]) notes.push({ start: start + offset, duration: 0.12, pitch: 38, instrument: "snare", gain: 0.075 });
+      for (let tick = 0; tick < (hook ? 8 : 4); tick++) {
+        notes.push({ start: start + tick * (hook ? 0.25 : 0.5), duration: 0.045, pitch: 42, instrument: "hat", gain: tick % 2 ? 0.016 : 0.024 });
+      }
+    }
+    if (closing) {
+      notes.push({ start, duration: 1.75, pitch: plan.pitch(7), instrument: "lead", gain: 0.09 });
+      continue;
+    }
+    const phrase_start = hook ? form.hook_start_seconds : 0;
+    const position = ((start - phrase_start) % 4) * 4;
     let cursor = 0;
     plan.rhythm.forEach((length, step) => {
-      const position = ((bar - 1) % 2) * 8;
-      if (cursor >= position && cursor < position + 8) {
+      if (cursor >= position && cursor < position + 8 && (hook || step % 2 === 0)) {
         const onset = start + (cursor - position) * 0.25;
-        notes.push({ start: onset, duration: Math.min(length * 0.25 * 0.85, 30 - onset), pitch: bar === 14 ? plan.pitch(7) : vocal_pitch(index, step, onset), instrument: "lead", gain: 0.045 });
+        notes.push({ start: onset, duration: length * 0.25 * (step % 4 === 3 ? 0.94 : 0.78),
+          pitch: vocal_pitch(index, step, onset, duration_seconds), instrument: "lead", gain: hook ? 0.075 : 0.045 });
       }
       cursor += length;
     });
@@ -146,28 +201,30 @@ export function compose(index: Seed): Note[] {
   return notes;
 }
 
-function validate_note(note: Note): void {
-  if (![note.start, note.duration, note.pitch, note.gain].every(Number.isFinite) || note.start < 0 || note.duration <= 0 || note.start + note.duration > DURATION + 1e-9 || !Number.isInteger(note.pitch) || note.pitch < 0 || note.pitch > 127 || note.gain < 0 || !["pad", "bass", "lead", "vocal", "kick", "hat"].includes(note.instrument)) throw new RangeError("Invalid note timing, pitch or instrument");
+function validate_note(note: Note, duration_seconds = DURATION): void {
+  if (![note.start, note.duration, note.pitch, note.gain].every(Number.isFinite) || note.start < 0 || note.duration <= 0 || note.start + note.duration > duration_seconds + 1e-9 || !Number.isInteger(note.pitch) || note.pitch < 0 || note.pitch > 127 || note.gain < 0 || !["pad", "bass", "lead", "vocal", "kick", "hat", "snare"].includes(note.instrument)) throw new RangeError("Invalid note timing, pitch or instrument");
 }
 
-/** Render oscillator instruments and seeded noise into exactly FRAMES samples. */
-export function synthesize(notes: readonly Note[], { seed }: { seed: Seed }): Audio {
-  const output = new Float64Array(FRAMES);
+/** Render oscillator instruments and seeded noise; reject events beyond the selected whole-bar end. */
+export function synthesize(notes: readonly Note[], { seed, duration_seconds = DURATION }: { seed: Seed; duration_seconds?: number }): Audio {
+  const output = new Float64Array(ScoreDuration.parse(duration_seconds) * SAMPLE_RATE);
   const random = seeded_random(seed);
   for (const note of notes) {
-    validate_note(note);
+    validate_note(note, duration_seconds);
     const count = Math.round(note.duration * SAMPLE_RATE);
-    const audio = note.instrument === "kick" || note.instrument === "hat" ? new Float64Array(count) : tone(note.pitch, note.duration, { bright: note.instrument === "lead" });
+    const audio = ["kick", "hat", "snare"].includes(note.instrument) ? new Float64Array(count) : tone(note.pitch, note.duration, { bright: note.instrument === "vocal" });
     let previous = 0;
     const start = Math.round(note.start * SAMPLE_RATE);
-    for (let i = 0; i < count && start + i < FRAMES; i++) {
+    for (let i = 0; i < count && start + i < output.length; i++) {
       const t = i / SAMPLE_RATE;
       if (note.instrument === "kick") audio[i] = Math.sin(2 * Math.PI * (48 * t + 7 * (1 - Math.exp(-35 * t)))) * Math.exp(-25 * t);
-      else if (note.instrument === "hat") {
+      else if (note.instrument === "hat" || note.instrument === "snare") {
         const noise = Math.sqrt(-2 * Math.log(Math.max(Number.EPSILON, random()))) * Math.cos(2 * Math.PI * random());
-        audio[i] = (noise - previous) * Math.exp(-65 * t);
+        audio[i] = (noise - previous) * Math.exp(-(note.instrument === "hat" ? 65 : 28) * t);
         previous = noise;
-      } else if (note.instrument === "lead") audio[i] *= Math.exp(-5 * t);
+      } else if (note.instrument === "lead") audio[i] *= (0.65 + 0.35 * Math.exp(-12 * t)) * Math.exp(-1.7 * t);
+      else if (note.instrument === "bass") audio[i] *= Math.exp(-4 * t);
+      else if (note.instrument === "pad") audio[i] *= Math.min(1, t / 0.12) * Math.min(1, (note.duration - t) / 0.18);
       output[start + i] += note.gain * audio[i];
     }
   }
@@ -183,9 +240,9 @@ function peak(audio: Audio): number {
   return maximum;
 }
 
-/** Return faded, -1 dB peak-normalized audio; reject silence or non-30-second input. */
+/** Return faded, -1 dB peak-normalized audio; reject silence or invalid whole-bar PCM. */
 export function normalize(audio: Audio): Audio {
-  if (audio.length !== FRAMES) throw new RangeError("Audio must contain exactly 30 seconds of finite samples");
+  if (!ScoreDuration.safeParse(audio.length / SAMPLE_RATE).success) throw new RangeError("Audio must contain 12 to 30 seconds in whole bars");
   const maximum = peak(audio);
   if (maximum < 1e-8) throw new RangeError("Refusing to export silent audio");
   const output = audio.slice();
@@ -211,9 +268,9 @@ function filter(audio: Audio, cutoff: number, highpass = false): Audio {
   return out;
 }
 
-/** Duck the bed using vocal energy and return a normalized 30-second mix. */
+/** Duck the bed using vocal energy; inputs must have equal, valid whole-bar lengths. */
 export function mix(bed: Audio, vocal: Audio): Audio {
-  if (bed.length !== FRAMES || vocal.length !== FRAMES) throw new RangeError("Mix inputs must contain 30 seconds");
+  if (bed.length !== vocal.length || !ScoreDuration.safeParse(bed.length / SAMPLE_RATE).success) throw new RangeError("Mix inputs must contain equal whole-bar durations");
   peak(bed);
   const maximum = peak(vocal);
   if (maximum < 1e-8) throw new RangeError("Vocal is silent");
@@ -260,12 +317,13 @@ function variable_length(value: number): number[] {
   return result;
 }
 
-/** Synchronously write a type-0, 480 PPQ MIDI score ending at 30 seconds. */
-export function write_midi(path: string, notes: readonly Note[]): void {
-  const channels: Record<string, number> = { pad: 0, bass: 1, lead: 2, vocal: 3, kick: 9, hat: 9 };
+/** Synchronously write type-0, 480 PPQ MIDI ending at the selected whole-bar duration. */
+export function write_midi(path: string, notes: readonly Note[], duration_seconds = DURATION): void {
+  ScoreDuration.parse(duration_seconds);
+  const channels: Record<string, number> = { pad: 0, bass: 1, lead: 2, vocal: 3, kick: 9, hat: 9, snare: 9 };
   const events: [number, number[]][] = [[0, [255, 81, 3, 7, 161, 32]]];
   for (const note of notes) {
-    validate_note(note);
+    validate_note(note, duration_seconds);
     const channel = channels[note.instrument], velocity = Math.max(1, Math.min(127, Math.round(note.gain * 300)));
     events.push([Math.round(note.start / BEAT * 480), [144 | channel, note.pitch, velocity]], [Math.round((note.start + note.duration) / BEAT * 480), [128 | channel, note.pitch, 0]]);
   }
@@ -273,7 +331,7 @@ export function write_midi(path: string, notes: readonly Note[]): void {
   const track: number[] = [];
   let previous = 0;
   for (const [tick, message] of events) { track.push(...variable_length(tick - previous), ...message); previous = tick; }
-  track.push(...variable_length(Math.max(0, 60 * 480 - previous)), 255, 47, 0);
+  track.push(...variable_length(Math.max(0, duration_seconds / BEAT * 480 - previous)), 255, 47, 0);
   const header = Buffer.alloc(22);
   header.write("MThd", 0); header.writeUInt32BE(6, 4); header.writeUInt16BE(0, 8); header.writeUInt16BE(1, 10); header.writeUInt16BE(480, 12); header.write("MTrk", 14); header.writeUInt32BE(track.length, 18);
   writeFileSync(path, Buffer.concat([header, Buffer.from(track)]));

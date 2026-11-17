@@ -12,22 +12,29 @@ no cloning, custom voice or artist-imitation interface.
 Each run gets a unique directory under `renders/`. Each brief gets a MIDI score,
 JSON notes, a script, an alignment map and an evidence manifest.
 
-* Instrumental-only mode exports three 30-second instrumental WAVs without
+* Instrumental-only mode exports three phrase-led instrumental WAVs without
   network access. These are not vocal proof results.
 * Azure mode makes three stock-voice requests, one per brief, and exports six
-  30-second WAVs: one vocoded and one instrumental-bed/spoken-tagline version
+  variable-length WAVs: one vocoded and one instrumental-bed/spoken-tagline version
   per brief. Source and aligned speech WAVs are also retained for diagnosis.
 
 Outputs are mono 24 kHz PCM16 review demos, peak-normalized to -1 dBFS.
 This is not LUFS normalization, broadcast mastering, commercial-catalog or legal
 clearance, or a claim of natural singing. Listen at a comfortable volume.
 
-Each new render now chooses a fresh recorded composition seed, rather than
-rotating or transposing a fixed tune. The hook's intervals and rhythm, chord
-progression, voicings and contrasting section vary. The vocal carrier develops
-the same musical identity. `composition.json` retains the seed and bounded
-similarity report; identical seeds remain reproducible within this TypeScript
-implementation. The native generator and DSP do not reproduce the former
+New renders use a concise verse, a recurring chorus hook with an answering phrase,
+and a tonic closing bar. Length follows whole musical bars and script fit,
+normally about 14-20 seconds, not a fixed 15 or 30 seconds. Complete longer speech
+can extend the form up to 30 seconds; unfit text fails rather than being cropped.
+Verse accompaniment is sparse; the hook adds a backbeat, denser hats, syncopated
+bass and a stronger lead. Pad inversions keep chord voices close.
+
+Each render chooses a fresh recorded seed. The hook's contour and syncopation,
+chord progression and voicings vary while its core motif returns within the jingle.
+The vocal carrier develops the same identity. `composition.json` retains the seed,
+section boundaries, bounded similarity report and generator version
+`earwyrm-phrase-v2`. Identical seed, form and input reproduce this generator's
+output, not previous generator versions. The native generator and DSP do not reproduce the former
 NumPy random stream or historical waveform bytes. Existing artifacts and
 stored scores retain their provenance; do not compare a newly rendered seed
 with a historical audio digest as though it were the same renderer version.
@@ -130,7 +137,10 @@ brief facts and do not call a lyric model.
 The arrangement is 120 BPM. Azure word events supply source offsets, durations
 and text positions. The renderer rejects missing, overlapping or mismatched
 word events instead of silently omitting speech. Complete word intervals are
-resampled into quarter-second note slots between seconds 3 and 25. An 18-band
+resampled into quarter-second note slots in separate verse and hook windows,
+with short breathing gaps and a reserved closing cadence. The final script
+sentence supplies the hook/CTA; scripts without sentence boundaries split their
+words into two phrases. An 18-band
 vocoder transfers those speech envelopes to the synthesized melody carrier;
 high-frequency speech preserves unvoiced consonants. Resampling changes the
 modulator pitch, so this path is an intelligibility experiment, not a
@@ -139,6 +149,13 @@ rate and ends one second before the spot finishes. This legacy POC map remains
 word-level; it does not pretend Azure provides syllable boundaries. The
 independent MCP service accepts explicit upstream syllables and timing windows
 and returns a per-syllable map.
+
+The numeric duration gate checks the chosen form's length (within 0.5 seconds),
+not a blanket 30-second requirement. The original
+[audio proof protocol](protocol.md) remains a historical fixed-duration experiment;
+these shorter outputs do not establish that its original 30-second proof passed.
+Technical checks cannot prove memorability or authentic singing. Compare the hook,
+phrase development, verse/chorus contrast and ending by listening before approving.
 
 ## Evidence and evaluation
 

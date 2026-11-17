@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { Seed, compose, musical_plan, seeded_random, vocal_pitch, type Note } from "./dsp.js";
+import { ScoreDuration, Seed, chord_degree, compose, musical_form, musical_plan, seeded_random, vocal_pitch, type Note } from "./dsp.js";
 
 /** Version-one delivery path; neither path promises natural singing. */
 export const ProductPath = z.enum(["vocoded", "spoken"]);
@@ -23,7 +23,7 @@ export const LyricLine = z.strictObject({
 });
 export type LyricLine = z.infer<typeof LyricLine>;
 
-/** Strict 30-second composition request with lossless canonical signed-63-bit seeds. */
+/** Whole-bar composition request; omitted duration retains the legacy 30-second identity. */
 export const CompositionRequest = z.strictObject({
   schema_version: z.literal(1).default(1),
   logical_job_id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/),
@@ -31,13 +31,14 @@ export const CompositionRequest = z.strictObject({
   lyrics: z.string().min(1).max(400),
   lines: z.array(LyricLine).min(1).max(8),
   seed: Seed.nullable().default(null),
-  duration_seconds: z.literal(30).default(30),
+  duration_seconds: ScoreDuration.default(30),
   style: z.literal("retro-synth").default("retro-synth"),
 }).superRefine((request, ctx) => {
   if (!/^[\x00-\x7f]*$/.test(request.lyrics)) ctx.addIssue({ code: "custom", message: "The v1 lyric contract supports ASCII lyrics only" });
   if (letters(request.lines.map(line => line.text).join("")) !== letters(request.lyrics)) ctx.addIssue({ code: "custom", message: "Lines must cover the complete lyrics in order" });
   let previous = 0;
   for (const line of request.lines) {
+    if (line.end_seconds > request.duration_seconds - 1) ctx.addIssue({ code: "custom", message: "Vocal windows must end before the final second of the requested duration" });
     if (line.start_seconds < previous) ctx.addIssue({ code: "custom", message: "Vocal windows must be ordered and non-overlapping" });
     previous = line.end_seconds;
   }
@@ -63,7 +64,7 @@ export interface Arrangement { seed: Seed; backing: Note[]; vocal: Note[]; chord
 /** Fit every syllable exactly into its validated window, without omission or overflow. */
 export function arrange(request: CompositionRequest, seed: Seed): Arrangement {
   request = CompositionRequest.parse(request);
-  const random = seeded_random(seed), backing = compose(seed), vocal: Note[] = [], timing: SyllableNote[] = [];
+  const random = seeded_random(seed), backing = compose(seed, request.duration_seconds), vocal: Note[] = [], timing: SyllableNote[] = [];
   let index = 0;
   request.lines.forEach((line, line_index) => {
     const slots = line.syllables.map(() => 1);
@@ -75,13 +76,17 @@ export function arrange(request: CompositionRequest, seed: Seed): Arrangement {
     }
     let start = line.start_seconds;
     line.syllables.forEach((syllable, syllable_index) => {
-      const duration = slots[syllable_index] / 8, pitch = vocal_pitch(seed, index++, start);
+      const duration = slots[syllable_index] / 8, pitch = vocal_pitch(seed, index++, start, request.duration_seconds);
       vocal.push({ start, duration, pitch, instrument: "vocal", gain: 0.25 });
       timing.push({ line_index, syllable_index, syllable, start_seconds: start, duration_seconds: duration, midi_note: pitch });
       start += duration;
     });
   });
-  const plan = musical_plan(seed);
-  const chords = Array.from({ length: 15 }, (_, bar) => ({ start_seconds: bar * 2, duration_seconds: 2, root_midi: plan.pitch(bar < 14 ? plan.progression[bar % 4] : 0), pitches: backing.filter(note => note.instrument === "pad" && note.start === bar * 2).map(note => note.pitch) }));
+  const plan = musical_plan(seed), form = musical_form(request.duration_seconds);
+  const chords = Array.from({ length: request.duration_seconds / 2 }, (_, bar) => ({
+    start_seconds: bar * 2, duration_seconds: 2,
+    root_midi: plan.pitch(chord_degree(plan, bar, form)),
+    pitches: backing.filter(note => note.instrument === "pad" && note.start === bar * 2).map(note => note.pitch),
+  }));
   return { seed, backing, vocal, chords, timing };
 }

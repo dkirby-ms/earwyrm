@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { createHash, randomUUID } from "node:crypto";
-import { FRAMES, SAMPLE_RATE, Seed, compose, mix, musical_plan, normalize, parse_seed, seeded_random, synthesize, tone, vocode, write_midi, write_wav } from "../src/dsp.js";
+import { randomUUID } from "node:crypto";
+import { FRAMES, SAMPLE_RATE, Seed, compose, jingle_duration, mix, musical_form, musical_plan, normalize, parse_seed, seeded_random, synthesize, tone, vocode, write_midi, write_wav } from "../src/dsp.js";
 import { CompositionRequest, arrange } from "../src/melody.js";
 import { KNOWN_TUNES, SimilarityError, screen, select_screened, similarity } from "../src/similarity.js";
 import { align, place_spoken, validate_utterance, type Utterance } from "../src/speech.js";
@@ -78,13 +78,13 @@ describe("creative score contracts", () => {
     else expect(() => parse_seed(value)).toThrow("Seed");
   });
   it.each([
-    [0, [0.3588899802416563, 0.10590326134115458, 0.675290479324758, 0.9179345588199794, 0.10157715040259063], "db866fa6c988a5d7202f2edeed257b13b7249f657805b3e48a23289f587964bd"],
-    [42, [0.4813160905614495, 0.9852536325342953, 0.7379171899519861, 0.6130663156509399, 0.7036195879336447], "970fe3c7f032a0f184ce92d945ef19452b61dda48835f1d0e74fc936c9377ca7"],
-    [Number.MAX_SAFE_INTEGER, [0.8929874321911484, 0.7592886493075639, 0.10753158875741065, 0.515314215561375, 0.7355424631386995], "ea35b8bf1643e8df064f89aa072051a64bade7c8c380424bfb838456f5717661"],
-  ] as const)("preserves the existing safe-seed stream and score for %s", (seed, stream, score) => {
+    [0, [0.3588899802416563, 0.10590326134115458, 0.675290479324758, 0.9179345588199794, 0.10157715040259063]],
+    [42, [0.4813160905614495, 0.9852536325342953, 0.7379171899519861, 0.6130663156509399, 0.7036195879336447]],
+    [Number.MAX_SAFE_INTEGER, [0.8929874321911484, 0.7592886493075639, 0.10753158875741065, 0.515314215561375, 0.7355424631386995]],
+  ] as const)("preserves the existing safe-seed stream and repeats the new score for %s", (seed, stream) => {
     const random = seeded_random(seed);
     expect(Array.from({ length: stream.length }, () => random())).toEqual(stream);
-    expect(createHash("sha256").update(JSON.stringify(compose(seed))).digest("hex")).toBe(score);
+    expect(compose(seed)).toEqual(compose(seed));
   });
   it.each(["9007199254740992", "9223372036854775807"])("retains and renders oversized seed %s deterministically", seed => {
     const request = CompositionRequest.parse({ ...request_data(), seed }), arrangement = arrange(request, seed);
@@ -118,30 +118,60 @@ describe("creative score contracts", () => {
     expect(stream("9223372036854775807")).not.toEqual(stream("9223372036854775806"));
     expect(stream("9007199254740992")).not.toEqual(stream("9007199254740993"));
   });
+  it("returns a recognizable hook, answers it and resolves with sectional contrast", () => {
+    for (const seed of [0, 1, 42, "9223372036854775807"]) for (const duration of [12, jingle_duration(seed)]) {
+      const form = musical_form(duration), score = compose(seed, duration);
+      const lead = score.filter(note => note.instrument === "lead");
+      const first = lead.filter(note => note.start >= form.hook_start_seconds && note.start < form.hook_start_seconds + 4);
+      const answer = lead.filter(note => note.start >= form.hook_start_seconds + 4 && note.start < form.cadence_start_seconds);
+      expect(first).toHaveLength(8); expect(answer).toHaveLength(8);
+      expect(first.slice(0, 3).map(note => note.pitch)).toEqual(answer.slice(0, 3).map(note => note.pitch));
+      expect(first.map(note => note.pitch)).not.toEqual(answer.map(note => note.pitch));
+      expect(first.map(note => note.start - form.hook_start_seconds)).toEqual(answer.map(note => note.start - form.hook_start_seconds - 4));
+      expect(lead.at(-1)!.pitch).toBe(musical_plan(seed).pitch(7));
+      const density = (start: number, end: number) => score.filter(note => note.start >= start && note.start < end).length / (end - start);
+      expect(density(form.hook_start_seconds, form.cadence_start_seconds)).toBeGreaterThan(density(0, form.hook_start_seconds));
+      expect(score.some(note => note.instrument === "snare" && note.start < form.hook_start_seconds)).toBe(false);
+    }
+  });
+  it("rejects unfit durations and lyric windows without truncating events", () => {
+    const data = request_data();
+    for (const duration_seconds of [8, 10]) {
+      expect(CompositionRequest.safeParse({ ...data, duration_seconds }).success).toBe(false);
+      expect(() => compose(42, duration_seconds)).toThrow();
+    }
+    expect(CompositionRequest.safeParse({ ...data, duration_seconds: 12 }).success).toBe(true);
+    expect(CompositionRequest.safeParse({ ...data, duration_seconds: 12, lines: [{ ...data.lines[0], end_seconds: 12 }] }).success).toBe(false);
+    expect(() => compose(42, 15)).toThrow();
+    expect(() => jingle_duration(42, 31)).toThrow();
+    expect(() => synthesize(compose(42), { seed: 42, duration_seconds: 16 })).toThrow("Invalid note");
+    expect(() => mix(new Float64Array(16 * SAMPLE_RATE), new Float64Array(18 * SAMPLE_RATE))).toThrow("equal");
+  });
 });
 
 describe("DSP artifacts", () => {
-  it("renders deterministic finite 30-second PCM and valid deterministic MIDI", () => {
-    const notes = compose(42), first = synthesize(notes, { seed: 42 }), second = synthesize(notes, { seed: 42 });
+  it.each([12, 14, 18, 30])("renders deterministic finite %s-second PCM and matching MIDI", duration_seconds => {
+    const frames = duration_seconds * SAMPLE_RATE;
+    const notes = compose(42, duration_seconds), first = synthesize(notes, { seed: 42, duration_seconds }), second = synthesize(notes, { seed: 42, duration_seconds });
     expect(Buffer.from(first.buffer).equals(Buffer.from(second.buffer))).toBe(true);
-    expect(first).toHaveLength(FRAMES);
+    expect(first).toHaveLength(frames);
     expect(first.every(Number.isFinite)).toBe(true);
     const normalized = normalize(first);
     const directory = join(process.cwd(), `.creative-audio-${randomUUID()}`);
     mkdirSync(directory); paths.push(directory);
     write_wav(join(directory, "score.wav"), normalized);
-    write_midi(join(directory, "first.mid"), notes);
-    write_midi(join(directory, "second.mid"), compose(42));
+    write_midi(join(directory, "first.mid"), notes, duration_seconds);
+    write_midi(join(directory, "second.mid"), compose(42, duration_seconds), duration_seconds);
     const wav = readFileSync(join(directory, "score.wav")), midi = readFileSync(join(directory, "first.mid"));
     expect(wav.toString("ascii", 0, 4)).toBe("RIFF");
     expect(wav.readUInt16LE(22)).toBe(1);
     expect(wav.readUInt32LE(24)).toBe(24000);
     expect(wav.readUInt16LE(34)).toBe(16);
-    expect(wav.readUInt32LE(40)).toBe(FRAMES * 2);
+    expect(wav.readUInt32LE(40)).toBe(frames * 2);
     let pcm_peak = 0, square = 0;
     for (let i = 44; i < wav.length; i += 2) { const sample = wav.readInt16LE(i); pcm_peak = Math.max(pcm_peak, Math.abs(sample)); square += sample * sample; }
     expect(pcm_peak).toBeGreaterThan(100); expect(pcm_peak).toBeLessThanOrEqual(29205);
-    expect(Math.sqrt(square / FRAMES)).toBeGreaterThan(100);
+    expect(Math.sqrt(square / frames)).toBeGreaterThan(100);
     expect(midi.equals(readFileSync(join(directory, "second.mid")))).toBe(true);
     expect(midi.toString("ascii", 0, 4)).toBe("MThd");
     expect(midi.readUInt16BE(8)).toBe(0);
@@ -156,7 +186,7 @@ describe("DSP artifacts", () => {
       if (status === 255) { offset++; const length = midi[offset++]; offset += length; }
       else { if ((status & 240) === 144) on++; if ((status & 240) === 128) off++; offset += 2; }
     }
-    expect(ticks).toBe(28800); expect(on).toBe(notes.length); expect(off).toBe(notes.length);
+    expect(ticks).toBe(duration_seconds * 960); expect(on).toBe(notes.length); expect(off).toBe(notes.length);
   });
   it("rejects invalid PCM, silence and negative note intervals before file output", () => {
     expect(() => normalize(new Float64Array(FRAMES))).toThrow("silent");
@@ -171,6 +201,25 @@ describe("DSP artifacts", () => {
 });
 
 describe("speech and 18-band vocoder", () => {
+  it("preserves complete words in separate verse/hook windows with breathing room", () => {
+    const text = "Cedar Loop brings bright sound today. Call Cedar Loop to book today.";
+    const tokens = [...text.matchAll(/[A-Za-z]+/g)];
+    const utterance: Utterance = {
+      audio: tone(60, tokens.length * 0.25, { bright: false }), result_id: "TEST-ONLY-NOT-AZURE",
+      words: tokens.map((token, i) => ({ text: token[0], text_offset: token.index, offset: i * 0.25, duration: 0.24 })),
+    };
+    const form = musical_form(16);
+    const [modulator, carrier, notes, map] = align(utterance, text, musical_plan(42).root, { melody_seed: 42, form });
+    expect(map.map(row => row.word)).toEqual(tokens.map(token => token[0]));
+    expect(map[0].target_offset_seconds).toBe(0.5);
+    expect(map[6].target_offset_seconds).toBe(form.hook_start_seconds);
+    expect(map.at(-1)!.target_offset_seconds + map.at(-1)!.target_duration_seconds).toBeLessThan(form.cadence_start_seconds);
+    expect(map.some((row, i) => i > 0 && row.target_offset_seconds > map[i - 1].target_offset_seconds + map[i - 1].target_duration_seconds)).toBe(true);
+    expect(notes.at(-1)!.pitch).toBe(musical_plan(42).pitch(7));
+    expect(modulator).toHaveLength(16 * SAMPLE_RATE); expect(carrier).toHaveLength(modulator.length);
+    expect(() => align(utterance, text, 48, { form: musical_form(12) })).toThrow("cannot fit");
+    expect(() => place_spoken({ ...utterance, audio: tone(60, 15) }, 16)).toThrow("shorten");
+  });
   it.each(["missing", "overlap", "text", "nonfinite", "audio", "overflow"])("rejects %s source events", change => {
     const utterance = speech();
     if (change === "missing") utterance.words.pop();

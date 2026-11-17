@@ -7,10 +7,12 @@ ms.topic: how-to
 
 ## What is implemented
 
-The independent Melody and Arrangement server generates a 30-second, 120 BPM
-retro-synth arrangement. A seed chooses the scale, hook intervals and rhythm,
-chord progression and voicings. An intro, recurring two-bar hook, contrasting
-bridge and closing tonic provide structure rather than unrelated random notes.
+The independent Melody and Arrangement server generates a whole-bar, 120 BPM
+retro-synth arrangement, 12-30 seconds. Omitted duration remains 30 seconds for
+compatibility with stored requests and retries. Supply a shorter even duration
+for a concise verse and chorus hook. A seed chooses scale, melodic contour,
+syncopation, chord progression and close-moving voicings. The motif returns with
+an answering phrase, fuller chorus orchestration and a closing tonic.
 New requests without a seed get fresh musical identities; an explicit seed
 reproduces the score. Different versions must use different logical job IDs.
 Without an explicit seed, up to eight local candidates may be screened before
@@ -68,7 +70,7 @@ private MCP resources, not public download links.
     "schema_version": 1,
     "logical_job_id": "cedar-loop-campaign-v1",
     "product_path": "vocoded",
-    "duration_seconds": 30,
+    "duration_seconds": 16,
     "style": "retro-synth",
     "lyrics": "Cedar Loop brings bright sound to your day",
     "lines": [
@@ -101,9 +103,13 @@ Rules:
 * `product_path` is `vocoded` or `spoken`. The worker must honor it: vocode the
   mapped carrier for `vocoded`, retain natural speech for `spoken`. The guide
   vocal MIDI/map is returned for either path, not claimed as sung audio.
+* Supply an even `duration_seconds` from 12 through 30; the omitted value is 30.
+  The minimum reserves a verse, two returning/answering hook phrases and cadence.
+  New web/CLI renders instead choose a shorter form automatically to fit the script.
 * Supply 1-8 ordered, non-overlapping line windows within seconds 3-25, on a
   0.125-second grid. Every syllable gets 0.125-1 second. A seeded allocator
-  varies the rhythm while filling each window exactly.
+  varies the rhythm while filling each window exactly. Windows must also end
+  at least one second before the requested composition ends.
 * Supply 8-176 syllables total and at most 88 per line. Eight notes are the
   minimum local similarity comparison. Unfit short or crowded inputs fail
   rather than silently dropping syllables or inventing melismas.
@@ -121,7 +127,7 @@ The structured result includes:
   `queue_backend: "sqlite-local"`
 * Recorded seed, product path, duration and style
 * `midi` and `backing_tracks` references with URI, media type and SHA-256
-* Fifteen chord spans with actual MIDI root and pad voicing pitches
+* One chord span per two-second bar, with actual MIDI root and pad voicing pitches
 * `syllable_timing`, containing zero-based line/syllable indexes, text, onset,
   duration and MIDI pitch for every syllable
 * `artifacts` for `score.mid`, `score.json`, `timing.json`, `backing.wav` and
@@ -129,11 +135,15 @@ The structured result includes:
 * The similarity report and component origins, with human rights review pending
 
 Read binary artifacts using MCP `resources/read`, for example
-`earwyrm://jobs/<job_id>/score.mid`. WAV is mono PCM16, 24 kHz, exactly 30 seconds,
+`earwyrm://jobs/<job_id>/score.mid`. WAV is mono PCM16, 24 kHz, exactly the requested duration,
 peak-normalized to -1 dBFS, not broadcast/LUFS mastered.
 `get_render_job` takes `{"job_id": "<returned UUID>"}` to recover a committed
 result. MCP `tools/list` publishes the input and structured output JSON schemas;
 `resources/templates/list` describes the five artifact templates.
+
+New provenance records identify `earwyrm-phrase-v2`. Seeds reproduce scores within
+that generator version; they do not recreate older scores or waveform digests.
+Previously committed jobs and their artifacts remain unchanged.
 
 ## Queue ownership and retries
 

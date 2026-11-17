@@ -1,0 +1,41 @@
+{
+  "task_id": "memorable-jingles",
+  "task_slug": "memorable-jingles",
+  "session_name": "Memorable jingles",
+  "parent_task": null,
+  "child_tasks": [{"task_id":"complete-hook-minimum","task_slug":"complete-hook-minimum","state_path":".copilot-tracking/rpi-sessions/2026-11-17/memorable-jingles/complete-hook-minimum-state.json"}],
+  "mode": "automatic",
+  "active_phase": "Follow-up",
+  "status": "completed",
+  "session_status": "stopped",
+  "artifact_paths": {
+    "research": ".copilot-tracking/research/2026-11-17/memorable-jingles-research.md",
+    "plan": ".copilot-tracking/plans/2026-11-17/memorable-jingles-plan.md",
+    "critique": ".copilot-tracking/reviews/plans/2026-11-17/memorable-jingles-plan-critique.md",
+    "changes": ".copilot-tracking/changes/2026-11-17/memorable-jingles-changes.md",
+    "review": ".copilot-tracking/reviews/logs/2026-11-17/memorable-jingles-review.md"
+  },
+  "documents": {
+    "research": [".copilot-tracking/research/2026-11-17/memorable-jingles-research.md"],
+    "plan": [".copilot-tracking/plans/2026-11-17/memorable-jingles-plan.md"],
+    "critique": [".copilot-tracking/reviews/plans/2026-11-17/memorable-jingles-plan-critique.md"],
+    "changes": [".copilot-tracking/changes/2026-11-17/memorable-jingles-changes.md"],
+    "review": [".copilot-tracking/reviews/logs/2026-11-17/memorable-jingles-review.md"]
+  },
+  "confirmed_decisions": [
+    {"decision":"Automatic session scope","status":"current","evidence":"User requests more authentic, memorable melodies and arrangements and shorter verse/chorus-hook jingles. Local source, tests, documentation and audio evidence authorized; no deployment, external paid generation, push or tracker writes. Acceptance: musical phrase development, arrangement contrast, phrase-led duration instead of fixed 30 or 15 seconds, coherent lyrics/timing and validated regressions. Root state: .copilot-tracking/rpi-sessions/2026-11-17/memorable-jingles/memorable-jingles-state.json"},
+    {"decision":"Automatic progression boundary","status":"through-review","evidence":"User selected Handle it end to end."},
+    {"decision":"Research decision participation","status":"agent-owned","evidence":"End-to-end selection."},
+    {"decision":"Planning decision participation","status":"agent-owned","evidence":"End-to-end selection."},
+    {"decision":"Review decision participation","status":"agent-owned","evidence":"End-to-end selection."},
+    {"decision":"Follow-up decision participation","status":"agent-owned","evidence":"End-to-end selection."},
+    {"decision":"Planning critique","status":"standard","evidence":"First-task default."},
+    {"decision":"Review step","status":"run","evidence":"First-task default."},
+    {"decision":"Subagent use","status":"auto","evidence":"Default; direct execution unless substantial independent context warrants delegation."},
+    {"decision":"Duration direction","status":"current","evidence":"User clarification: it doesnt need to be a fixed 15 second duration. Let musical phrasing determine a shorter verse/chorus-hook format; do not enforce exactly 15 seconds."},
+    {"decision":"Canvas","status":"current","evidence":"instance rpi-memorable-jingles; handle FPF5; extensionId plugin:hve-core:rpi-workflow"}
+  ],
+  "blockers": [],
+  "next_action": {"phase":"Follow-up","action":"Session complete and stopped; RV-001 resolved by child validation. No required work or user action remains. Listening is optional; child changes were not reviewed a second time."},
+  "prioritized_follow_ups": []
+}

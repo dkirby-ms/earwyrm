@@ -20,7 +20,7 @@ export async function create_server(
   if (options.database_url) await validate_postgres_store(options.database_url);
   const service = new MelodyService(data_dir, options);
   const server = new McpServer({ name: 'Earwyrm Melody and Arrangement', version: '0.1.0' }, {
-    instructions: 'Compose a 30-second retro-synth arrangement. This service owns render-job submission: use its returned job_id, never enqueue a second copy. Screening is limited, not legal clearance.',
+    instructions: 'Compose a phrase-led retro-synth verse and chorus hook in whole bars, 12-30 seconds (default 30 for compatibility). This service owns render-job submission: use its returned job_id, never enqueue a second copy. Screening is limited, not legal clearance.',
   });
   server.registerTool('compose_arrangement', {
     description: 'Validate syllable windows, screen melodies, return artifacts and queue one job. Reuse logical_job_id only for an identical retry. Never calls Speech.',

@@ -63,12 +63,20 @@ Each `QualityCheck` records a measurement, configured inclusive bounds, units,
 status and evidence. Missing measurement or all missing bounds means Pending,
 never Pass. A contradictory status or reversed interval is rejected.
 
-Required checks are duration (seconds, 29.5-30.0 inclusive), loudness (LUFS),
+Required checks are duration (seconds, 12-30 inclusive for phrase-led output;
+legacy reports with 29.5-30.0 bounds remain valid), loudness (LUFS),
 intelligibility (dimensionless) and similarity (dimensionless). No arbitrary
 loudness, intelligibility or similarity threshold is introduced by this
 foundation. Set approved thresholds in later integration and retain the evidence.
 Any failed check makes the report Fail; otherwise missing evidence means Pending;
 only all passing checks yield Pass.
+
+The local renderer additionally checks measured duration against the selected
+whole-bar form, with at most 0.5 seconds below target. MCP composition accepts
+even durations of 12-30 seconds and defaults to 30 to preserve normalized stored
+request identities. WAV length, MIDI end time and returned duration must agree.
+The separate lyric writer retains its existing 30-second request/prosody policy;
+it does not control web/CLI music length or claim to supply natural singing.
 
 A `RenderManifest` binds audio digest, identity, product path, component sources,
 tool versions, stock voice, Speech resource/result IDs and quality evidence.

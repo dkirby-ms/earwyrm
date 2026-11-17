@@ -21,6 +21,7 @@ import { create_server as lyric_server } from '../src/lyric_mcp.js';
 import { cost_for, gate, load_inputs, render_brief } from '../src/render.js';
 import { main as render_main } from '../src/cli.js';
 import type { LyricBackend } from '../src/lyric_cloud.js';
+import { SAMPLE_RATE, tone } from '../src/dsp.js';
 
 const temporary: string[] = [];
 function directory(): string {
@@ -130,9 +131,9 @@ describe('real MCP and scaffold surfaces', () => {
       await new Promise<void>((resolve, reject) => listener.close((error) => error ? reject(error) : resolve()));
     }
   });
-  it.each([null, '9223372036854775807'])('commits and recovers exact seed %s and binary resources through MCP', async (seed) => {
+  it.each([[null, 30], ['9223372036854775807', 30], [42, 16]] as const)('commits and recovers exact seed %s and %s-second resources through MCP', async (seed, duration_seconds) => {
     const client = await connected(await melody_server(directory()));
-    const input = { ...composition(), ...(seed === null ? {} : { seed }) };
+    const input = { ...composition(), duration_seconds, ...(seed === null ? {} : { seed }) };
     try {
       const tools = await client.listTools();
       const tool = tools.tools.find((item) => item.name === 'compose_arrangement');
@@ -140,6 +141,7 @@ describe('real MCP and scaffold surfaces', () => {
       expect(tool?.outputSchema).toBeDefined();
       const first = await client.callTool({ name: 'compose_arrangement', arguments: { request: input } });
       expect(first.isError).not.toBe(true);
+      expect(first.structuredContent).toHaveProperty('duration_seconds', duration_seconds);
       if (seed !== null) expect(first.structuredContent).toHaveProperty('seed', seed);
       const output = z.object({
         status: z.literal('queued'), job_id: z.uuid(), queue_owner: z.literal('melody-arrangement'),
@@ -153,7 +155,9 @@ describe('real MCP and scaffold surfaces', () => {
       for (const [uri, signature] of [[output.midi.uri, 'MThd'], [output.backing_tracks[0].uri, 'RIFF']]) {
         const resource = await client.readResource({ uri });
         const content = z.object({ blob: z.string() }).parse(resource.contents[0]);
-        expect(Buffer.from(content.blob, 'base64').subarray(0, 4).toString()).toBe(signature);
+        const bytes = Buffer.from(content.blob, 'base64');
+        expect(bytes.subarray(0, 4).toString()).toBe(signature);
+        if (signature === 'RIFF') expect(bytes.readUInt32LE(40)).toBe(duration_seconds * SAMPLE_RATE * 2);
       }
       const invalid = composition();
       invalid.lines[0].end_seconds = 3.125;
@@ -210,8 +214,10 @@ describe('offline rendering and paid-call preflight', () => {
     expect(summary).toMatchObject({ status: 'Pending', mode: 'instrumental-only' });
     expect(summary.outputs).toHaveLength(3);
     for (const [brief] of load_inputs()) {
+      const duration = summary.outputs.find((row: { brief_id: string }) => row.brief_id === brief.brief_id).duration_seconds;
+      expect(duration).toBeGreaterThanOrEqual(14); expect(duration).toBeLessThanOrEqual(20);
       expect(readFileSync(join(output, runs[0], brief.brief_id, 'instrumental.wav')).length)
-        .toBe(44 + 30 * 24_000 * 2);
+        .toBe(44 + duration * 24_000 * 2);
       expect(readFileSync(join(output, runs[0], brief.brief_id, 'score.mid')).readUInt16BE(8)).toBe(0);
     }
   });
@@ -226,13 +232,14 @@ describe('offline rendering and paid-call preflight', () => {
     const output = join(directory(), brief.brief_id);
     const rows = await render_brief(output, brief, text, 0, null, null);
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ variant: 'instrumental', duration_seconds: 30, status: 'Pending' });
+    expect(rows[0]).toMatchObject({ variant: 'instrumental', status: 'Pending', numeric_gates: 'Pass' });
+    expect(rows[0].duration_seconds).toBeGreaterThanOrEqual(14); expect(rows[0].duration_seconds).toBeLessThanOrEqual(20);
     const wav = readFileSync(join(output, 'instrumental.wav'));
     expect(wav.subarray(0, 4).toString()).toBe('RIFF');
     expect(wav.readUInt32LE(24)).toBe(24_000);
     expect(wav.readUInt16LE(22)).toBe(1);
     expect(wav.readUInt16LE(34)).toBe(16);
-    expect(wav.length).toBe(44 + 30 * 24_000 * 2);
+    expect(wav.length).toBe(44 + rows[0].duration_seconds * 24_000 * 2);
     let peak = 0;
     for (let index = 44; index < wav.length; index += 2) peak = Math.max(peak, Math.abs(wav.readInt16LE(index)));
     expect(peak).toBeGreaterThan(20_000);
@@ -240,6 +247,27 @@ describe('offline rendering and paid-call preflight', () => {
     expect(readFileSync(join(output, 'score.mid')).subarray(0, 4).toString()).toBe('MThd');
     expect(JSON.parse(readFileSync(join(output, 'manifest.json'), 'utf8')).outputs[0].evaluation.status).toBe('Pending');
     expect(cost_for('four', { usd_per_million_characters: '15' }).toString()).toBe('0.00006');
+  });
+  it('extends the full form for longer natural speech and retains complete paid-pair evidence', async () => {
+    const [brief, text] = load_inputs()[0], tokens = [...text.matchAll(/[A-Za-z]+/g)];
+    const output = join(directory(), brief.brief_id);
+    const rows = await render_brief(output, brief, text, 0, {
+      synthesize: async () => ({
+        audio: tone(60, 21).map(value => value * 0.2), result_id: 'TEST-ONLY-NOT-AZURE',
+        words: tokens.map((token, i) => ({ text: token[0], text_offset: token.index, offset: i * 0.25, duration: 0.24 })),
+      }),
+    }, {
+      tier: 'S0', region: 'test', resource_reference: 'test-only', rate_source: 'test-only',
+      rate_checked_on: '2026-11-17', usd_per_million_characters: '15',
+    }, { composition_seed: 42 });
+    expect(rows.map(row => row.duration_seconds)).toEqual([24, 24]);
+    expect(rows.every(row => row.numeric_gates === 'Pass' && row.azure_usage.submitted_characters === text.length)).toBe(true);
+    const map = JSON.parse(readFileSync(join(output, 'alignment.json'), 'utf8'));
+    expect(map.map((row: { word: string }) => row.word)).toEqual(tokens.map(token => token[0]));
+    expect(JSON.parse(readFileSync(join(output, 'composition.json'), 'utf8')).form.duration_seconds).toBe(24);
+    expect(gate(24, 1, 0, 24)).toBe('Pass');
+    expect(gate(23, 1, 0, 24)).toBe('Fail');
+    expect(QualityReport.parse({ ...quality(), duration: { measured: 24, minimum: 12, maximum: 30, unit: 's', status: 'pass', evidence: 'measured phrase-led output' } }).status).toBe('pending');
   });
   it('rejects missing paid consent before creating an output directory', async () => {
     const output = directory();

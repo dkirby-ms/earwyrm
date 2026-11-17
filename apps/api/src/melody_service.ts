@@ -131,11 +131,11 @@ export class MelodyService {
               Component.parse({ component: "lyrics", origin: "Caller-supplied lyric/timing contract", evidence: "Retained request; upstream moderation and rights review required" }),
             ];
             const notes = [...arrangement.backing, ...arrangement.vocal];
-            write_midi(join(directory, "score.mid"), notes);
+            write_midi(join(directory, "score.mid"), notes, request.duration_seconds);
             writeFileSync(join(directory, "score.json"), canonical_json(notes), { mode: 0o600 });
             writeFileSync(join(directory, "timing.json"), canonical_json(arrangement.timing), { mode: 0o600 });
-            write_wav(join(directory, "backing.wav"), normalize(synthesize(arrangement.backing, { seed })));
-            writeFileSync(join(directory, "provenance.json"), canonical_json({ ai_generated: true, seed, components, similarity: report }), { mode: 0o600 });
+            write_wav(join(directory, "backing.wav"), normalize(synthesize(arrangement.backing, { seed, duration_seconds: request.duration_seconds })));
+            writeFileSync(join(directory, "provenance.json"), canonical_json({ ai_generated: true, seed, generator_version: "earwyrm-phrase-v2", duration_seconds: request.duration_seconds, components, similarity: report }), { mode: 0o600 });
             const artifacts: Record<string, Artifact> = {};
             for (const [name, media_type] of Object.entries(ARTIFACT_TYPES)) {
               chmodSync(join(directory, name), 0o600);
@@ -143,6 +143,7 @@ export class MelodyService {
             }
             const result = CompositionResult.parse({
               job_id, logical_job_id: request.logical_job_id, product_path: request.product_path, seed,
+              duration_seconds: request.duration_seconds,
               midi: artifacts["score.mid"], backing_tracks: [artifacts["backing.wav"]], artifacts,
               chords: arrangement.chords, syllable_timing: arrangement.timing, similarity: report, components,
               queue_backend: this.database_url === null ? "sqlite-local" : "postgresql",
