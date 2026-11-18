@@ -1,112 +1,75 @@
 ---
-title: Version-one service contracts
-description: Canonical creative schemas, render envelopes, quality, provenance and approval boundaries.
+title: Services and contracts
+description: Find the local tools, their runtime boundaries, and the canonical schemas.
 ---
 
-## Canonical definitions
+[Back to the README](../README.md)
 
-[apps/api/src/contracts.ts](../apps/api/src/contracts.ts) composes the platform schema
-catalog from the canonical Zod definitions. Consumers can fetch JSON Schema
-from an authenticated scaffold's `/contracts` route or generate it locally:
+## Overview
 
-```bash
-npm ci
-npm run contracts
-```
+The [web app](audio-poc/web-app.md) and [CLI](audio-poc/rendering.md) render
+directly. The independent Model Context Protocol (MCP) tools expose lyric
+generation and queued composition separately. The
+[Azure web deployment](azure-deployment.md) does not deploy those MCP tools,
+and no integrated queue worker delivers final vocal mixes.
 
-Do not maintain a second handwritten JSON schema. The catalog is a definition
-bundle, not the HTTP body expected by every service. Existing local POC request
-shapes and snake_case wire fields are preserved.
+## Run the MCP tools locally
 
-| Contract | Canonical module | Purpose |
+With the [local prerequisites](../README.md#try-it-without-azure) installed,
+run `npm ci` and `npm run build` at the repository root. For stdio, configure
+your MCP client to run `node` with one of these arguments and set its working
+directory to the repository root. Use `node` directly to avoid npm banners
+on the protocol stream.
+
+| Service | Stdio argument | Tool names |
 |---|---|---|
-| `AdvertiserBrief`, `LyricRequest`, `LyricResult` | [lyrics.ts](../apps/api/src/lyrics.ts) | Synthetic briefs, constrained lyric generation and checks |
-| `CompositionRequest`, `SyllableNote` | [melody.ts](../apps/api/src/melody.ts) | Deterministic arrangement input and syllable timing |
-| `CompositionResult`, `Component` | [melody_service.ts](../apps/api/src/melody_service.ts) | Composition output and audio component provenance |
-| `VersionIdentity`, `ServiceError`, `BlobArtifact` | [contracts.ts](../apps/api/src/contracts.ts) | Candidate identity, safe errors and authenticated artifact references |
-| `RenderMessage`, `JobRecord` | [contracts.ts](../apps/api/src/contracts.ts) | Queue envelope and separate durable status |
-| `QualityCheck`, `QualityReport` | [contracts.ts](../apps/api/src/contracts.ts) | Measurements, explicit bounds and fail/pending/pass aggregation |
-| `RenderManifest`, `ApprovalRecord` | [contracts.ts](../apps/api/src/contracts.ts) | Provenance, disclosure and version-bound human decisions |
+| Lyric and Hook Writer | `apps/api/dist/lyric_mcp.js` | `write_lyrics` |
+| Melody and Arrangement | `apps/api/dist/melody_mcp.js` | `compose_arrangement`, `get_render_job` |
 
-Platform records carry `schema_version: 1` where applicable. Existing creative
-contracts remain their canonical shapes rather than being copied into new
-wrappers. Unknown fields and non-finite numeric values are rejected through the
-canonical strict Zod schemas.
+For Streamable HTTP, run `npm run lyric-mcp -- --transport streamable-http --port 8002`
+or `npm run melody-mcp -- --transport streamable-http --port 8003` and connect
+to `/mcp` on `127.0.0.1` at that port. These loopback endpoints are
+unauthenticated; do not expose them publicly.
 
-## Identity, queue and status
+### Lyric writer
 
-Each candidate has UUID job/version IDs, a positive strict version number and a
-synthetic brief ID (`brief-001` through the fixture naming pattern). Regeneration
-creates a new version ID. Queue retries must retain the original IDs; schema
-validation alone does not provide durable idempotency or enforce transitions.
+`write_lyrics` takes a `request` object with a brief, spoken or vocoded product
+path, and English lyric constraints for a 30-second spot. See the
+[lyric schemas](../apps/api/src/lyrics.ts) for exact fields and statuses.
+It returns screened lyrics or an explicit held, rejected, or unavailable
+outcome. It does not compose or render audio.
 
-The melody service owns render submission. `RenderMessage` carries candidate
-identity, product path, composition artifact and a valid nonzero W3C trace/span
-context, not an inline audio payload or credentials. `BlobArtifact` requires an
-HTTPS URI without user info, query or fragment and a lowercase SHA-256 digest.
-It is a private artifact reference, not a SAS link or proof of authorization.
+Set `LYRIC_FOUNDRY_ENDPOINT`, `LYRIC_MODEL_DEPLOYMENT`, and
+`LYRIC_CONTENT_SAFETY_ENDPOINT` for paid generation. Both endpoints must be
+HTTPS resource roots. Use a model deployment supporting strict structured
+output and a `DefaultAzureCredential` identity with Cognitive Services OpenAI
+User and Cognitive Services User on the respective resources. Startup makes
+no paid calls; a configured tool invocation does. Do not retry around
+screening or send held lyrics to audio automatically.
 
-`JobRecord` separates `queued`, `running`, `quality_failed`,
-`awaiting_approval` and `failed` states. Attempts are bounded to 1-2; an integration
-must define any fallback as a distinct candidate rather than silently increasing
-that bound. Failed records require a safe `ServiceError`; completed render states
-require a manifest reference. Unfinished states cannot claim a manifest, and
-updated timestamps cannot precede creation.
+### Melody and arrangement
 
-The foundation provides no cloud persistence, transition controller or queue
-consumer. A future implementation must atomically persist identity, validate
-artifact integrity and authorize access before acknowledging a message.
+`compose_arrangement` takes a `request` object with a `logical_job_id`, lyrics
+and syllable timing, and optional duration and seed. See the
+[composition schema](../apps/api/src/melody.ts) for exact fields. The tool
+screens the melody, writes backing WAV and MIDI, and commits one queued job.
+It does not call Speech. Asset references are private MCP resources.
 
-## Quality and provenance
+Retry a lost response using the same normalized request and `logical_job_id`.
+The tool returns the existing job; a changed payload under that ID conflicts.
+Use `get_render_job` for status rather than publishing a second job. A
+similarity pass covers only the [bounded references](../apps/api/src/similarity.ts)
+and history in the selected store, not copyright clearance.
 
-Each `QualityCheck` records a measurement, configured inclusive bounds, units,
-status and evidence. Missing measurement or all missing bounds means Pending,
-never Pass. A contradictory status or reversed interval is rejected.
+## Look up schemas
 
-Required checks are duration (seconds, 12-30 inclusive for phrase-led output;
-legacy reports with 29.5-30.0 bounds remain valid), loudness (LUFS),
-intelligibility (dimensionless) and similarity (dimensionless). No arbitrary
-loudness, intelligibility or similarity threshold is introduced by this
-foundation. Set approved thresholds in later integration and retain the evidence.
-Any failed check makes the report Fail; otherwise missing evidence means Pending;
-only all passing checks yield Pass.
+Run `npm run contracts` to print the versioned JSON Schema catalog. The
+[contract source](../apps/api/src/contracts.ts) composes the canonical Zod
+definitions, including render messages, job status, quality, provenance, and
+approval. The catalog is not a single request body, and a validated quality
+report is not a broadcast approval.
 
-The local renderer additionally checks measured duration against the selected
-whole-bar form, with at most 0.5 seconds below target. MCP composition accepts
-even durations of 12-30 seconds and defaults to 30 to preserve normalized stored
-request identities. WAV length, MIDI end time and returned duration must agree.
-The separate lyric writer retains its existing 30-second request/prosody policy;
-it does not control web/CLI music length or claim to supply natural singing.
-
-A `RenderManifest` binds audio digest, identity, product path, component sources,
-tool versions, stock voice, Speech resource/result IDs and quality evidence.
-It explicitly discloses an AI-generated review demo that is not cleared for
-broadcast. Technical Pass is not rights clearance, advertiser approval or
-professional mastering.
-
-`ApprovalRecord` captures an authenticated human's object ID, role, decision,
-aware timestamp and exact candidate/audio digest. A manifest rejects quality or
-approval records for a different version and approvals for different audio.
-Persist approvals separately and retain immutable provenance snapshots; these
-schemas do not authenticate the actor or grant approval privileges.
-
-## Runtime and integration boundaries
-
-[platform_service.ts](../apps/api/src/platform_service.ts) starts `web`, `lyric` and
-`melody` roles on port 8080, bound to loopback locally. The container binds to
-all interfaces; Azure ingress supplies HTTPS and Entra authentication.
-
-* `/healthz` describes process health and explicitly disables generation.
-* `/contracts` publishes the schema catalog.
-* `POST /jobs` returns 501 without enqueueing work.
-* Lyric and melody `/mcp` use real stateless Streamable HTTP. Their respective
-  `write_lyrics` and `compose_arrangement` tools expose canonical inputs but
-  return explicit not-integrated errors.
-* The `render` role logs a bounded integration error and exits 2 without touching
-  a queue message.
-
-Local test services are not authentication boundaries. Do not expose them
-directly to untrusted networks. Deployment uses APIM seller-token validation and
-managed-identity-only backends, described in
-[Azure deployment](./azure-deployment.md). It does not deploy the local SQLite
-queue or imply that earlier local POC generation is production-integrated.
+The separate [platform scaffold](../apps/api/src/platform_service.ts) exposes
+contracts and health but does not integrate generation: `POST /jobs` returns
+`501`. For the browser API, use [the web server source](../apps/api/src/web_app.ts)
+and [its tests](../apps/api/tests/web_app.test.ts) as the current reference.

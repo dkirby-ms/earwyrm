@@ -5,6 +5,8 @@ ms.date: 2026-11-16
 ms.topic: how-to
 ---
 
+[Back to the README](../README.md)
+
 ## Scope and limitations
 
 [azure.yaml](../azure.yaml) deploys the existing same-origin web UI and API from
@@ -127,17 +129,9 @@ separate from the identity that deploys resources to the Azure subscription.
 Do not substitute a workforce tenant issuer, generate another API registration,
 or put Container Apps EasyAuth in front of this app.
 
-| Setting | Value |
-|---|---|
-| `ENTRA_CLIENT_ID` | Client ID of the existing browser SPA registration |
-| `ENTRA_AUTHORITY` | Existing tenant's HTTPS CIAM authority |
-| `ENTRA_METADATA_URL` | Existing tenant's OpenID Connect discovery URL |
-| `ENTRA_EXPECTED_ISSUER` | Exact `issuer` returned by that discovery document |
-| `ENTRA_AUDIENCE` | Exact access-token audience expected by the existing API |
-| `ENTRA_API_SCOPE_PREFIX` | Existing API application ID URI, without a trailing slash |
-
-The API registration must expose the existing delegated scopes described in
-[web app configuration](./audio-poc/web-app.md). The SPA must have the deployed
+Use the six Entra settings and delegated scopes in
+[web app configuration](./audio-poc/web-app.md#set-up-local-sign-in).
+For hosted sign-in, the SPA must have the deployed
 HTTPS origin plus `/auth-callback.html` as an allowed SPA redirect URI, and the
 appropriate delegated permissions and consent. Registration or consent changes
 require separate approval by the tenant owner. Never put tokens, passwords or
@@ -337,7 +331,7 @@ run the bootstrap workflow's
 [`initialize-database` action](#initialize-a-fresh-postgresql-store).
 Alternatively, from an approved VNet-connected administration host, initialize
 an explicitly empty store or import the backed-up SQLite stores by following
-the [database migration runbook](./audio-poc/web-app.md#import-existing-sqlite-data).
+the [SQLite import steps](#import-existing-sqlite-data).
 The host must resolve the ordinary server hostname to the private endpoint
 address and establish a TLS-validated database connection. Do not enable public
 database access for an import. Keep all source files and backups until cutover
@@ -378,6 +372,45 @@ registration owner approve and add it if it is missing, then validate sign-in.
 not the storage mount or a successful user login.
 
 ## Safe updates and maintenance
+
+### Import existing SQLite data
+
+Use an approved VNet-connected administration host and maintenance window.
+Stop and verify all writers and [back up](#backup-and-restore) the complete data
+directory, including SQLite databases and journals, the initialization marker,
+private audio, and melody artifacts.
+
+Set `EARWYRM_DATA_DIR` to the existing absolute directory and provide
+`EARWYRM_DATABASE_URL` through a secure process environment or secret reference.
+Require `sslmode=verify-full` with a trusted CA and an empty PostgreSQL target
+schema. Do not pass credentials as command arguments.
+
+```bash
+npm run database -- import-sqlite
+```
+
+The import requires the existing `.earwyrm-initialized` marker and both SQLite
+databases. It validates records and referenced artifacts, writes the
+PostgreSQL initialization marker last, and rolls back PostgreSQL changes on
+failure. It does not delete SQLite or media, switch the app, or overwrite a
+nonempty target. Verify the PostgreSQL-backed app before approving cutover.
+Keep the backups and SQLite source. After PostgreSQL accepts new writes, do
+not point the app at stale SQLite data; reverse migration requires separate
+approval and reconciliation.
+
+### Upgrade an existing PostgreSQL store
+
+Use the approved stopped-writer and backup procedures. If the existing store
+predates lyric options, apply the additive upgrade with its approved database
+environment before starting the updated app:
+
+```bash
+npm run database -- upgrade --data-dir /absolute/path/to/private-data
+```
+
+This command can be repeated and refuses an uninitialized or incomplete
+store. Do not use `initialize-fresh` to upgrade an existing store; it resets
+application records and known runtime files.
 
 ### Diagnose container startup failures
 

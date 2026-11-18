@@ -1,312 +1,49 @@
 ---
-title: Run the protected audio web POC
-description: Configure and run the local Entra External ID web workflow without changing the tenant or enabling paid Speech requests
-ms.date: 2026-11-16
-ms.topic: how-to
+title: Use the web workspace
+description: Configure local sign-in, preview music, and review jingle versions.
 ---
 
-## Scope and boundaries
+[Back to the README](../../README.md)
 
-The web POC adds a same-origin browser workflow to the local audio proof. It
-supports Entra External ID sign-in, sample and custom briefs, screened
-lyric selection for audio, offline instrumental rendering, comparison, unblinded evaluation, and protected audio
-and evidence downloads. The TypeScript API validates access tokens and delegated
-permissions; Speech credentials, evaluator answers, audio, and evaluation
-records remain server-side.
+Use the web workspace to create and compare versions for one advertiser.
+Start the API and client using the [README quickstart](../../README.md#open-the-web-workspace).
+For hosted setup and database maintenance, use the [Azure runbook](../azure-deployment.md).
 
-These local instructions do not create or modify app registrations, provision
-Azure resources, deploy services, or submit paid Speech requests. Each of
-those actions remains a separate decision. For the Azure proof and its storage
-limitations, see [Azure deployment](../azure-deployment.md).
-Instrumental-only output is a workflow preview, not vocal proof.
+## Set up local sign-in
 
-Regenerate now creates a fresh musical identity, including melody intervals,
-rhythm and harmony, not only a different key. The backing and vocal carrier
-share the recorded composition seed. The private melody history screens each
-new output before delivery; it does not enqueue a second render. See
-[Melody and Arrangement MCP](../melody-mcp.md) for the independent service,
-single queue ownership and similarity-screening limitations.
+Use an existing Microsoft Entra External ID tenant with a browser SPA and a
+protected API. The SPA redirect URI must include
+`http://localhost:8000/auth-callback.html`. Registration or consent changes
+require tenant-owner approval.
 
-## Install and start locally
+Set these variables in the API process environment and restart the API. Use
+[`.env.example`](../../.env.example) as a template, not as working credentials.
+The API does not automatically load `.env` files.
 
-The applications are sibling npm workspaces:
+| Variable | Value |
+|---|---|
+| `ENTRA_CLIENT_ID` | Browser SPA application (client) ID |
+| `ENTRA_AUTHORITY` | Existing tenant's HTTPS CIAM authority |
+| `ENTRA_METADATA_URL` | Tenant's OpenID Connect discovery URL |
+| `ENTRA_EXPECTED_ISSUER` | Exact `issuer` from discovery metadata |
+| `ENTRA_AUDIENCE` | Expected access-token `aud`; for v2.0 tokens, the API application (client) ID |
+| `ENTRA_API_SCOPE_PREFIX` | API Application ID URI without a trailing slash |
 
-```text
-apps/
-  api/          Node API, MCP services, audio tools and backend tests
-  web/          React/Vite client and browser tests
-infra/          Azure infrastructure
-scripts/        Repository-level deployment tooling
-```
+Use discovery metadata and signing keys on the authority's HTTPS origin. Copy
+the issuer exactly; its host can differ from the authority. The SPA needs
+permission and consent for the API's delegated scopes: `briefs.read`,
+`renders.read`, `renders.write`, `evaluations.write`, and `outputs.read`.
+Do not share access tokens.
 
-Run npm commands from the repository root. One root lockfile installs both
-workspaces; isolated dependency trees preserve their existing toolchain versions.
-Fixtures and private data remain at their existing repository-root locations.
+### Authorize an application user
 
-Run the Express API on loopback with Node.js 24 on Linux from the repository
-root. Private-store serialization requires util-linux `flock`; both container
-images include it:
+Sign-in alone does not grant application access. Use a protected API client
+with the `briefs.read` scope to get the caller's validated issuer and subject
+from `/api/identity`. Verify both with the operator through a trusted channel.
 
-```bash
-npm ci
-npm run dev:api
-```
-
-In a second terminal, start the React/Vite client:
-
-```bash
-npm run dev:web
-```
-
-Open `http://localhost:8000/` in your browser. Vite serves the client and
-proxies same-origin `/api/` requests to Express on port `8001`. The app uses
-the browser's current origin for its sign-in callback, so use `localhost`
-rather than an IP address. Keep the existing Entra redirect URI
-`http://localhost:8000/auth-callback.html`.
-
-The process reads configuration from its environment. It does not automatically
-load `.env` files. Supply tenant values through your local shell or an approved
-secret-management tool, and do not put credentials in command arguments, source
-control, or chat.
-
-To use the secret-free [example](../../.env.example), copy it without
-overwriting an existing `.env`, restrict its permissions, and edit it locally:
-
-```bash
-cp -n .env.example .env
-chmod 600 .env
-```
-
-The example identity values and domain are fictional. Replace all six Entra
-values with the actual registration and discovery metadata values; the example
-does not authenticate and reports identity as unavailable. Leave all six empty
-instead to run in setup-needed mode. Copying does not update an existing `.env`.
-
-In a shell, load the trusted file before starting the server:
-
-```bash
-set -a
-source .env
-set +a
-npm run dev:api
-```
-
-`source` executes shell syntax, so load only a file you trust and quote values
-containing shell-special characters. `.env` and `.env.*` are ignored by Git,
-except for `.env.example`; ignoring a file is not a secret-management system.
-
-Without External ID configuration, the page displays **Sign-in setup
-required**, `/api/config` reports `setup-needed`, and protected API routes
-return `503`. Partial or invalid configuration fails closed as unavailable.
-`/healthz` is a local process-health check and does not contact the tenant.
-
-## Configure the existing External ID registrations
-
-Use the existing tenant and its tenant-specific CIAM authority. Copy values from
-the app registrations and that tenant's OpenID Connect discovery metadata.
-Do not substitute a workforce, `common`, or guessed issuer. No tenant values or
-registration changes are included in this repository.
-
-The usual separation is two app registrations in the external tenant:
-
-* The browser SPA registration identifies the app that signs users in and
-  requests delegated access to the API. Use its **Application (client) ID**
-  for `ENTRA_CLIENT_ID`. In **Authentication**, its SPA redirect URI must
-  match the browser origin followed by `/auth-callback.html`, for example
-  `http://localhost:8000/auth-callback.html` for the local command above.
-  This callback is required for MSAL Browser 5 popup and silent flows.
-  Sign-out also returns its popup to this lightweight redirect-bridge page,
-  not the workspace, so the popup closes without starting another
-  authentication flow.
-* The web API registration identifies the protected resource. Its **Expose an
-  API** settings provide the Application ID URI and delegated scopes. The
-  browser registration needs permission and consent for those scopes.
-
-These are distinct roles, not a confirmation that two registrations already
-exist in your tenant. The app does not check the number of registrations. If
-the current configuration uses separate registrations, do not put the API's
-client ID in `ENTRA_CLIENT_ID`. Find each application under **App
-registrations** in the external tenant and use its **Overview** page for its
-Application (client) ID, not its object ID or the directory (tenant) ID.
-Creating or changing registrations, redirect URIs, scopes, permissions, or
-consent requires separate approval.
-
-| Environment variable | Source and contract |
-|----------------------|---------------------|
-| `ENTRA_CLIENT_ID` | Application (client) ID from the browser SPA registration's **Overview** page |
-| `ENTRA_AUTHORITY` | The existing tenant's HTTPS CIAM authority |
-| `ENTRA_METADATA_URL` | The HTTPS OpenID Connect discovery document for that tenant |
-| `ENTRA_EXPECTED_ISSUER` | The exact `issuer` value published by that discovery document |
-| `ENTRA_AUDIENCE` | Exact `aud` expected in access tokens for the API. For v2.0 access tokens, this is the API registration's Application (client) ID; v1.0 token audiences can differ |
-| `ENTRA_API_SCOPE_PREFIX` | Application ID URI from the API registration's **Expose an API** page, without a trailing slash |
-
-For example, with fictional SPA ID `11111111-1111-1111-1111-111111111111`
-and API ID `22222222-2222-2222-2222-222222222222`, a v2.0 configuration
-could use:
-
-```text
-ENTRA_CLIENT_ID=11111111-1111-1111-1111-111111111111
-ENTRA_AUDIENCE=22222222-2222-2222-2222-222222222222
-ENTRA_API_SCOPE_PREFIX=api://22222222-2222-2222-2222-222222222222
-```
-
-The API's actual Application ID URI need not use that example format. Use the
-registered value and configure the expected audience for the access-token
-version your API receives. Never paste access tokens or secrets into chat or
-online token decoders. See Microsoft's
-[access token claims reference](https://learn.microsoft.com/en-us/entra/identity-platform/access-token-claims-reference)
-and [API scope configuration guide](https://learn.microsoft.com/en-us/entra/identity-platform/quickstart-configure-app-expose-web-apis).
-
-The authority and discovery document must use the same HTTPS origin. The
-published JWKS URI must also use that origin. The issuer must be an HTTPS URL
-and match discovery metadata and token claims exactly, but its host can differ
-from the authority. Copy the `issuer` value directly from the discovery
-document rather than constructing it from the authority.
-
-The configured API reads discovery metadata to build its CSP and validate
-readiness and tokens; it fetches signing keys for readiness and token
-validation. The browser uses the client ID, authority, and scope prefix; the
-API keeps issuer, audience, and metadata validation server-side.
-
-The POC expects these delegated API scope suffixes:
-
-| Scope suffix | Protected operation |
-|--------------|---------------------|
-| `briefs.read` | List samples and owned rendered custom briefs |
-| `renders.read` | Read run, render-option, output, and POC status |
-| `renders.write` | Validate custom input, generate authorized lyric drafts, render, estimate, and reconcile a paid attempt |
-| `evaluations.write` | Submit an output evaluation |
-| `outputs.read` | Fetch protected audio and evidence |
-
-Expose and grant the exact delegated scopes in the existing registration only
-if that change is separately approved. The SPA requests the full configured
-scope URI for each operation. It uses MSAL Browser authorization-code/PKCE
-flow, session storage, and a same-origin redirect URI. Tokens are sent in
-`Authorization` headers, never in URLs.
-
-## Configure hosted PostgreSQL
-
-The Azure Container App receives `EARWYRM_DATABASE_HOST`,
-`EARWYRM_DATABASE_NAME`, and `EARWYRM_DATABASE_USER` as non-secret settings.
-Its `EARWYRM_DATABASE_PASSWORD` comes from a versionless Key Vault reference
-through the app's user-assigned managed identity and tracks the latest version.
-Coordinate password rotation with the stopped-writer maintenance procedure in
-the [deployment runbook](../azure-deployment.md#safe-updates-and-maintenance).
-Do not copy the password into
-GitHub variables, an azd environment, a Bicep parameter file, or command
-arguments. The deployment identity and app identity have separate roles: the
-deployment identity reads the secret for the secure provisioning reference;
-the app identity reads only that secret at its scope.
-
-When all four separate database fields are configured, the application builds
-the PostgreSQL connection string with `sslmode=verify-full` and the system
-certificate bundle. Configuration using `EARWYRM_DATABASE_URL` remains
-available for local tools and tests, but it cannot be mixed with those fields.
-Every URL that is not demonstrably loopback or a Unix socket must explicitly
-set `sslmode=verify-full`. If `sslrootcert` is omitted, the application uses
-the same system certificate bundle as the field-based path; a supplied CA path
-is preserved. A non-TLS mode is allowed only for a clearly local target.
-Unknown or conflicting host settings are treated as remote. Never use
-`sslmode=disable` or `sslmode=require` for a remote database as a substitute
-for certificate and hostname verification.
-
-The mounted `/mnt/earwyrm` directory holds private media and working files;
-PostgreSQL holds structured application records. Keep backups of both the
-database and file data, including the original SQLite sources until cutover is
-separately approved. Follow the [Azure deployment guide](../azure-deployment.md)
-for the approved preview, provision, initialization/import, and deploy sequence,
-private endpoint and private DNS, and coordinated password rotation. The web app refuses to
-serve a missing or incomplete PostgreSQL initialization; provisioning alone
-does not initialize the application store.
-
-## Authorize application users
-
-Valid External ID authentication and delegated scopes do not automatically
-grant application access. A user who is unknown or disabled is denied access.
-After signing in, use a protected API client to call `/api/identity` with the
-`briefs.read` delegated scope. It returns only the caller's validated issuer and
-subject. Verify those two values with the operator through a trusted channel;
-do not share the access token.
-
-Run hosted database administration, initialization and import commands from an
-approved host with VNet connectivity and private DNS resolution. A standard
-GitHub-hosted runner or internet-only laptop cannot reach the database; do not
-enable public access as a workaround.
-
-For an Azure deployment without an administration host, the existing
-bootstrap workflow provides a separately approved
-[`initialize-database` action](../azure-deployment.md#initialize-a-fresh-postgresql-store).
-It resets the existing Earwyrm application tables and known runtime data/media
-entries, then bootstraps the supplied administrator in a temporary private
-Container Apps Job. The workflow requires explicit data-reset approval and the
-verified owner issuer and subject as manual inputs. The app remains stopped.
-Imports and administration of existing stores remain separate operations.
-
-For an operator command against PostgreSQL, set `EARWYRM_DATA_DIR` to an
-existing absolute directory and set `EARWYRM_DATABASE_URL` securely in
-the process environment. Require `sslmode=verify-full` and a trusted CA
-certificate for the server. To reset and initialize the PostgreSQL application
-store, provide explicit reset approval and the verified owner identity in the
-process environment along with the configured External ID issuer:
-
-```bash
-export EARWYRM_DATA_RESET_APPROVED=true
-export ENTRA_EXPECTED_ISSUER='https://verified-issuer.example.invalid'
-export EARWYRM_BOOTSTRAP_OWNER_ISSUER="$ENTRA_EXPECTED_ISSUER"
-export EARWYRM_BOOTSTRAP_OWNER_SUBJECT='verified-subject'
-npm run database -- initialize-fresh
-```
-
-This command clears the known Earwyrm application tables, audio/work/melody
-directories and local SQLite files in the configured data directory. It refuses
-unknown entries or PostgreSQL objects rather than deleting them. It then
-creates both schemas and the initial enabled administrator with admin and paid
-Speech permissions in one transaction. It verifies the owner issuer matches
-`ENTRA_EXPECTED_ISSUER`; the subject must be the exact verified value from
-`/api/identity`. The paid-Speech entitlement does not enable Speech spending.
-This operation is destructive and does not migrate or preserve existing data.
-Stop the app and all other writers before running it manually; the Azure
-workflow performs this quiescence check for you.
-
-### Import existing SQLite data
-
-Use the import command only after a separately approved maintenance window. Stop
-and verify all app revisions, workers, and other writers before importing. Follow
-the [deployment maintenance](../azure-deployment.md#safe-updates-and-maintenance)
-and [backup and restore](../azure-deployment.md#backup-and-restore) procedures.
-The backup must include the complete stopped data directory, including hidden
-files, SQLite journals, the initialization marker, audio, and melody artifacts.
-
-Set `EARWYRM_DATA_DIR` to the existing absolute data directory and provide
-`EARWYRM_DATABASE_URL` through a secure process environment or secret reference.
-Require `sslmode=verify-full` and a trusted CA certificate. The URL must point
-to an empty PostgreSQL schema. Do not put database credentials in command
-arguments, shell history, or logs. Then run:
-
-```bash
-npm run database -- import-sqlite
-```
-
-The command requires the existing `.earwyrm-initialized` marker and both SQLite
-databases. It refuses to run while a cooperating writer holds the data-directory
-lock, rejects unsupported or inconsistent schemas, and verifies database
-integrity, relationships, JSON records, output manifests, referenced audio, and
-melody artifact hashes. It creates both PostgreSQL schemas, imports the records,
-checks row counts, and writes the PostgreSQL initialization marker last in one
-transaction. A failure rolls back the PostgreSQL schema and data. The SQLite
-databases, marker, and media remain in place; the command never switches the app
-or deletes source data. A second import is refused because the target is no
-longer empty.
-
-Review the import result and verify the PostgreSQL-backed app before an
-independently approved cutover. Keep the SQLite sources and backup. Returning to
-SQLite is safe only before PostgreSQL accepts new writes. After that point, use a
-separately approved reverse migration and reconciliation; do not point the app
-at stale SQLite data.
-
-Start the local web app once to create its local database. With
-`ENTRA_EXPECTED_ISSUER` configured and `EARWYRM_DATA_DIR` set to the existing
-absolute data directory, an operator can initialize the first account:
+For local SQLite, start the API once to create the store. With the same
+`ENTRA_EXPECTED_ISSUER` and private data directory configured for the operator
+shell, enroll the first administrator:
 
 ```bash
 npm run database -- bootstrap-owner \
@@ -314,267 +51,63 @@ npm run database -- bootstrap-owner \
   --subject 'verified-subject'
 ```
 
-Replace both example values with the verified caller's values. Bootstrap
-creates exactly one enabled administrator with paid Speech entitlement and
-refuses to run again, even if that account is later disabled. It does not
-enable Speech spending. The issuer is bound to the store; another issuer
-cannot be enrolled into it.
+Replace the example values with the verified identity. This one-time operation
+grants paid Speech entitlement but does not enable spending. Use **Manage
+access** as an enabled administrator to enroll or update other users; operators
+can also use `npm run database -- --help`.
 
-Operators can inspect and explicitly set access:
+## Create and review a jingle
 
-```bash
-npm run database -- list-users
-npm run database -- set-user \
-  --issuer 'https://verified-issuer.example.invalid' \
-  --subject 'verified-subject' --enabled yes --admin no --paid-speech no
-```
+1. Select a sample advertiser, or use **Enter or upload brief** to supply your
+   own. **View brief** shows the facts and call to action (CTA).
+2. In **Create**, select **Preview music only**. A lyric selection and paid
+   voice request are not required.
+3. In **Listen & review**, select **Listen to version**, **Review this
+   version**, or **Download WAV**. Use **Generation history** to find earlier
+   runs.
 
-The issuer must match `ENTRA_EXPECTED_ISSUER`. These commands manage only
-application permissions; they do not create or alter External ID accounts.
-Limit operator access to the private host and database.
+For JSON upload, provide one object with `name`, `offer`, `location`,
+`contact_details` (`email` and `phone`), `tone`, `approved_claims`, and `cta`.
+Do not include a brief ID or extra fields. Use printable ASCII text, one to
+twenty approved claims, and a file no larger than 24,000 bytes. Keep your
+original JSON: validated but unused custom briefs are session drafts.
 
-An enabled administrator can also choose **Manage access** in the signed-in
-workspace, review users, and set enabled, administrator, and paid Speech
-permissions. Verify a new user's issuer and subject before saving. An
-administrator who removes their own access may need an operator to restore it.
-The API checks administrator privileges for every management request.
+**Batch tools** renders one to three briefs using their original scripts, not
+the lyric selected in **Create**. Instrumental results stay **Pending** for
+evaluation, even after rendering completes; they do not prove vocal quality.
+See [how to evaluate output](rendering.md#evaluate-output).
 
-The vendored `@azure/msal-browser` assets are version `5.29.0`, from the npm
-package's `lib/msal-browser.min.js` and
-`lib/redirect-bridge/msal-redirect-bridge.min.js`, with the package MIT license at
-[`apps/web/public/vendor/LICENSE`](../../apps/web/public/vendor/LICENSE). Its
-SHA-384 checksums are:
+## Enable paid options only with approval
 
-```text
-fb5be8a8da24358b1aa885dec45d24288ddcf56e0e1745cd72078cf484f489e87923edde744be924efaf4017c82e884d
-a0cbfc7c857fa442839e4abb4eaf0eb47d073f3192a7dabf39368660baace44e88045e71eef26d14a9099101005c12e4
-```
+* Lyrics: Set `LYRIC_ENABLED=true` and configure the server-side Foundry and
+  Content Safety settings in [Services and contracts](../service-contracts.md#lyric-writer).
+  An enabled user with paid Speech entitlement can authorize **Generate 3
+  lyric options**. This action incurs separate charges and has no upfront cost
+  estimate. Only accepted drafts can be selected with **Use option**; human
+  review is still required before distribution.
+* Voice: Set `SPEECH_ENABLED=true`, server-only `SPEECH_KEY` and
+  `SPEECH_REGION`, and positive `SPEECH_PER_RUN_CAP_USD` and
+  `SPEECH_TOTAL_BUDGET_USD` limits. Provide valid
+  [Speech rate evidence](rendering.md#render-with-paid-speech) using
+  `SPEECH_EVIDENCE_PATH` if it is outside the default location. An enabled,
+  entitled user selects **Estimate voice + music** for an accepted draft and
+  confirms the estimate. Changing the draft requires a new estimate. In
+  **Batch tools**, use **Include vocals** and **Estimate vocal render**.
 
-Verify the vendored file with:
+Paid voice stays blocked until prior attempts are reconciled with billing
+evidence. After a disconnect, reload to check status rather than resubmitting.
+The [Azure runbook](../azure-deployment.md) covers the deployed POC, which
+keeps paid Speech disabled.
 
-```bash
-sha384sum apps/web/public/vendor/msal-browser.min.js apps/web/public/vendor/msal-redirect-bridge.min.js
-```
+## Troubleshoot and find local files
 
-The Content Security Policy serves scripts, styles, and default resources from
-the same origin. It allows identity `connect-src` and `frame-src` origins only
-from the configured HTTPS authority and validated discovery metadata. It
-disallows objects and framing by other sites. The callback alone permits
-same-origin framing for silent token renewal and is served with `no-store`.
-The app does not load scripts from a CDN.
-
-Audio playback uses authenticated same-origin API requests followed by local
-Blob URLs. The CSP permits these URLs only for media with
-`media-src 'self' blob:`; script and default sources remain restricted.
-
-## Create and review for an advertiser
-
-Select an advertiser in the red navigation rail, or use the advertiser selector
-on small screens. Its brief summary stays above **Create** and **Listen & review**.
-Select **View brief** for the full input facts.
-
-In **Create**, generate lyric options, select an accepted draft, and choose
-**Estimate voice + music**. Review the server-computed cost and confirm before
-any Speech request starts. The estimate binds the brief and exact selected
-lyric identity and content. Changing the draft requires a new estimate.
-**Preview music only** renders the active brief without requiring a lyric choice
-or a paid voice request.
-
-Select **Enter or upload brief** to enter advertiser facts and a call to action
-(CTA), then select **Validate and load brief**. Alternatively, upload a JSON
-file with the same fields:
-
-```json
-{
-  "name": "Bright Bike",
-  "offer": "Bike tune ups",
-  "location": "Lakeview",
-  "contact_details": {
-    "email": "shop@example.com",
-    "phone": "Call today"
-  },
-  "tone": "Friendly",
-  "approved_claims": ["Bike tune ups are available"],
-  "cta": "Call Bright Bike to plan your next ride"
-}
-```
-
-Upload one object, without an ID or extra properties. Files are limited to
-24,000 bytes. Each text field must contain single-line printable ASCII and
-fit within 400 characters; supply one to twenty approved claims. Spell out
-numbers and symbols in the brand name and CTA. The combined name, offer and CTA
-must fit the 400-character render script. Validation errors preserve the
-existing collection and unfinished manual form.
-
-Custom inputs receive content-derived IDs. Changed facts create a different
-brief rather than rewriting the original. Until used for lyric generation or
-rendering, validated inputs remain in identity-scoped browser session storage.
-Signing
-out clears those drafts; keep your original JSON if you need to reuse it.
-Custom snapshots used for lyric generation or rendering are saved with owned
-records and recovered on later sign-in under the existing private-storage
-retention policy.
-
-Open **Batch tools** for the secondary multi-brief workflow. Select one to three
-briefs, then **Render instrumental preview**. Batch tools use original scripts,
-not the selected draft from Create. To request paid
-voice, enable **Include vocals**, select **Estimate vocal render**, then review
-the exact batch and cost before confirming. Speech prerequisites below still
-apply. For custom inputs, confirmation also binds the immutable input contents.
-
-Completed work opens **Listen & review** when it belongs to the active brief and does
-not replace an unfinished form or evaluation. Otherwise, inspect it through
-**Generation history**. Run inspection preserves batch selection and evaluation
-drafts. Use **Results from** to filter versions, then **Listen to version** to
-fetch protected audio and start playback. Native audio controls remain available
-for pause, seek, replay, and volume. Only one version plays at a time.
-Select **Review this version** to open its human evaluation and linked lyrics,
-or select **Download WAV**. Technical and usage evidence stays expandable.
-
-**Pending** is an evaluation status, not render progress, and does not block
-playback. Instrumental previews remain Pending because they are not vocal
-proof. **Generation history** reports whether rendering completed.
-**Input ready** only means brief validation succeeded, not that rendered audio
-has passed evaluation. Paid usage awaiting reconciliation remains visible
-in a collapsible workspace notice; paid voice remains blocked until reconciled.
-
-## Optional paid lyric alternatives
-
-Lyric generation is disabled unless the server has `LYRIC_ENABLED=true`,
-`LYRIC_FOUNDRY_ENDPOINT`, `LYRIC_MODEL_DEPLOYMENT` and
-`LYRIC_CONTENT_SAFETY_ENDPOINT` configured. The endpoints must be HTTPS resource
-roots. The server's existing `DefaultAzureCredential` identity needs the
-appropriate model and Content Safety permissions. The application user must
-be enabled and have the existing paid Speech entitlement; no cloud credentials
-are sent to the browser. Enablement and spending require a separate operator
-decision.
-
-Open **Create** for the active advertiser, authorize the disclosed paid Foundry and
-Content Safety requests, then select **Generate 3 lyric options**. This action
-has no upfront cost estimate or Speech-budget reconciliation: the consent is
-for this lyric-generation action only. Each of three candidate slots uses the
-existing screened writer with at most four attempts. Duplicate, rejected or
-unavailable results are explicit outcomes, not a promise of three usable texts.
-Only screened accepted or human-held results include lyric text. Review status
-and reasons for every option; generated lyrics require human review before
-broadcast.
-
-Options are stored server-side with their owner, brief, screened request and
-result. They survive reload and sign-out, but are never shared with another
-owner. **Use option** is enabled only for accepted results. Held, rejected,
-duplicate, and unavailable options cannot be used for audio.
-Selecting a draft does not itself spend money or render audio.
-
-The browser sends only an option ID and brief ID, never trusted lyric text or
-screening status. The API checks ownership, accepted status, current brief
-contents, and deterministic lyric rules before estimating or rendering. It
-uses the saved lyric text for Speech, binds it into the confirmation fingerprint,
-and saves its identity and text with every resulting output. Original scripts
-remain the explicit fallback for batch rendering and legacy requests without
-a lyric selection. Missing configuration or entitlement disables generation
-rather than substituting fake local lyrics.
-
-### Upgrade an existing PostgreSQL store
-
-The redesign adds the `lyric_options` table. Fresh bootstrap and SQLite
-initialization include it. Existing PostgreSQL stores require an explicit,
-additive upgrade before the updated application starts:
-
-```bash
-npm run database -- upgrade --data-dir /absolute/path/to/private-data
-```
-
-Use the existing approved database environment. This command preserves users,
-runs, evaluations, and audio; it does not call `initialize-fresh` or reset data.
-It is safe to repeat and refuses an uninitialized or incomplete store.
-SQLite import accepts both older stores without lyric options and newer stores
-containing owned lyric records. Do not run a production upgrade without the
-normal operator approval and backup procedure.
-
-## Local audio and evaluation storage
-
-By default, the API stores its SQLite database and audio under
-`.earwyrm-data/` at the repository root, regardless of the current working
-directory:
-
-* `.earwyrm-data/earwyrm.sqlite3` stores run, ownership, evaluation, and paid
-  attempt records.
-* `.earwyrm-data/audio/` stores generated WAV files.
-* `.earwyrm-data/work/` holds temporary render work.
-
-Set `EARWYRM_DATA_DIR` to an absolute path to select another local data root.
-The API creates the root, `audio/`, and `work/` directories with owner-only
-`0700` permissions and the database and audio files with owner-only `0600`
-permissions. The default root is listed in `.gitignore`; verify it with:
-
-```bash
-git check-ignore -v .earwyrm-data/earwyrm.sqlite3
-```
-
-Storage is local to this POC. There is no cloud storage, automatic expiry,
-backup, or production retention policy. Stop the local server and manually
-delete the selected data root when its records are no longer needed. Deletion
-does not guarantee secure erasure on every filesystem or backup system.
-
-## Optional paid Speech rendering
-
-Paid Speech rendering is disabled by default with `SPEECH_ENABLED=false`.
-Offline instrumental rendering does not construct the Speech provider or make
-provider/network calls. Do not enable the paid path until a separate
-user/operator decision explicitly authorizes spending and configures all
-server-side prerequisites.
-
-The paid path requires:
-
-* `SPEECH_ENABLED=true`
-* An enabled application user with paid Speech entitlement
-* `SPEECH_KEY` and `SPEECH_REGION` in the server environment
-* `SPEECH_PER_RUN_CAP_USD` and `SPEECH_TOTAL_BUDGET_USD` set to finite,
-  positive limits
-* Valid resource and rate evidence, optionally selected with
-  `SPEECH_EVIDENCE_PATH`
-
-Keep the Speech key on the server. Never add it to the static client, browser
-configuration, logs, or evidence files. See the [rendering guide](rendering.md)
-for the evidence fields and rights considerations. The committed sample
-evidence contains placeholders and cannot authorize a paid render.
-
-Before dispatch, the API recomputes the selected briefs' estimate and requires
-an explicit confirmation bound to those exact brief IDs and that estimate. It
-reserves cumulative budget durably and serializes paid work to one attempt. The
-client does not retry or cancel a paid request. Every attempt, including failed
-or unknown usage, remains blocked until its actual metered cost is reconciled
-with a billing evidence reference. After a disconnect, reload the page to
-recover run status; do not submit another request.
-
-## Verify the local setup
-
-With the server running and tenant values unset, check the loopback endpoints:
-
-```bash
-curl --fail http://localhost:8001/healthz
-curl --fail http://localhost:8001/api/config
-curl --include http://localhost:8001/api/briefs
-```
-
-The health check returns `200`. The configuration response reports
-`setup-needed`; the protected brief route returns `503` until authentication
-is configured. When configured, a missing bearer token returns `401`, an
-invalid or unavailable identity configuration fails closed, and a valid token
-without the required delegated scope returns `403`.
-
-Run the local tests and checks without contacting a tenant or Speech service:
-
-```bash
-npm ci
-npm run typecheck
-npm test
-npm run build
-```
-
-These root checks cover both workspaces. Use `npm run test:api` or
-`npm run test:web` for a targeted suite, or pass `--workspace @earwyrm/api`
-or `--workspace @earwyrm/web` to an individual workspace script.
-
-Use fake MSAL and API responses for browser workflow checks. Do not use a real
-tenant token or enable paid Speech as part of routine validation.
+* **Sign-in setup required**: With no Entra settings, `/api/config` reports
+  `setup-needed`. Partial or invalid settings fail closed. Use
+  [the API health endpoint](http://localhost:8001/healthz) to check that the
+  process is running independently of sign-in.
+* **Signed in but denied**: Verify the delegated scopes and the application's
+  enabled-user record for that issuer and subject.
+* **Find audio and evaluations**: The API defaults to `.earwyrm-data/` at the
+  repository root. Set `EARWYRM_DATA_DIR` to an absolute private path to
+  override it. Keep this data out of source control; the local POC does not
+  expire or back it up automatically.

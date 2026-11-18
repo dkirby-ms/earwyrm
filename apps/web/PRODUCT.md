@@ -52,8 +52,7 @@ yellow reserved for selected lyrics and their audio source.
 * [Current workspace](src/App.tsx)
 * [Brief entry](src/BriefEditor.tsx)
 * [Current API types](src/types.ts)
-* [Product proposal](../../docs/design-proposal.md), which includes future
-  capabilities and must not be treated as proof of implemented features
+* [Web workspace guide](../../docs/audio-poc/web-app.md)
 
 ## Product Principles
 
