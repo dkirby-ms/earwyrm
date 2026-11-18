@@ -4,10 +4,11 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { Decimal } from 'decimal.js';
 import { z } from 'zod';
 import {
-  SAMPLE_RATE, ScoreDuration, compose, jingle_duration, mix, musical_form, musical_plan, normalize, synthesize, vocode, write_midi, write_wav,
+  SAMPLE_RATE, ScoreDuration, compose, jingle_duration, mix, musical_form, musical_plan, normalize, vocode, write_midi, write_wav,
   type Note,
 } from './dsp.js';
 import { MelodyService } from './melody_service.js';
+import { render_backing } from './backing.js';
 import { select_screened, screen } from './similarity.js';
 import { VOICE, align, hook_word_index, place_spoken, type SpeechProvider } from './speech.js';
 import { AdvertiserBrief } from './lyrics.js';
@@ -84,12 +85,13 @@ export function gate(duration: number, elapsed: number, cost: number | null, exp
 }
 
 /** Retains source provenance and unresolved rights evidence for every audible component. */
-export function component_ledger(evidence: SpeechEvidence | null): Array<Record<string, unknown>> {
+export function component_ledger(evidence: SpeechEvidence | null, soundfont: string | null = null): Array<Record<string, unknown>> {
   const components: Array<Record<string, unknown>> = [
     { component: 'melody_and_chords', origin: 'Seeded TypeScript phrase composition in apps/api/src/dsp.ts',
       evidence: 'composition.json, score.json and score.mid', commercial_use_basis: null, status: 'Pending' },
-    { component: 'instruments_and_carrier', origin: 'Harmonic oscillators, synthesized kick and seeded noise in apps/api/src/dsp.ts',
-      evidence: 'score.json; no samples or SoundFonts', commercial_use_basis: null, status: 'Pending' },
+    { component: 'instruments_and_carrier',
+      origin: soundfont ? `FluidSynth backing with ${soundfont}; oscillator vocal carrier when used` : 'Harmonic oscillators, synthesized kick and seeded noise in apps/api/src/dsp.ts',
+      evidence: 'composition.json and score.mid', commercial_use_basis: null, status: 'Pending' },
     { component: 'script', origin: 'Repository-authored synthetic brief script',
       evidence: 'brief.json and script.txt', commercial_use_basis: null, status: 'Pending' },
   ];
@@ -148,7 +150,7 @@ export async function render_brief(
   });
   let { notes, duration_seconds } = selected;
   let form = musical_form(duration_seconds);
-  let bed = synthesize(notes, { seed, duration_seconds });
+  let { audio: bed, ...instrumentation } = await render_backing(notes, seed, duration_seconds);
   let outputs: Record<string, Float64Array> = { instrumental: normalize(bed) };
   let attempt: Record<string, unknown> | null = null;
   let alignment: unknown[] = [];
@@ -180,7 +182,7 @@ export async function render_brief(
       form = musical_form(duration_seconds);
       notes = compose(seed, duration_seconds);
       melodies.lead = notes.filter(note => note.instrument === 'lead').map(note => note.pitch);
-      bed = synthesize(notes, { seed, duration_seconds });
+      ({ audio: bed, ...instrumentation } = await render_backing(notes, seed, duration_seconds));
     }
     const [modulator, carrier, melody, map] = align(utterance, text, musical_plan(seed).root, { melody_seed: seed, form });
     notes.push(...melody);
@@ -192,11 +194,11 @@ export async function render_brief(
   }
   const report = archive ? await archive.record_local_output(attempt_id, melodies) : screen(melodies);
   save_json(join(directory, 'composition.json'), {
-    seed, generator_version: 'earwyrm-phrase-v2', form, similarity: report,
+    seed, generator_version: 'earwyrm-phrase-v2', form, similarity: report, instrumentation,
     timing_granularity: provider ? 'word' : null,
   });
   save_json(join(directory, 'score.json'), notes);
-  write_midi(join(directory, 'score.mid'), notes, duration_seconds);
+  write_midi(join(directory, 'score.mid'), notes, duration_seconds, instrumentation.palette);
   save_json(join(directory, 'alignment.json'), alignment);
   const rows: RenderOutput[] = [];
   for (const [variant, audio] of Object.entries(outputs)) {
@@ -223,7 +225,7 @@ export async function render_brief(
         basis: attempt ? 'One shared request, 50/50 pair allocation' : 'No Azure request; instrumental-only',
         rate_evidence: evidence, billing_reconciled: false,
       },
-      components: component_ledger(evidence), composition_seed: seed, melody_similarity: report,
+      components: component_ledger(evidence, instrumentation.soundfont), composition_seed: seed, melody_similarity: report,
       ai_generated: true,
       disclosure: 'Code-generated music and, in live mode, a stock synthetic Azure voice; review demo, not broadcast master.',
       evaluation: { brand_transcription: null, cta_transcription: null, self_rating: null,

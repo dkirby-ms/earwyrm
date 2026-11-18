@@ -10,7 +10,7 @@ import { z } from 'zod';
 import { DefaultAzureCredential } from '@azure/identity';
 import { AzureLyricBackend, CloudFailure, LyricCloudSettings, type LyricBackend } from './lyric_cloud.js';
 import { LyricWriter } from './lyric_service.js';
-import { LyricRequest, LyricResult } from './lyrics.js';
+import { LyricRequest, LyricResult, validate_draft } from './lyrics.js';
 import { BriefDetails, CustomBrief, create_custom_brief, custom_script, input_fingerprint, validate_custom_brief } from './workspace_briefs.js';
 import {
   FIXTURES, REPOSITORY_ROOT, cost_for, load_evidence, load_inputs, render_brief,
@@ -23,7 +23,7 @@ import {
   type AccessTokenValidator, type Claims, type Environment, type JsonFetcher,
 } from './web_auth.js';
 import {
-  STATIC_ROOT, StorageAccessDenied, StorageConflict, StorageNotFound, WebStorage,
+  STATIC_ROOT, StorageAccessDenied, StorageConflict, StorageNotFound, WebStorage, canonical_json,
   type OutputRecord, type RunRecord,
 } from './web_storage.js';
 
@@ -40,6 +40,7 @@ export const EVIDENCE_FIELDS = [
 export const BriefSelection = z.object({
   brief_ids: z.array(z.string()).min(1).max(3),
   custom_briefs: z.array(CustomBrief).max(3).optional(),
+  lyric_selections: z.array(z.strictObject({ brief_id: z.string(), option_id: z.uuid() })).max(3).optional(),
 });
 export type BriefSelection = z.infer<typeof BriefSelection>;
 /** Must match canonical server ordering and the exact decimal estimate, not browser arithmetic. */
@@ -148,6 +149,10 @@ function selected_inputs(requested_ids: string[], custom_briefs: CustomBrief[] =
   return selected;
 }
 
+function brief_cta(selected: ReturnType<typeof selected_inputs>[number]): string {
+  return selected.custom?.cta ?? selected.text.split(/(?<=[.!?])\s+/).at(-1)!;
+}
+
 function identity(response: Response): { issuer: string; subject: string } {
   const claims: Claims = response.locals.claims;
   if (typeof claims?.iss !== 'string' || !claims.iss.trim() || typeof claims.sub !== 'string' || !claims.sub.trim()) {
@@ -187,6 +192,7 @@ function public_output(output: OutputRecord) {
     duration_seconds: manifest.duration_seconds, render_seconds: manifest.render_seconds,
     numeric_gates: manifest.numeric_gates, components: manifest.components, azure_usage: manifest.azure_usage,
     evaluation: output.evaluation, status: output_status(output),
+    lyric_source: manifest.lyric_source ?? null,
     audio_url: `/api/outputs/${output.output_id}/audio`, evidence_url: `/api/outputs/${output.output_id}/evidence`,
   };
 }
@@ -213,7 +219,8 @@ export type WebAppStorage = Pick<WebStorage,
   'root' | 'work_dir' | 'database_url' | 'get_user' | 'list_users_as_admin' | 'set_user_as_admin' |
   'has_unreconciled_paid_attempt' | 'create_run' | 'reserve_paid_run' | 'mark_attempt_submitted' |
   'save_output' | 'set_run_status' | 'finish_attempt' | 'get_run' | 'list_runs' | 'list_outputs' |
-  'get_output' | 'audio_path' | 'save_evaluation' | 'reconcile_attempt'>;
+  'get_output' | 'audio_path' | 'save_evaluation' | 'reconcile_attempt' |
+  'save_lyric_option' | 'list_lyric_options' | 'get_lyric_option'>;
 /** All providers, persistence and identity fetchers remain lazy until a route needs them. */
 export interface CreateAppOptions {
   environ?: Environment;
@@ -283,6 +290,35 @@ export function create_app(options: CreateAppOptions = {}): Express {
     })();
     try { return await storage_pending; }
     finally { storage_pending = undefined; }
+  }
+  async function render_inputs(payload: BriefSelection, owner: string) {
+    const selections = payload.lyric_selections ?? [];
+    if (new Set(selections.map(value => value.brief_id)).size !== selections.length ||
+        selections.some(value => !payload.brief_ids.includes(value.brief_id))) {
+      throw new HttpError(422, 'Lyric selections must be unique and belong to selected briefs');
+    }
+    return Promise.all(selected_inputs(payload.brief_ids, payload.custom_briefs).map(async selected => {
+      const selection = selections.find(value => value.brief_id === selected.brief.brief_id);
+      if (!selection) return { ...selected, lyric_source: null };
+      const stored = await (await storage()).get_lyric_option(selection.option_id, owner);
+      if (!stored || stored.brief_id !== selected.brief.brief_id) throw new HttpError(404, 'Lyric option was not found for this brief');
+      const request = LyricRequest.parse(stored.request), result = LyricResult.parse(stored.result);
+      if (result.status !== 'accepted' || !result.output) throw new HttpError(409, 'Only accepted lyric options can be rendered; held drafts require human review');
+      if (canonical_json(request.brief) !== canonical_json(selected.brief) || request.cta !== brief_cta(selected)) {
+        throw new HttpError(409, 'Lyric option does not match the current brief');
+      }
+      const draft = validate_draft(request, result.output);
+      return {
+        ...selected, text: draft.lyrics,
+        lyric_source: { option_id: stored.option_id, ...draft, status: 'accepted' as const, ai_generated: true, broadcast_approval_required: true },
+      };
+    }));
+  }
+  function render_fingerprint(selected: Awaited<ReturnType<typeof render_inputs>>): string | undefined {
+    const custom = selected.flatMap(value => value.custom ? [value.custom] : []);
+    const lyrics = selected.flatMap(value => value.lyric_source
+      ? [{ brief_id: value.brief.brief_id, option_id: value.lyric_source.option_id, lyrics: value.text }] : []);
+    return custom.length || lyrics.length ? input_fingerprint(custom, lyrics) : undefined;
   }
   const authorized = (scope: string): RequestHandler[] => [require_scope(scope), async (_request, response, next) => {
     const { issuer, subject } = identity(response);
@@ -390,6 +426,11 @@ export function create_app(options: CreateAppOptions = {}): Express {
   });
   app.get('/api/briefs', ...authorized('briefs.read'), async (_request, response) => {
     const custom = new Map<string, CustomBrief>();
+    for (const option of await (await storage()).list_lyric_options(identity(response).subject)) {
+      if (!option.brief_id.startsWith('custom-')) continue;
+      const value = validate_custom_brief({ brief: option.request.brief, cta: option.request.cta });
+      custom.set(value.brief.brief_id, value);
+    }
     for (const output of await (await storage()).list_outputs(identity(response).subject)) {
       if (output.manifest.workspace_brief === undefined) continue;
       const value = validate_custom_brief(output.manifest.workspace_brief);
@@ -405,11 +446,16 @@ export function create_app(options: CreateAppOptions = {}): Express {
     response.json({ ...value.brief, cta: value.cta, source: 'custom' });
   });
   app.get('/api/lyrics/options', ...authorized('renders.read'), async (_request, response) => {
-    response.json({ available: await lyric_available(response), option_count: 3 });
+    const stored = await (await storage()).list_lyric_options(identity(response).subject);
+    response.json({
+      available: await lyric_available(response), option_count: 3,
+      options: stored.map(value => ({ option_id: value.option_id, brief_id: value.brief_id, ...value.result })),
+    });
   });
   app.post('/api/lyrics/options', ...authorized('renders.write'), async (request, response) => {
     const payload = parse(BriefSelection.extend({ confirm_paid_generation: z.literal(true) }), request.body);
     if (payload.brief_ids.length !== 1) throw new HttpError(422, 'Generate lyrics for one active brief at a time');
+    if (payload.lyric_selections?.length) throw new HttpError(422, 'Lyric generation does not accept existing selections');
     const [selected] = selected_inputs(payload.brief_ids, payload.custom_briefs);
     if (!await lyric_available(response)) throw new HttpError(409, 'Paid lyric generation is disabled or unavailable for this account');
     if (lyrics_active) throw new HttpError(409, 'Lyric generation is already active');
@@ -418,9 +464,9 @@ export function create_app(options: CreateAppOptions = {}): Express {
       const settings = lyric_settings();
       const backend = options.lyric_backend ?? new AzureLyricBackend(settings!, new DefaultAzureCredential({ retryOptions: { maxRetries: 0 } }));
       const writer = new LyricWriter(backend);
-      const cta = selected!.custom?.cta ?? selected!.text.split(/(?<=[.!?])\s+/).at(-1)!;
+      const cta = brief_cta(selected!);
       const lyric_request = parse(LyricRequest, { brief: selected!.brief, cta, product_path: 'spoken' });
-      const alternatives: LyricResult[] = [];
+      const alternatives = [];
       const seen = new Set<string>();
       for (let index = 0; index < 3; index++) {
         let result = await writer.write(lyric_request);
@@ -428,7 +474,8 @@ export function create_app(options: CreateAppOptions = {}): Express {
           result = LyricResult.parse({ status: 'unavailable', attempts: result.attempts, reasons: ['duplicate_option'] });
         }
         if (result.output) seen.add(result.output.lyrics);
-        alternatives.push(result);
+        const stored = await (await storage()).save_lyric_option(identity(response).subject, lyric_request, result);
+        alternatives.push({ option_id: stored.option_id, brief_id: stored.brief_id, ...result });
       }
       response.json({ brief_id: selected!.brief.brief_id, options: alternatives });
     } finally { lyrics_active = false; }
@@ -445,19 +492,24 @@ export function create_app(options: CreateAppOptions = {}): Express {
   });
   app.post('/api/renders/estimate', ...authorized('renders.write'), async (request, response) => {
     const payload = parse(BriefSelection, request.body);
-    const selected = selected_inputs(payload.brief_ids, payload.custom_briefs);
+    const selected = await render_inputs(payload, identity(response).subject);
     const [evidence, cap] = await paid_configuration(response);
     const estimate = selected.reduce((total, { text }) => total.add(cost_for(text, evidence)), new Decimal(0));
     if (estimate.gt(cap)) throw new HttpError(409, 'Per-run Speech cap exceeded');
-    const custom = selected.flatMap(value => value.custom ? [value.custom] : []);
+    const fingerprint = render_fingerprint(selected);
     response.json({
       brief_ids: selected.map(({ brief }) => brief.brief_id), estimated_cost_usd: estimate.toString(),
-      ...(custom.length ? { input_fingerprint: input_fingerprint(custom) } : {}),
+      ...(fingerprint ? { input_fingerprint: fingerprint } : {}),
+      ...(payload.lyric_selections?.length ? { lyric_selections: selected.flatMap(value => value.lyric_source
+        ? [{ brief_id: value.brief.brief_id, option_id: value.lyric_source.option_id }] : []) } : {}),
     });
   });
   app.post('/api/renders', ...authorized('renders.write'), async (request, response) => {
     const payload = parse(RenderRequest, request.body);
-    const selected = selected_inputs(payload.brief_ids, payload.custom_briefs);
+    if (payload.mode === 'instrumental' && payload.lyric_selections?.length) {
+      throw new HttpError(422, 'Instrumental previews do not render selected lyrics');
+    }
+    const selected = await render_inputs(payload, identity(response).subject);
     const brief_ids = selected.map(({ brief }) => brief.brief_id);
     const { issuer, subject: owner } = identity(response);
     const store = await storage();
@@ -478,9 +530,9 @@ export function create_app(options: CreateAppOptions = {}): Express {
       const estimate = Object.values(per_brief).reduce((total, value) => total.add(value), new Decimal(0));
       if (estimate.gt(cap)) throw new HttpError(409, 'Per-run Speech cap exceeded');
       if (!payload.confirmation) throw new HttpError(409, 'Explicit Speech confirmation is required');
-      const custom = selected.flatMap(value => value.custom ? [value.custom] : []);
-      if (custom.length && payload.confirmation.input_fingerprint !== input_fingerprint(custom)) {
-        throw new HttpError(409, 'Speech confirmation does not match custom brief contents');
+      const fingerprint = render_fingerprint(selected);
+      if (payload.confirmation.input_fingerprint !== fingerprint) {
+        throw new HttpError(409, 'Speech confirmation does not match brief and lyric contents');
       }
       if (JSON.stringify(payload.confirmation.brief_ids) !== JSON.stringify(brief_ids)) throw new HttpError(409, 'Speech confirmation does not match briefs');
       if (!decimal(payload.confirmation.estimated_cost_usd).eq(estimate)) throw new HttpError(409, 'Speech confirmation does not match the server estimate');
@@ -500,7 +552,7 @@ export function create_app(options: CreateAppOptions = {}): Express {
         temporary = await mkdtemp(join(store.work_dir, 'render-'));
         let provider: SpeechProvider | null = null;
         if (attempt_id) { await store.mark_attempt_submitted(attempt_id); provider = await speech_factory(); }
-        for (const { index, brief, text, custom } of selected) {
+        for (const { index, brief, text, custom, lyric_source } of selected) {
           const directory = join(temporary, brief.brief_id);
           const rows = await render(directory, brief, text, index, provider, evidence, {
             history_dir: join(store.root, 'melody'), database_url: store.database_url,
@@ -513,6 +565,17 @@ export function create_app(options: CreateAppOptions = {}): Express {
                 for (const component of row.components) {
                   if (typeof component === 'object' && component !== null && component.component === 'script') {
                     component.origin = 'User-supplied advertiser facts and CTA';
+                  }
+                }
+              }
+            }
+            if (lyric_source) {
+              row.lyric_source = lyric_source;
+              row.script_source = 'Selected server-screened lyric draft';
+              if (Array.isArray(row.components)) {
+                for (const component of row.components) {
+                  if (typeof component === 'object' && component !== null && component.component === 'script') {
+                    component.origin = `Selected screened lyric option ${lyric_source.option_id}`;
                   }
                 }
               }

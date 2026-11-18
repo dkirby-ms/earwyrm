@@ -20,8 +20,10 @@ export interface Brief {
   readonly source?: 'custom'
 }
 
-/** Independent writer outcomes; only screened or explicitly held results contain text. */
+/** Server-owned writer outcomes; only accepted options can be selected for audio. */
 export interface LyricOption {
+  readonly option_id: string
+  readonly brief_id: string
   readonly status: 'accepted' | 'human_review_required' | 'rejected' | 'retry_exhausted' | 'unavailable'
   readonly output: { readonly hook: string; readonly lyrics: string } | null
   readonly reasons: readonly string[]
@@ -92,6 +94,13 @@ export interface Output {
   readonly status: string
   readonly audio_url: string
   readonly evidence_url: string
+  readonly lyric_source?: {
+    readonly option_id: string
+    readonly hook: string
+    readonly lyrics: string
+    readonly status: 'accepted'
+    readonly broadcast_approval_required: true
+  } | null
 }
 
 /** A paid attempt that may require usage reconciliation. */
@@ -125,6 +134,7 @@ export interface RenderEstimate {
   readonly brief_ids: readonly string[]
   readonly estimated_cost_usd: string
   readonly input_fingerprint?: string
+  readonly lyric_selections?: readonly { readonly brief_id: string; readonly option_id: string }[]
 }
 
 /** Draft values for an output evaluation form. */

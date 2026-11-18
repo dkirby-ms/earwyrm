@@ -15,6 +15,10 @@ const originalDialogMethods = {
   showModal: Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype, 'showModal'),
   close: Object.getOwnPropertyDescriptor(HTMLDialogElement.prototype, 'close'),
 }
+const originalAudioUrlMethods = {
+  createObjectURL: Object.getOwnPropertyDescriptor(URL, 'createObjectURL'),
+  revokeObjectURL: Object.getOwnPropertyDescriptor(URL, 'revokeObjectURL'),
+}
 
 const output = {
   output_id: 'output-1',
@@ -33,6 +37,8 @@ const output = {
 }
 
 function installMocks(denyAccess = false, capabilities: { lyrics?: boolean; vocals?: boolean } = {}) {
+  vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => undefined)
+  vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined)
   class FakePublicClientApplication {
     activeAccount: typeof account | null = null
     settings: unknown
@@ -101,9 +107,9 @@ function installMocks(denyAccess = false, capabilities: { lyrics?: boolean; voca
         ? {
             brief_id: 'brief-001',
             options: [
-              { status: 'accepted', output: { hook: 'Original hook', lyrics: 'Original hook\nCall today' }, reasons: [], ai_generated: true, broadcast_approval_required: true },
-              { status: 'human_review_required', output: { hook: 'Another hook', lyrics: 'Another hook\nCall today' }, reasons: ['risky_claims_require_human_review'], ai_generated: true, broadcast_approval_required: true },
-              { status: 'unavailable', output: null, reasons: ['duplicate_option'], ai_generated: true, broadcast_approval_required: true },
+              { option_id: 'accepted-option', brief_id: 'brief-001', status: 'accepted', output: { hook: 'Original hook', lyrics: 'Original hook\nCall today' }, reasons: [], ai_generated: true, broadcast_approval_required: true },
+              { option_id: 'held-option', brief_id: 'brief-001', status: 'human_review_required', output: { hook: 'Another hook', lyrics: 'Another hook\nCall today' }, reasons: ['risky_claims_require_human_review'], ai_generated: true, broadcast_approval_required: true },
+              { option_id: 'unavailable-option', brief_id: 'brief-001', status: 'unavailable', output: null, reasons: ['duplicate_option'], ai_generated: true, broadcast_approval_required: true },
             ],
           }
         : { available: Boolean(capabilities.lyrics), option_count: 3 },
@@ -111,7 +117,11 @@ function installMocks(denyAccess = false, capabilities: { lyrics?: boolean; voca
         instrumental_available: true,
         speech_status: capabilities.vocals ? 'available' : 'disabled',
       },
-      '/api/renders/estimate': { brief_ids: ['brief-001'], estimated_cost_usd: '0.1' },
+      '/api/renders/estimate': {
+        brief_ids: ['brief-001'], estimated_cost_usd: '0.1',
+        ...(init?.body && JSON.parse(String(init.body)).lyric_selections
+          ? { lyric_selections: JSON.parse(String(init.body)).lyric_selections, input_fingerprint: 'a'.repeat(64) } : {}),
+      },
       '/api/renders': {
         runs: [
           {
@@ -184,6 +194,17 @@ function installMocks(denyAccess = false, capabilities: { lyrics?: boolean; voca
   return { fetchMock }
 }
 
+function installDialogMock(): void {
+  Object.defineProperties(HTMLDialogElement.prototype, {
+    showModal: { configurable: true, value: function (this: HTMLDialogElement) { this.open = true } },
+    close: { configurable: true, value: function (this: HTMLDialogElement, result?: string) {
+      this.returnValue = result ?? ''
+      this.open = false
+      this.dispatchEvent(new Event('close'))
+    } },
+  })
+}
+
 afterEach(() => {
   cleanup()
   window.sessionStorage.clear()
@@ -191,6 +212,10 @@ afterEach(() => {
   for (const [name, descriptor] of Object.entries(originalDialogMethods)) {
     if (descriptor) Object.defineProperty(HTMLDialogElement.prototype, name, descriptor)
     else Reflect.deleteProperty(HTMLDialogElement.prototype, name)
+  }
+  for (const [name, descriptor] of Object.entries(originalAudioUrlMethods)) {
+    if (descriptor) Object.defineProperty(URL, name, descriptor)
+    else Reflect.deleteProperty(URL, name)
   }
   vi.unstubAllGlobals()
   Reflect.deleteProperty(window, 'msal')
@@ -203,6 +228,7 @@ describe('React workspace', () => {
     render(<App />)
 
     await user.click(await screen.findByRole('button', { name: 'Sign in with Entra External ID' }))
+    await user.click(screen.getByText('Batch tools', { selector: 'summary' }))
     const briefCheckbox = await screen.findByRole('checkbox', {
       name: /Cedar Loop Bike Repair/,
     })
@@ -210,14 +236,14 @@ describe('React workspace', () => {
     await user.click(briefCheckbox)
     expect(briefCheckbox).toBeChecked()
 
-    const outputsButton = screen.getByRole('button', { name: 'Variants' })
+    const outputsButton = screen.getByRole('button', { name: 'Listen & review' })
     outputsButton.focus()
     await user.keyboard('{Enter}')
     expect(outputsButton).toHaveAttribute('aria-pressed', 'true')
 
     const brandInput = await screen.findByLabelText('Brand transcription')
     await user.type(brandInput, 'Cedar Loop')
-    await user.click(screen.getByRole('button', { name: 'Brief' }))
+    await user.click(screen.getByRole('button', { name: 'Create' }))
     await user.click(outputsButton)
     expect(screen.getByLabelText('Brand transcription')).toHaveValue('Cedar Loop')
     await user.click(screen.getByRole('button', { name: 'Render instrumental preview' }))
@@ -269,7 +295,7 @@ describe('React workspace', () => {
     await user.click(screen.getByLabelText('Administrator'))
     await user.click(screen.getByRole('button', { name: 'Save user access' }))
 
-    expect(await screen.findByRole('heading', { name: 'Loaded briefs' })).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'Advertisers' })).toBeVisible()
     expect(screen.queryByRole('button', { name: 'Manage access' })).not.toBeInTheDocument()
   })
 
@@ -278,6 +304,7 @@ describe('React workspace', () => {
     installMocks()
     render(<App />)
     await user.click(await screen.findByRole('button', { name: 'Sign in with Entra External ID' }))
+    await user.click(screen.getByText('Batch tools', { selector: 'summary' }))
     const selected = await screen.findByRole('checkbox', { name: 'Select Cedar Loop Bike Repair' })
     await user.click(selected)
     await user.click(screen.getByRole('button', { name: /Mosslight Garden Supply/ }))
@@ -286,10 +313,11 @@ describe('React workspace', () => {
     expect(screen.getByRole('checkbox', { name: 'Select Mosslight Garden Supply' })).not.toBeChecked()
     await user.click(screen.getByRole('button', { name: 'Render instrumental preview' }))
     expect(screen.getByRole('heading', { name: 'Mosslight Garden Supply' })).toBeVisible()
-    expect(screen.getByRole('heading', { name: 'Brief details' })).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'Find your hook.' })).toBeVisible()
+    await user.click(screen.getByText('Generation history', { selector: 'summary' }))
     await user.click(screen.getByRole('button', { name: /instrumental · completed/ }))
     expect(screen.getByRole('heading', { name: 'Cedar Loop Bike Repair' })).toBeVisible()
-    expect(screen.getByRole('heading', { name: 'Rendered variants' })).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'Your jingle versions' })).toBeVisible()
     expect(selected).toBeChecked()
     expect(screen.getAllByText('Evaluation: Pending', { selector: 'p.status-badge' })[0]).toBeVisible()
   })
@@ -307,6 +335,7 @@ describe('React workspace', () => {
     ]) await user.type(screen.getByLabelText(label!), value!)
     await user.click(screen.getByRole('button', { name: 'Validate and load brief' }))
     expect(await screen.findByRole('heading', { name: 'Bright Bike' })).toBeVisible()
+    await user.click(screen.getByText('Batch tools', { selector: 'summary' }))
     await user.click(screen.getByRole('checkbox', { name: 'Select Bright Bike' }))
     await user.click(screen.getByRole('button', { name: 'Render instrumental preview' }))
     const submitted = fetchMock.mock.calls.find(([input, init]) =>
@@ -324,6 +353,7 @@ describe('React workspace', () => {
     const { fetchMock } = installMocks()
     render(<App />)
     await user.click(await screen.findByRole('button', { name: 'Sign in with Entra External ID' }))
+    await user.click(screen.getByText('Batch tools', { selector: 'summary' }))
     await user.click(await screen.findByRole('checkbox', { name: 'Select Cedar Loop Bike Repair' }))
     await user.click(screen.getByRole('button', { name: 'Enter or upload brief' }))
     await user.type(screen.getByLabelText('Brand name'), 'Unfinished brand')
@@ -339,7 +369,7 @@ describe('React workspace', () => {
     const { fetchMock } = installMocks(false, { lyrics: true })
     render(<App />)
     await user.click(await screen.findByRole('button', { name: 'Sign in with Entra External ID' }))
-    await user.click(await screen.findByRole('button', { name: 'Lyrics' }))
+    await user.click(await screen.findByRole('button', { name: 'Create' }))
     const generate = screen.getByRole('button', { name: 'Generate 3 lyric options' })
     expect(generate).toBeDisabled()
     await user.click(screen.getByRole('checkbox', { name: /I authorize paid Foundry/ }))
@@ -347,6 +377,8 @@ describe('React workspace', () => {
     expect(await screen.findByRole('heading', { name: 'Option 3' })).toBeVisible()
     expect(screen.getByText('human review required', { selector: 'p.status-badge' })).toBeVisible()
     expect(screen.getByText('duplicate option')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Use option 2' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Use option 3' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Generate 3 lyric options' })).toBeDisabled()
     const sent = fetchMock.mock.calls.filter(([input, init]) =>
       new URL(String(input), window.location.origin).pathname === '/api/lyrics/options' && init?.method === 'POST')
@@ -367,7 +399,7 @@ describe('React workspace', () => {
     first.unmount()
     render(<App />)
     await user.click(await screen.findByRole('button', { name: 'Sign in with Entra External ID' }))
-    expect(await screen.findByRole('checkbox', { name: 'Select Bright Bike' })).toBeVisible()
+    expect(await screen.findByRole('button', { name: /Bright Bike/ })).toBeVisible()
     await user.click(screen.getByRole('button', { name: 'Sign out' }))
     expect(await screen.findByRole('button', { name: 'Sign in with Entra External ID' })).toBeVisible()
     expect(window.sessionStorage.length).toBe(0)
@@ -390,6 +422,7 @@ describe('React workspace', () => {
     if (!respond) throw new Error('Missing API test adapter')
     render(<App />)
     await user.click(await screen.findByRole('button', { name: 'Sign in with Entra External ID' }))
+    await user.click(screen.getByText('Batch tools', { selector: 'summary' }))
     await user.click(await screen.findByRole('checkbox', { name: 'Select Cedar Loop Bike Repair' }))
     await user.click(screen.getByRole('checkbox', { name: 'Include vocals (paid Azure voice)' }))
     await user.click(screen.getByRole('button', { name: 'Estimate vocal render' }))
@@ -422,5 +455,70 @@ describe('React workspace', () => {
     await user.click(screen.getByRole('button', { name: 'Render instrumental preview' }))
     expect(renderCalls()).toHaveLength(2)
     expect(JSON.parse(String(renderCalls()[1]?.[1]?.body))).toMatchObject({ mode: 'instrumental' })
+  })
+
+  it('creates audio from the selected eligible lyric without applying the independent batch selection', async () => {
+    const user = userEvent.setup()
+    installDialogMock()
+    const { fetchMock } = installMocks(false, { lyrics: true, vocals: true })
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: 'Sign in with Entra External ID' }))
+    await user.click(screen.getByText('Batch tools', { selector: 'summary' }))
+    await user.click(screen.getByRole('checkbox', { name: 'Select Mosslight Garden Supply' }))
+    expect(screen.getByRole('button', { name: 'Estimate voice + music' })).toBeDisabled()
+    await user.click(screen.getByRole('checkbox', { name: /I authorize paid Foundry/ }))
+    await user.click(screen.getByRole('button', { name: 'Generate 3 lyric options' }))
+    await user.click(await screen.findByRole('button', { name: 'Use option 1' }))
+    expect(screen.getByRole('button', { name: 'Selected lyrics' })).toHaveAttribute('aria-pressed', 'true')
+    const estimateButton = screen.getByRole('button', { name: 'Estimate voice + music' })
+    expect(estimateButton.closest('.lyric-card')).toContainElement(screen.getByRole('button', { name: 'Selected lyrics' }))
+    await user.click(estimateButton)
+    const estimated = fetchMock.mock.calls.find(([input, init]) =>
+      new URL(String(input), window.location.origin).pathname === '/api/renders/estimate' && init?.method === 'POST')
+    expect(JSON.parse(String(estimated?.[1]?.body))).toMatchObject({
+      brief_ids: ['brief-001'], lyric_selections: [{ brief_id: 'brief-001', option_id: 'accepted-option' }],
+    })
+    expect(screen.getByRole('dialog')).toHaveTextContent('selected lyric draft')
+    expect(screen.getByRole('dialog')).toHaveTextContent('Option 1: Original hook')
+    expect(screen.getByRole('dialog')).toHaveTextContent('Call today')
+    expect(fetchMock.mock.calls.filter(([input, init]) =>
+      new URL(String(input), window.location.origin).pathname === '/api/renders' && init?.method === 'POST')).toHaveLength(0)
+    await user.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Confirm and render' }))
+    const rendered = fetchMock.mock.calls.find(([input, init]) =>
+      new URL(String(input), window.location.origin).pathname === '/api/renders' && init?.method === 'POST')
+    expect(JSON.parse(String(rendered?.[1]?.body))).toMatchObject({
+      mode: 'azure', brief_ids: ['brief-001'],
+      lyric_selections: [{ brief_id: 'brief-001', option_id: 'accepted-option' }],
+      confirmation: { input_fingerprint: 'a'.repeat(64) },
+    })
+  })
+
+  it('loads protected audio from a version row and reports playback failures explicitly', async () => {
+    const user = userEvent.setup()
+    const { fetchMock } = installMocks()
+    const respond = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation(async (input, init) => {
+      if (new URL(String(input), window.location.origin).pathname === output.audio_url) return new Response(new Blob(['test audio'], { type: 'audio/wav' }))
+      return respond(input, init)
+    })
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: vi.fn(() => 'blob:test-audio') })
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() })
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: 'Sign in with Entra External ID' }))
+    await user.click(screen.getByRole('button', { name: 'Listen & review' }))
+    const sourceChanges: MutationRecord[] = []
+    const observer = new MutationObserver(changes => sourceChanges.push(...changes))
+    observer.observe(screen.getByLabelText(/^Play version 1,/), {
+      attributes: true, attributeFilter: ['src'],
+    })
+    await user.click(screen.getByRole('button', { name: 'Listen to version 1' }))
+    observer.disconnect()
+    expect(sourceChanges).toHaveLength(1)
+    expect(HTMLMediaElement.prototype.play).toHaveBeenCalledOnce()
+    const audioRequest = fetchMock.mock.calls.find(([input]) => new URL(String(input), window.location.origin).pathname === output.audio_url)
+    expect(new Headers(audioRequest?.[1]?.headers).get('Authorization')).toBe('Bearer test-access-token')
+    vi.mocked(HTMLMediaElement.prototype.play).mockRejectedValueOnce(new Error('Playback blocked; use the audio controls.'))
+    await user.click(screen.getByRole('button', { name: 'Listen to version 1' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Playback blocked')
   })
 })

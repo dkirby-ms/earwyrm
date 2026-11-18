@@ -2,7 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
-import { normalize, Seed, synthesize, write_midi, write_wav } from "./dsp.js";
+import { normalize, Seed, write_midi, write_wav } from "./dsp.js";
+import { render_backing } from "./backing.js";
 import { arrange, Chord, CompositionRequest, ProductPath, SyllableNote } from "./melody.js";
 import { is_storage_error, parse_seed_json, PostgresConnection, serialized, SqliteConnection, transaction, type Connection } from "./persistence.js";
 import { screen, select_screened, SimilarityReport } from "./similarity.js";
@@ -125,17 +126,18 @@ export class MelodyService {
             const job_id = randomUUID();
             directory = join(this.artifact_dir, job_id);
             mkdirSync(directory, { mode: 0o700 });
+            const { audio, ...instrumentation } = await render_backing(arrangement.backing, seed, request.duration_seconds);
             const components = [
               Component.parse({ component: "melody_and_chords", origin: "Seeded phrase composer in src/dsp.ts and src/melody.ts", evidence: "score.json, score.mid, timing.json and recorded seed" }),
-              Component.parse({ component: "instruments", origin: "Harmonic oscillators, synthesized kick and seeded noise in src/dsp.ts", evidence: "backing.wav; no samples, recordings or SoundFonts" }),
+              Component.parse({ component: "instruments", origin: instrumentation.soundfont ? `FluidSynth backing with ${instrumentation.soundfont}` : "Harmonic oscillators, synthesized kick and seeded noise in src/dsp.ts", evidence: "backing.wav, score.mid and provenance.json" }),
               Component.parse({ component: "lyrics", origin: "Caller-supplied lyric/timing contract", evidence: "Retained request; upstream moderation and rights review required" }),
             ];
             const notes = [...arrangement.backing, ...arrangement.vocal];
-            write_midi(join(directory, "score.mid"), notes, request.duration_seconds);
+            write_midi(join(directory, "score.mid"), notes, request.duration_seconds, instrumentation.palette);
             writeFileSync(join(directory, "score.json"), canonical_json(notes), { mode: 0o600 });
             writeFileSync(join(directory, "timing.json"), canonical_json(arrangement.timing), { mode: 0o600 });
-            write_wav(join(directory, "backing.wav"), normalize(synthesize(arrangement.backing, { seed, duration_seconds: request.duration_seconds })));
-            writeFileSync(join(directory, "provenance.json"), canonical_json({ ai_generated: true, seed, generator_version: "earwyrm-phrase-v2", duration_seconds: request.duration_seconds, components, similarity: report }), { mode: 0o600 });
+            write_wav(join(directory, "backing.wav"), normalize(audio));
+            writeFileSync(join(directory, "provenance.json"), canonical_json({ ai_generated: true, seed, generator_version: "earwyrm-phrase-v2", duration_seconds: request.duration_seconds, instrumentation, components, similarity: report }), { mode: 0o600 });
             const artifacts: Record<string, Artifact> = {};
             for (const [name, media_type] of Object.entries(ARTIFACT_TYPES)) {
               chmodSync(join(directory, name), 0o600);

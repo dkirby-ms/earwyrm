@@ -142,7 +142,7 @@ describe("operator transactions and read-only import", () => {
   it("recreates the application tables and owner without creating local databases", async () => {
     const db = postgres_target(), root = directory();
     await initialize_fresh(root, local, { issuer: "issuer", subject: "owner" });
-    expect(user_tables(db)).toHaveLength(9);
+    expect(user_tables(db)).toHaveLength(10);
     expect(db.prepare("SELECT issuer, subject, enabled, admin, paid_speech FROM application_users").get()).toMatchObject({
       issuer: "issuer", subject: "owner", enabled: 1, admin: 1, paid_speech: 1,
     });
@@ -152,7 +152,7 @@ describe("operator transactions and read-only import", () => {
     db.prepare("INSERT INTO application_users VALUES ('issuer', 'former-user', 0, 0, 0, 'old')").run();
     db.prepare("INSERT INTO runs VALUES ('old-run', 'owner', 'instrumental', '[]', 'complete', 'old')").run();
     await initialize_fresh(root, local, { issuer: "issuer", subject: "owner" });
-    expect(user_tables(db)).toHaveLength(9);
+    expect(user_tables(db)).toHaveLength(10);
     expect(db.prepare("SELECT count(*) AS count FROM application_users").get()!.count).toBe(1);
     expect(db.prepare("SELECT count(*) AS count FROM runs").get()!.count).toBe(0);
     expect(db.prepare("SELECT enabled, admin, paid_speech FROM application_users").get()).toEqual({
@@ -185,10 +185,10 @@ describe("operator transactions and read-only import", () => {
     writeFileSync(join(root, ".earwyrm-initialized"), "");
     await initialize_fresh(root, local, { issuer: "issuer", subject: "owner" });
     expect(readdirSync(root)).toEqual([".earwyrm-writer.lock"]);
-    expect(user_tables(db)).toHaveLength(9);
+    expect(user_tables(db)).toHaveLength(10);
     writeFileSync(join(root, "unrecognized.txt"), "preserve");
     await expect(initialize_fresh(root, local, { issuer: "issuer", subject: "owner" })).rejects.toThrow("unrecognized data directory entries");
-    expect(user_tables(db)).toHaveLength(9);
+    expect(user_tables(db)).toHaveLength(10);
     rmSync(join(root, "unrecognized.txt"));
     const release = acquire_writer_lock(root);
     await expect(initialize_fresh(root, local, { issuer: "issuer", subject: "owner" })).rejects.toThrow("active writer");
@@ -211,12 +211,17 @@ describe("operator transactions and read-only import", () => {
       issuer: "issuer", subject: "verified-subject", enabled: 1, admin: 1, paid_speech: 1,
     });
   });
-  it("imports compatible records and durable identities without modifying source databases or media", async () => {
+  it.each([true, false])("imports compatible records without modifying source data (lyric table: %s)", async hasLyrics => {
     const root = directory(), { web, melody, output, job, request } = await source(root, "9223372036854775807");
+    if (!hasLyrics) {
+      const sourceDb = new DatabaseSync(web.database_path);
+      sourceDb.exec("DROP TABLE lyric_options");
+      sourceDb.close();
+    }
     const webBytes = readFileSync(web.database_path), melodyBytes = readFileSync(melody.database_path);
     const audio = readFileSync(join(web.audio_dir, output.file)), wav = readFileSync(join(melody.artifact_dir, job.job_id, "backing.wav"));
     const db = postgres_target();
-    expect(await import_sqlite(root, local)).toEqual({ runs: 1, paid_attempts: 0, outputs: 1, evaluations: 0, application_identity: 1, application_users: 1, render_jobs: 1, local_outputs: 0 });
+    expect(await import_sqlite(root, local)).toEqual({ runs: 1, paid_attempts: 0, outputs: 1, evaluations: 0, application_identity: 1, application_users: 1, ...(hasLyrics ? { lyric_options: 0 } : {}), render_jobs: 1, local_outputs: 0 });
     expect(db.prepare("SELECT job_id FROM render_jobs").get()!.job_id).toBe(job.job_id);
     const original = new DatabaseSync(melody.database_path, { readOnly: true });
     const stored = original.prepare("SELECT request_json,result_json FROM render_jobs").get()!; original.close();
@@ -239,6 +244,19 @@ describe("operator transactions and read-only import", () => {
     expect(user_tables(db)).toEqual([]);
     expect(readFileSync(web.database_path)).toEqual(before); expect(readFileSync(melody.database_path)).toEqual(melodyBefore);
     expect(readFileSync(join(web.audio_dir, output.file)).toString()).toBe("preserve private media");
+  });
+  it("adds lyric storage to an existing PostgreSQL store idempotently without resetting identities or runs", async () => {
+    const db = postgres_target(), root = directory();
+    await initialize_fresh(root, local, { issuer: "issuer", subject: "owner" });
+    db.exec("DROP TABLE lyric_options");
+    db.prepare("INSERT INTO runs VALUES ('preserved-run', 'owner', 'instrumental', '[]', 'complete', 'old')").run();
+    await expect(validate_postgres_store(local)).rejects.toThrow("explicit database upgrade");
+    const env = { EARWYRM_DATA_DIR: root, EARWYRM_DATABASE_URL: local };
+    expect(await main(["upgrade"], env)).toBe(0);
+    expect(await main(["upgrade"], env)).toBe(0);
+    expect(db.prepare("SELECT subject FROM application_users").get()!.subject).toBe("owner");
+    expect(db.prepare("SELECT run_id FROM runs").get()!.run_id).toBe("preserved-run");
+    await validate_postgres_store(local);
   });
   it.each(["owner", "manifest", "audio-symlink", "artifact", "json", "wal", "schema", "out-of-range-seed"])("rejects unsafe source %s before touching target", async defect => {
     const root = directory(), { web, melody, output, job } = await source(root);

@@ -22,9 +22,11 @@ These composition attempts make no Speech or other paid API calls.
 
 The server validates lyrics and timing, screens both lead and vocal melodies,
 renders a backing WAV and MIDI, and commits exactly one local render-queue row.
-It does not call Azure Speech or render the final vocal/mix. All instruments are
-harmonic oscillators, a synthesized kick and seeded noise: no samples,
-recordings, voice clones or SoundFonts.
+It does not call Azure Speech or render the final vocal mix. The MIDI export
+includes a seeded General MIDI palette. The backing uses that palette with
+FluidSynth in the backend container or with a configured local SoundFont
+([setup](audio-poc/rendering.md#what-this-produces)); otherwise it uses the
+compatibility oscillator renderer. The provenance records the renderer used.
 
 Issue #4 is still the platform integration dependency. The contract below is
 provisional v1, not a claim that the shared platform schema has been agreed.

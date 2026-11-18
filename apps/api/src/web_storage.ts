@@ -6,6 +6,7 @@ import { Decimal } from "decimal.js";
 import { PostgresConnection, SqliteConnection, serialized, transaction, type Connection, type Row } from "./persistence.js";
 import { prepare_database_file } from "./sqlite_files.js";
 import { STATIC_ROOT } from "./paths.js";
+import type { LyricRequest, LyricResult } from "./lyrics.js";
 
 const Money = Decimal.clone({ precision: 28 });
 export { STATIC_ROOT };
@@ -55,6 +56,10 @@ export interface PaidRunOptions {
 export interface EvaluationOptions {
   output_id: string; owner: string; brand_transcription: string; cta_transcription: string;
   self_rating: string; brand_match: boolean; cta_match: boolean;
+}
+/** Server-owned screening outcome; only accepted results can be selected for rendering. */
+export interface StoredLyricOption {
+  option_id: string; brief_id: string; request: LyricRequest; result: LyricResult;
 }
 
 /** Stable JSON for idempotent requests; rejects non-finite numbers instead of replacing them with null. */
@@ -151,6 +156,47 @@ export class WebStorage {
         paid_speech INTEGER NOT NULL CHECK (paid_speech IN (0, 1)), created_at TEXT NOT NULL,
         PRIMARY KEY (issuer, subject));
     `);
+    await WebStorage._create_lyric_schema(connection);
+  }
+  /** Additive schema used by SQLite initialization and the explicit PostgreSQL upgrade. */
+  static async _create_lyric_schema(connection: Connection): Promise<void> {
+    await connection.executescript(`
+      CREATE TABLE IF NOT EXISTS lyric_options (
+        option_id TEXT PRIMARY KEY, owner TEXT NOT NULL, brief_id TEXT NOT NULL,
+        request_json TEXT NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS lyric_options_owner_brief ON lyric_options(owner, brief_id);
+    `);
+  }
+  /** Persists the screened request/result without accepting a browser-supplied status or text. */
+  async save_lyric_option(owner: string, request: LyricRequest, result: LyricResult): Promise<StoredLyricOption> {
+    const option_id = randomUUID(), brief_id = request.brief.brief_id;
+    await this.write(async c => {
+      await c.execute("INSERT INTO lyric_options VALUES (?, ?, ?, ?, ?, ?)",
+        [option_id, owner, brief_id, canonical_json(request), canonical_json(result), new Date().toISOString()]);
+    });
+    return { option_id, brief_id, request, result };
+  }
+  /** Returns only this owner's generated drafts, oldest first, including held outcomes. */
+  async list_lyric_options(owner: string): Promise<StoredLyricOption[]> {
+    return this.read(async c => (await c.execute(
+      "SELECT option_id, brief_id, request_json, result_json FROM lyric_options WHERE owner = ? ORDER BY created_at, option_id", [owner],
+    )).rows.map(row => ({
+      option_id: String(row.option_id), brief_id: String(row.brief_id),
+      request: JSON.parse(String(row.request_json)) as LyricRequest,
+      result: JSON.parse(String(row.result_json)) as LyricResult,
+    })));
+  }
+  /** Other owners' IDs are indistinguishable from absent IDs. */
+  async get_lyric_option(option_id: string, owner: string): Promise<StoredLyricOption | null> {
+    return this.read(async c => {
+      const row = (await c.execute(
+        "SELECT brief_id, request_json, result_json FROM lyric_options WHERE option_id = ? AND owner = ?", [option_id, owner],
+      )).rows[0];
+      return row ? {
+        option_id, brief_id: String(row.brief_id), request: JSON.parse(String(row.request_json)) as LyricRequest,
+        result: JSON.parse(String(row.result_json)) as LyricResult,
+      } : null;
+    });
   }
   private async read<T>(operation: (connection: Connection) => Promise<T>): Promise<T> {
     await this.initialized();

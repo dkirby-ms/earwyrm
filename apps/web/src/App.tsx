@@ -152,7 +152,7 @@ function App() {
     paid_speech: false,
   })
   const [view, setView] = useState<WorkspaceView>('workspace-view')
-  const [section, setSection] = useState<BriefSection>('brief')
+  const [section, setSection] = useState<BriefSection>('lyrics')
   const [activeBriefId, setActiveBriefId] = useState('')
   const [activeRunId, setActiveRunId] = useState('')
   const [activeOutputId, setActiveOutputId] = useState('')
@@ -161,6 +161,7 @@ function App() {
   const [lyricAvailable, setLyricAvailable] = useState(false)
   const [lyricConsent, setLyricConsent] = useState(false)
   const [lyricOptions, setLyricOptions] = useState<Readonly<Record<string, readonly LyricOption[]>>>({})
+  const [selectedLyricIds, setSelectedLyricIds] = useState<Readonly<Record<string, string>>>({})
   const [estimate, setEstimate] = useState<RenderEstimate | null>(null)
   const [evidence, setEvidence] = useState<Readonly<Record<string, string>>>({})
   const [audioRevision, setAudioRevision] = useState(0)
@@ -177,6 +178,8 @@ function App() {
   const estimateDialog = useRef<HTMLDialogElement>(null)
   const adminHeading = useRef<HTMLHeadingElement>(null)
   const comparisonHeading = useRef<HTMLHeadingElement>(null)
+  const evaluationHeading = useRef<HTMLHeadingElement>(null)
+  const audioElements = useRef(new Map<string, HTMLAudioElement>())
   const audioUrls = useRef(new Map<string, { url: string; timer: number }>())
 
   async function loadWorkspaceData(
@@ -215,7 +218,7 @@ function App() {
         '/api/render-options',
         apiScopes.reads,
       )
-      const lyricAvailability = await apiJson<{ available: boolean }>(
+      const lyricAvailability = await apiJson<{ available: boolean; options?: LyricOption[] }>(
         authClient, publicConfig, '/api/lyrics/options', apiScopes.reads,
       )
       const runResponse = await apiJson<{ runs: RenderRun[] }>(
@@ -255,6 +258,11 @@ function App() {
       setBriefs(loaded)
       setActiveBriefId(current => loaded.some(brief => brief.brief_id === current) ? current : loaded[0]?.brief_id ?? '')
       setLyricAvailable(lyricAvailability.available)
+      if (lyricAvailability.options) {
+        const grouped: Record<string, LyricOption[]> = {}
+        for (const option of lyricAvailability.options) (grouped[option.brief_id] ??= []).push(option)
+        setLyricOptions(grouped)
+      }
       setOptions(currentOptions)
       setRuns(runResponse.runs)
       setOutputs(outputResponse.outputs)
@@ -328,6 +336,8 @@ function App() {
   ).length
   const selectedBriefs = briefs.filter((brief) => selectedBriefIds.has(brief.brief_id))
   const activeBrief = briefs.find(brief => brief.brief_id === activeBriefId)
+  const selectedLyric = lyricOptions[activeBriefId]?.find(option =>
+    option.option_id === selectedLyricIds[activeBriefId] && option.status === 'accepted' && option.output)
   const activeStatus = rollup?.briefs.find(brief => brief.brief_id === activeBriefId)?.status ?? 'Pending'
   const visibleOutputs = outputs.filter(output => output.brief_id === activeBriefId && (!activeRunId || output.run_id === activeRunId))
   const inspectedOutput = visibleOutputs.find(output => output.output_id === activeOutputId) ?? visibleOutputs.at(-1)
@@ -423,12 +433,13 @@ function App() {
       setActiveBriefId('')
       setActiveRunId('')
       setActiveOutputId('')
-      setSection('brief')
+      setSection('lyrics')
       setEditingBrief(false)
       setIncludeVocals(false)
       setLyricAvailable(false)
       setLyricConsent(false)
       setLyricOptions({})
+      setSelectedLyricIds({})
       setAnnouncement('Signed out.')
     } catch (error) {
       setErrorMessage(errorText(error, 'Sign-out failed.'))
@@ -476,6 +487,9 @@ function App() {
     setActiveRunId('')
     setEditingBrief(false)
     setLyricConsent(false)
+    setEstimate(null)
+    setSection('lyrics')
+    for (const audio of audioElements.current.values()) audio.pause()
   }
 
   async function addBriefDetails(details: unknown): Promise<void> {
@@ -484,14 +498,14 @@ function App() {
     const loaded = [...briefs.filter(brief => brief.brief_id !== added.brief_id), added]
     setBriefs(loaded)
     inspectBrief(added.brief_id)
-    setSection('brief')
+    setSection('lyrics')
     try {
       window.sessionStorage.setItem(briefSessionKey(identity), JSON.stringify(loaded.filter(brief => brief.source === 'custom')))
     } catch (error) {
       if (!(error instanceof DOMException)) throw error
       throw new Error('Brief loaded, but this browser could not save the session draft. Render it now or keep your JSON to upload again.')
     }
-    setAnnouncement('Brief validated and loaded. Select it in the collection when ready to render.')
+    setAnnouncement('Brief loaded. Generate lyrics or listen to an instrumental preview.')
   }
 
   async function generateLyrics(): Promise<void> {
@@ -506,7 +520,7 @@ function App() {
           confirm_paid_generation: true,
         },
       })
-      setLyricOptions(current => ({ ...current, [brief.brief_id]: result.options }))
+      setLyricOptions(current => ({ ...current, [brief.brief_id]: [...(current[brief.brief_id] ?? []), ...result.options] }))
       setLyricConsent(false)
       setAnnouncement('Lyric generation finished. Review each option’s status and any required human review.')
     })
@@ -525,9 +539,9 @@ function App() {
     window.setTimeout(() => comparisonHeading.current?.focus(), 0)
   }
 
-  async function renderOffline(): Promise<void> {
-    if (!client || !config || selectedBriefs.length === 0) return
-    const briefIds = selectedBriefs.map((brief) => brief.brief_id)
+  async function renderOffline(renderBriefs: readonly Brief[] = selectedBriefs): Promise<void> {
+    if (!client || !config || renderBriefs.length === 0) return
+    const briefIds = renderBriefs.map((brief) => brief.brief_id)
     await runAction('Rendering instrumental preview', async () => {
       const result = await apiJson<{ run_id: string }>(
         client,
@@ -536,7 +550,7 @@ function App() {
         apiScopes.render,
         { method: 'POST', body: {
           brief_ids: briefIds, mode: 'instrumental',
-          custom_briefs: selectedBriefs.filter(brief => brief.source === 'custom').map(customPayload),
+          custom_briefs: renderBriefs.filter(brief => brief.source === 'custom').map(customPayload),
         } },
       )
       await loadWorkspaceData(client, config)
@@ -547,9 +561,9 @@ function App() {
     })
   }
 
-  async function estimatePaidRender(): Promise<void> {
-    if (!client || !config || selectedBriefs.length === 0 || !paidAvailable) return
-    const briefIds = selectedBriefs.map((brief) => brief.brief_id)
+  async function estimatePaidRender(renderBriefs: readonly Brief[] = selectedBriefs, lyric?: LyricOption): Promise<void> {
+    if (!client || !config || renderBriefs.length === 0 || !paidAvailable) return
+    const briefIds = renderBriefs.map((brief) => brief.brief_id)
     await runAction('Calculating Azure voice estimate', async () => {
       const result = await apiJson<RenderEstimate>(
         client,
@@ -558,7 +572,8 @@ function App() {
         apiScopes.render,
         { method: 'POST', body: {
           brief_ids: briefIds,
-          custom_briefs: selectedBriefs.filter(brief => brief.source === 'custom').map(customPayload),
+          custom_briefs: renderBriefs.filter(brief => brief.source === 'custom').map(customPayload),
+          ...(lyric ? { lyric_selections: [{ brief_id: lyric.brief_id, option_id: lyric.option_id }] } : {}),
         } },
       )
       setEstimate(result)
@@ -581,6 +596,7 @@ function App() {
               brief_ids: confirmedEstimate.brief_ids,
               custom_briefs: briefs.filter(brief => confirmedEstimate.brief_ids.includes(brief.brief_id) && brief.source === 'custom').map(customPayload),
               mode: 'azure',
+              ...(confirmedEstimate.lyric_selections ? { lyric_selections: confirmedEstimate.lyric_selections } : {}),
               confirmation: {
                 brief_ids: confirmedEstimate.brief_ids,
                 estimated_cost_usd: confirmedEstimate.estimated_cost_usd,
@@ -797,6 +813,21 @@ function App() {
     })
   }
 
+  async function listenToOutput(output: Output): Promise<void> {
+    if (!client || !config) return
+    await runAction('Loading audio version', async () => {
+      for (const audio of audioElements.current.values()) audio.pause()
+      const blob = await apiBlob(client, config, output.audio_url, apiScopes.output)
+      const url = storeAudioUrl(output.output_id, blob)
+      const audio = audioElements.current.get(output.output_id)
+      if (!audio) throw new Error('Audio controls are unavailable. Open Listen & review and try again.')
+      audio.src = url
+      await audio.play()
+      setActiveOutputId(output.output_id)
+      setAnnouncement('Playing audio. This is an AI-generated demo, not broadcast-approved.')
+    })
+  }
+
   async function downloadAudio(output: Output): Promise<void> {
     if (!client || !config) return
     await runAction('Downloading protected audio', async () => {
@@ -813,12 +844,13 @@ function App() {
     <>
       <a className="skip-link" href="#main">Skip to main content</a>
       <header className="site-header">
-        <div>
-          <p className="eyebrow">Local proof of concept</p>
-          <h1>Earwyrm Audio Evaluation</h1>
-        </div>
+        <a className="wordmark" href="#main" aria-label="Earwyrm home">earwyrm<span>Jingle workspace</span></a>
         {isSignedIn && (
           <div className="session-panel">
+            <nav className="workspace-nav" aria-label="Workspace sections">
+              <button className="workspace-nav-button" type="button" aria-pressed={view === 'workspace-view'} disabled={busy} onClick={() => handleViewChange('workspace-view')}>Workspace</button>
+              {access?.admin && <button className="workspace-nav-button" type="button" aria-pressed={view === 'admin-view'} disabled={busy} onClick={() => handleViewChange('admin-view')}>Manage access</button>}
+            </nav>
             <span>{accountName}</span>
             <button
               className="button button-secondary"
@@ -836,11 +868,12 @@ function App() {
           <p className="visually-hidden" aria-live="polite" aria-atomic="true">
             {announcement}
           </p>
+          {(booting || workspaceLoading) && <p className="loading-message" role="status">Loading your workspace…</p>}
+          {busy && <p className="working-message" role="status">{announcement}</p>}
           {errorMessage && <p className="alert" role="alert">{errorMessage}</p>}
 
           {config && config.setup_status !== 'ready' && (
             <section className="panel" aria-labelledby="setup-heading">
-              <p className="eyebrow">Configuration</p>
               <h2 id="setup-heading">Sign-in setup required</h2>
               <p>
                 {config.setup_status === 'setup-needed'
@@ -853,10 +886,9 @@ function App() {
 
           {ready && !isSignedIn && !booting && (
             <section className="panel sign-in-panel" aria-labelledby="sign-in-heading">
-              <p className="eyebrow">Secure access</p>
-              <h2 id="sign-in-heading">Sign in to your evaluation workspace</h2>
+              <h2 id="sign-in-heading">A brief. A hook. Your next jingle.</h2>
               <p>
-                Your audio and evaluation evidence are private to your signed-in account on this local POC.
+                Create audio for an advertiser, compare versions, and keep every lyric choice connected to the sound.
               </p>
               <button
                 className="button button-primary"
@@ -883,29 +915,9 @@ function App() {
             hidden={!isSignedIn || !access || !workspaceReady}
             aria-busy={workspaceLoading}
           >
-            <nav className="workspace-nav" aria-label="Workspace sections">
-              {([
-                ['workspace-view', 'Brief workspace'],
-                ['admin-view', 'Manage access'],
-              ] as const).map(([viewId, label]) => (
-                <button
-                  key={viewId}
-                  className="workspace-nav-button"
-                  type="button"
-                  data-view={viewId}
-                  aria-pressed={view === viewId}
-                  hidden={viewId === 'admin-view' && !access?.admin}
-                  disabled={busy}
-                  onClick={() => handleViewChange(viewId)}
-                >
-                  {label}
-                </button>
-              ))}
-            </nav>
-
             {unresolvedCount > 0 && (
-              <section className="panel" aria-labelledby="reconciliation-heading">
-                <p className="eyebrow">Operator evidence</p>
+              <details className="panel reconciliation-panel">
+                <summary>Paid voice is paused: {unresolvedCount} attempt{unresolvedCount === 1 ? '' : 's'} awaiting usage reconciliation</summary>
                 <h2 id="reconciliation-heading">Paid usage awaiting reconciliation</h2>
                 <p className="notice">
                   A paid attempt remains reserved until actual metered usage is recorded. Do not retry it.
@@ -951,14 +963,20 @@ function App() {
                     )
                   })}
                 </div>
-              </section>
+              </details>
             )}
 
             <div className="studio-layout" hidden={view !== 'workspace-view'}>
               <aside className="panel collection-panel" aria-labelledby="brief-heading">
-                <p className="eyebrow">Start with a brief</p>
-                <h2 id="brief-heading">Loaded briefs</h2>
-                <p className="muted">Inspect a brief by name. Check the briefs you want in your render batch.</p>
+                <h2 id="brief-heading">Advertisers</h2>
+                <p className="collection-intro">Every brief, hook, and version in one place.</p>
+                <label className="mobile-advertiser">
+                  Active advertiser
+                  <select value={activeBriefId} disabled={busy} onChange={event => inspectBrief(event.currentTarget.value)}>
+                    {!briefs.length && <option value="">No advertisers yet</option>}
+                    {briefs.map(brief => <option value={brief.brief_id} key={brief.brief_id}>{brief.name || brief.brief_id}</option>)}
+                  </select>
+                </label>
                 <div className="button-row">
                   <button
                     className="button button-secondary"
@@ -967,7 +985,7 @@ function App() {
                     onClick={() => {
                       const sample = briefs.find(brief => brief.source !== 'custom')
                       if (sample) inspectBrief(sample.brief_id)
-                      setSection('brief')
+                      setSection('lyrics')
                     }}
                   >
                     Use sample brief
@@ -976,60 +994,53 @@ function App() {
                     className="button button-secondary"
                     type="button"
                     disabled={busy}
-                    onClick={() => { setEditingBrief(true); setSection('brief') }}
+                    onClick={() => { setEditingBrief(true); setSection('brief'); setEstimate(null) }}
                   >
                     Enter or upload brief
                   </button>
                 </div>
-                <fieldset disabled={busy}>
-                  <legend>Select up to three briefs</legend>
-                  <div className="brief-collection">
+                  <div className="brief-collection" aria-label="Advertiser briefs">
                     {briefs.map(brief => (
                       <div className="collection-item" key={brief.brief_id} data-active={activeBriefId === brief.brief_id && !editingBrief}>
-                        <input
-                          type="checkbox"
-                          aria-label={`Select ${brief.name || brief.brief_id}`}
-                          checked={selectedBriefIds.has(brief.brief_id)}
-                          onChange={event => updateSelectedBrief(brief.brief_id, event.currentTarget.checked)}
-                        />
                         <button
                           type="button"
                           className="brief-inspect"
+                          disabled={busy}
                           aria-pressed={activeBriefId === brief.brief_id && !editingBrief}
                           onClick={() => inspectBrief(brief.brief_id)}
                         >
                           <strong>{brief.name || brief.brief_id}</strong>
                           <span>{brief.source === 'custom' ? 'Your brief' : 'Sample brief'}</span>
-                          <span>{outputs.filter(output => output.brief_id === brief.brief_id).length} outputs</span>
+                          <span>{outputs.filter(output => output.brief_id === brief.brief_id).length} audio versions</span>
                         </button>
                       </div>
                     ))}
                   </div>
-                </fieldset>
                 {!briefs.length && <p>No briefs loaded. Enter or upload a brief to begin.</p>}
+                <p className="collection-footnote">AI-generated demos.<br />Human review before broadcast.</p>
               </aside>
 
               <section className="panel work-panel" aria-labelledby="active-brief-heading">
                 <div className="section-heading">
                   <div>
-                    <p className="eyebrow">Creative workspace</p>
-                    <h2 id="active-brief-heading">{editingBrief ? 'Add your brief' : activeBrief?.name || 'Choose a brief'}</h2>
+                    <h1 id="active-brief-heading">{editingBrief ? 'Add your brief' : activeBrief?.name || 'Start with an advertiser'}</h1>
+                    {!editingBrief && activeBrief && <p className="advertiser-summary">{[activeBrief.offer || activeBrief.description, activeBrief.location].filter(Boolean).join(' · ')}</p>}
                   </div>
                   {!editingBrief && activeBrief && (
-                    <p className="status-badge" data-status={activeStatus}>Evaluation: {activeStatus}</p>
+                    <button className="button button-secondary brief-toggle" type="button" disabled={busy} aria-expanded={section === 'brief'} onClick={() => setSection(section === 'brief' ? 'lyrics' : 'brief')}>View brief</button>
                   )}
                 </div>
                 <nav className="workspace-nav detail-nav" aria-label="Active brief sections" hidden={editingBrief || !activeBrief}>
-                  {(['brief', 'lyrics', 'variants'] as const).map(item => (
+                  {(['lyrics', 'variants'] as const).map(item => (
                     <button
                       className="workspace-nav-button"
                       type="button"
                       key={item}
                       disabled={busy}
-                      aria-pressed={section === item}
+                      aria-pressed={item === 'lyrics' ? section !== 'variants' : section === item}
                       onClick={() => setSection(item)}
                     >
-                      {item === 'brief' ? 'Brief' : item === 'lyrics' ? 'Lyrics' : 'Variants'}
+                      {item === 'lyrics' ? 'Create' : 'Listen & review'}
                     </button>
                   ))}
                 </nav>
@@ -1054,13 +1065,16 @@ function App() {
                       <dt>Approved claims</dt><dd>{activeBrief?.approved_claims?.join('; ') || 'Not recorded'}</dd>
                       {activeBrief?.cta && <><dt>Call to action</dt><dd>{activeBrief.cta}</dd></>}
                     </dl>
-                    <p className="muted">Render progress appears in Recent runs. Evaluation remains beside each output; Pending does not mean rendering.</p>
+                    <p className="muted">To revise a loaded custom brief, enter a new one. Its original facts remain attached to existing audio.</p>
                   </section>
-                  <section hidden={editingBrief || section !== 'lyrics' || !activeBrief} aria-labelledby="lyrics-heading">
-                    <h3 id="lyrics-heading">Lyric options</h3>
+                  <section className="create-section" hidden={editingBrief || section === 'variants' || !activeBrief} aria-labelledby="lyrics-heading">
+                    <div className="section-heading">
+                      <div><h2 id="lyrics-heading">Find your hook.</h2><p className="muted">Choose the words, then bring them to life.</p></div>
+                      <button className="button button-secondary" type="button" disabled={busy || !activeBrief || !options?.instrumental_available} onClick={() => void renderOffline(activeBrief ? [activeBrief] : [])}>Preview music only</button>
+                    </div>
                     <p className="muted">
-                      Generate three independent options for this brief. Each passes through the existing writer&apos;s checks.
-                      These are separate drafts, not automatically submitted to the audio renderer.
+                      Generate three screened lyric options for this advertiser. Select an accepted draft to use its exact words in a voice-and-music version.
+                      Music-only previews do not include lyrics or prove vocal quality.
                     </p>
                     <p className="notice">AI-generated lyrics require producer and advertiser approval before broadcast. A held option is not approved.</p>
                     {!lyricAvailable && <p className="notice">Paid lyric generation is disabled or unavailable for this account. Server configuration and paid access are required.</p>}
@@ -1077,15 +1091,32 @@ function App() {
                       Generate 3 lyric options
                     </button>
                     <div className="lyric-options">
+                      {!lyricOptions[activeBriefId]?.length && <div className="empty-state"><h3>Your next hook starts here.</h3><p>Generate lyric options above, or preview the music before adding a voice.</p></div>}
                       {lyricOptions[activeBriefId]?.map((option, index) => (
-                        <article className="lyric-card" key={index}>
-                          <h4>Option {index + 1}</h4>
+                        <article className="lyric-card" key={option.option_id} data-selected={selectedLyric?.option_id === option.option_id}>
+                          <div className="section-heading"><h3>Option {index + 1}</h3>{selectedLyric?.option_id === option.option_id && <span className="selection-label">Selected for audio</span>}</div>
                           <p className="status-badge">{option.status.replaceAll('_', ' ')}</p>
-                          {option.output && <><h5>{option.output.hook}</h5><p className="lyric-text">{option.output.lyrics}</p></>}
+                          {option.output && <><h4>{option.output.hook}</h4><p className="lyric-text">{option.output.lyrics}</p></>}
                           {option.reasons.length > 0 && <p>{option.reasons.map(reason => reason.replaceAll('_', ' ')).join('; ')}</p>}
+                          <div className="button-row lyric-actions"><button
+                            className="button button-secondary" type="button"
+                            disabled={busy || option.status !== 'accepted' || !option.output}
+                            aria-pressed={selectedLyric?.option_id === option.option_id}
+                            onClick={() => { setSelectedLyricIds(current => ({ ...current, [activeBriefId]: option.option_id })); setEstimate(null); setAnnouncement(`Lyric option ${index + 1} selected for audio.`) }}
+                          >{selectedLyric?.option_id === option.option_id ? 'Selected lyrics' : `Use option ${index + 1}`}</button>
+                          {selectedLyric?.option_id === option.option_id && <button className="button button-primary" type="button" disabled={busy || !paidAvailable || !activeBrief} onClick={() => void estimatePaidRender(activeBrief ? [activeBrief] : [], selectedLyric)}>Estimate voice + music</button>}</div>
+                          {selectedLyric?.option_id === option.option_id && <p className="muted">{renderOptionsMessage(options, unresolvedCount, paidStatusUncertain)}</p>}
+                          {option.status === 'human_review_required' && <p className="muted">Held for human review. This draft cannot be rendered.</p>}
                         </article>
                       ))}
                     </div>
+                    {!selectedLyric && <section className="render-choice" aria-labelledby="audio-create-heading">
+                      <div><h3 id="audio-create-heading">Bring your lyrics to life.</h3>
+                        <p>Choose an accepted lyric option above to create a voice-and-music version.</p>
+                        <p className="muted">{renderOptionsMessage(options, unresolvedCount, paidStatusUncertain)}</p>
+                      </div>
+                      <button className="button button-primary" type="button" disabled>Estimate voice + music</button>
+                    </section>}
                   </section>
 
             <section
@@ -1097,11 +1128,14 @@ function App() {
               <div className="section-heading">
                 <div>
                   <h2 id="comparison-heading" ref={comparisonHeading} tabIndex={-1}>
-                    Rendered variants
+                    Your jingle versions
                   </h2>
                 </div>
-                <p className="muted">{visibleOutputs.length} output{visibleOutputs.length === 1 ? '' : 's'}</p>
+                <button className="button button-primary" type="button" disabled={busy} onClick={() => setSection('lyrics')}>Create another version</button>
               </div>
+              <p className="muted review-guidance">AI-generated demos. Human approval required before broadcast.</p>
+              <details className="review-options">
+              <summary>Review filters and status</summary>
               <label>
                 Results from
                 <select value={activeRunId} disabled={busy} onChange={event => { setActiveRunId(event.currentTarget.value); setActiveOutputId('') }}>
@@ -1111,46 +1145,46 @@ function App() {
                   ))}
                 </select>
               </label>
-              {!visibleOutputs.length && <p className="notice">No outputs for this brief in the selected run. Render a selected batch or choose another run.</p>}
-              <p className="muted">
-                For each completed output, select Load protected audio, then press Play in its audio controls.
-                Evaluation status does not block playback.
-              </p>
-              <div className="table-wrap">
-                <table>
-                  <caption>Comparison of your rendered outputs</caption>
-                  <thead>
-                    <tr>
-                      <th scope="col">Brief</th>
-                      <th scope="col">Variant</th>
-                      <th scope="col">Duration</th>
-                      <th scope="col">Numeric gates</th>
-                      <th scope="col">Evaluation status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {visibleOutputs.map((output) => {
-                      const brief = briefs.find((item) => item.brief_id === output.brief_id)
-                      return (
-                        <tr key={output.output_id}>
-                          <td>{brief?.name || output.brief_id}</td>
-                          <td><button className="button button-secondary" type="button" aria-pressed={inspectedOutput?.output_id === output.output_id} onClick={() => setActiveOutputId(output.output_id)}>Inspect {output.variant}</button></td>
-                          <td>{formatSeconds(output.duration_seconds)}</td>
-                          <td>{evidenceValue(output.numeric_gates)}</td>
-                          <td>{output.status}</td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
+              <p className="muted">Listen first. Compare versions, then record your review. Evaluation status never blocks playback.</p>
+              <p className="muted">Overall evaluation: {activeStatus}. AI-generated demos require human approval before broadcast.</p>
+              </details>
+              {!visibleOutputs.length && <div className="empty-state"><h3>No audio in this view yet.</h3><p>Create a version, or choose another run above. Your brief and lyric options stay in Create.</p><button className="button button-secondary" type="button" onClick={() => setSection('lyrics')}>Go to Create</button></div>}
+              <div className="version-list" aria-label="Audio versions">
+                {visibleOutputs.map((output, index) => (
+                  <article className="version-row" key={output.output_id} data-selected={inspectedOutput?.output_id === output.output_id}>
+                    <div className="version-playback">
+                      <button className="button button-secondary" type="button" disabled={busy} onClick={() => void listenToOutput(output)}>Listen to version {index + 1}</button>
+                      <audio
+                        controls preload="none" aria-label={`Play version ${index + 1}, ${output.variant}`}
+                        ref={node => {
+                          if (!node) {
+                            audioElements.current.delete(output.output_id)
+                            return
+                          }
+                          audioElements.current.set(output.output_id, node)
+                          const url = audioUrls.current.get(output.output_id)?.url
+                          if (url && node.getAttribute('src') !== url) node.src = url
+                          else if (!url) node.removeAttribute('src')
+                        }}
+                        onPlay={event => { for (const audio of audioElements.current.values()) if (audio !== event.currentTarget) audio.pause() }}
+                        onError={() => setErrorMessage('Audio playback failed. Load this version again or download its WAV.')}
+                      />
+                    </div>
+                    <div className="version-description">
+                      <h3>Version {index + 1} <span>{inspectedOutput?.output_id === output.output_id ? '/ Selected' : ''}</span></h3>
+                      <p>{output.variant.replaceAll('_', ' ')} · {formatSeconds(output.duration_seconds)}</p>
+                      <p className="muted">{output.lyric_source ? `Lyrics: ${output.lyric_source.hook}` : 'Original brief script; no selected lyric draft'}</p>
+                      <p className="review-state">Audio ready · {output.evaluation ? 'Human review recorded' : 'Human review not recorded'}</p>
+                    </div>
+                    <button className="button button-secondary" type="button" disabled={busy} onClick={() => { setActiveOutputId(output.output_id); window.setTimeout(() => evaluationHeading.current?.focus(), 0) }}>Review this version</button>
+                  </article>
+                ))}
               </div>
 
               <div className="output-list">
                 {(inspectedOutput ? [inspectedOutput] : []).map((output) => {
-                  const brief = briefs.find((item) => item.brief_id === output.brief_id)
                   const isInstrumental =
                     Number(output.azure_usage.submitted_characters ?? 0) === 0
-                  const audioUrl = audioUrls.current.get(output.output_id)?.url
                   void audioRevision
                   const draft = evaluationDrafts[output.output_id] ?? {
                     brand_transcription: '',
@@ -1180,7 +1214,7 @@ function App() {
 
                   return (
                     <article className="output-card" key={output.output_id}>
-                      <h3>{brief?.name || output.brief_id} · {output.variant}</h3>
+                      <h3 ref={evaluationHeading} tabIndex={-1}>Review: {output.variant.replaceAll('_', ' ')}</h3>
                       <p className="notice">
                         {isInstrumental
                           ? 'Instrumental-only preview — not vocal proof. Evaluation remains Pending; playback is available.'
@@ -1189,18 +1223,7 @@ function App() {
                       <p className="status-badge" data-status={output.status}>
                         Evaluation: {output.status}
                       </p>
-                      <audio
-                        controls
-                        preload="none"
-                        aria-label={`Play ${brief?.name || output.brief_id}, ${output.variant}`}
-                        src={audioUrl}
-                        onError={() =>
-                          setErrorMessage(
-                            'Audio playback failed. Try Load protected audio again, or download the WAV.',
-                          )
-                        }
-                        onEnded={() => releaseAudioUrl(output.output_id)}
-                      />
+                      {output.lyric_source && <section className="lyric-source" key={output.lyric_source.option_id}><h4>Lyrics behind this version</h4><p className="lyric-text">{output.lyric_source.lyrics}</p><p className="muted">Server-screened draft · AI-generated · Broadcast approval still required</p></section>}
                       <div className="button-row">
                         <button
                           className="button button-secondary"
@@ -1348,12 +1371,12 @@ function App() {
                 </div>
               </section>
 
-            <aside
+            <details
               id="runs-view"
               className="panel history-panel"
               aria-labelledby="runs-heading"
             >
-              <p className="eyebrow">Run history</p>
+              <summary>Generation history</summary>
               <h2 id="runs-heading">Recent render runs</h2>
               <p className="muted">
                 Run and paid-attempt status is recovered from the API after a page reload or connection loss.
@@ -1395,11 +1418,23 @@ function App() {
                   </li>
                 ))}
               </ul>
-            </aside>
+            </details>
 
-              <section className="panel batch-panel" aria-labelledby="batch-heading">
+              <details className="panel batch-panel">
+                <summary>Batch tools</summary>
+                <div className="batch-content">
                 <div>
                   <h2 id="batch-heading">Render selected briefs</h2>
+                  <p className="muted">Advanced: render up to three briefs using their original scripts, not the lyric choice in Create.</p>
+                  <fieldset disabled={busy}>
+                    <legend>Briefs in this batch</legend>
+                    {briefs.map(brief => (
+                      <label className="check-label" key={brief.brief_id}>
+                        <input type="checkbox" aria-label={`Select ${brief.name || brief.brief_id}`} checked={selectedBriefIds.has(brief.brief_id)} onChange={event => updateSelectedBrief(brief.brief_id, event.currentTarget.checked)} />
+                        {brief.name || brief.brief_id}
+                      </label>
+                    ))}
+                  </fieldset>
                   <p>{selectedBriefs.length} selected{selectedBriefs.length ? `: ${selectedBriefs.map(brief => brief.name || brief.brief_id).join(', ')}` : '. Check a brief in the collection to begin.'}</p>
                   {batchTooLarge && <p className="alert">Select at most three briefs per render.</p>}
                 </div>
@@ -1418,7 +1453,8 @@ function App() {
                   </button>
                 </div>
                 <p className="muted batch-help">{renderOptionsMessage(options, unresolvedCount, paidStatusUncertain)} Instrumental previews are not vocal proof.</p>
-              </section>
+                </div>
+              </details>
             </div>
 
             <section
@@ -1566,7 +1602,6 @@ function App() {
         onClose={handleEstimateDialogClose}
       >
         <div className="dialog-content">
-          <p className="eyebrow">Separate spending decision</p>
           <h2 id="estimate-heading">Confirm this Azure voice estimate</h2>
           <p id="estimate-summary">
             {estimate &&
@@ -1574,9 +1609,17 @@ function App() {
                 .map((id) => briefs.find((brief) => brief.brief_id === id)?.name || id)
                 .join(', ')}. Estimated total: $${estimate.estimated_cost_usd} USD.`}
           </p>
+          {estimate?.lyric_selections?.map(selection => {
+            const choices = lyricOptions[selection.brief_id] ?? []
+            const index = choices.findIndex(option => option.option_id === selection.option_id)
+            const draft = choices[index]?.output
+            return draft
+              ? <div className="estimate-lyric" key={selection.option_id}><p><strong>Option {index + 1}: {draft.hook}</strong></p><p className="lyric-text">{draft.lyrics}</p></div>
+              : <p className="notice" role="alert" key={selection.option_id}>This saved lyric draft could not be loaded. Cancel and reload the workspace to verify it before rendering.</p>
+          })}
           <p className="muted">
-            Confirmation is bound to these exact briefs and the server-computed estimate. The server will
-            re-check both before starting.
+            Confirmation is bound to these exact briefs{estimate?.lyric_selections?.length ? ', the selected lyric draft,' : ''} and the server-computed estimate. The server will
+            re-check the contents before starting.
           </p>
           <div className="button-row">
             <button
@@ -1589,6 +1632,7 @@ function App() {
             <button
               className="button button-primary"
               type="button"
+              disabled={estimate?.lyric_selections?.some(selection => !lyricOptions[selection.brief_id]?.some(option => option.option_id === selection.option_id && option.output))}
               onClick={() => estimateDialog.current?.close('confirm')}
             >
               Confirm and render
@@ -1598,7 +1642,7 @@ function App() {
       </dialog>
 
       <footer>
-        <p>Local-only POC · No deployment, tenant changes, or paid requests are performed automatically.</p>
+        <p>Earwyrm proof of concept · AI-generated demos, not broadcast masters. Paid requests require your explicit confirmation.</p>
       </footer>
     </>
   )

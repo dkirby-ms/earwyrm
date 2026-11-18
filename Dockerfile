@@ -11,10 +11,11 @@ RUN npm run build --workspace @earwyrm/api \
     && mkdir -p apps/api/node_modules
 
 FROM node:24-bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates util-linux \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates util-linux fluidsynth fluid-soundfont-gm \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --uid 10001 --create-home app
 ENV NODE_ENV=production HOST=0.0.0.0 PORT=8080
+ENV EARWYRM_SOUNDFONT=/usr/share/sounds/sf2/FluidR3_GM.sf2
 WORKDIR /app
 COPY --from=backend-build --chown=app:app /app/package.json /app/package-lock.json ./
 COPY --from=backend-build --chown=app:app /app/node_modules ./node_modules

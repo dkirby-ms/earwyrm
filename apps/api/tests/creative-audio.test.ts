@@ -1,14 +1,18 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { FRAMES, SAMPLE_RATE, Seed, compose, jingle_duration, mix, musical_form, musical_plan, normalize, parse_seed, seeded_random, synthesize, tone, vocode, write_midi, write_wav } from "../src/dsp.js";
+import { FRAMES, SAMPLE_RATE, Seed, compose, instrument_palette, jingle_duration, mix, musical_form, musical_plan, normalize, parse_seed, seeded_random, synthesize, tone, vocode, write_midi, write_wav } from "../src/dsp.js";
+import { render_backing } from "../src/backing.js";
 import { CompositionRequest, arrange } from "../src/melody.js";
 import { KNOWN_TUNES, SimilarityError, screen, select_screened, similarity } from "../src/similarity.js";
 import { align, place_spoken, validate_utterance, type Utterance } from "../src/speech.js";
 
 const paths: string[] = [];
-afterEach(() => { for (const path of paths.splice(0)) rmSync(path, { recursive: true, force: true }); });
+afterEach(() => {
+  vi.unstubAllEnvs();
+  for (const path of paths.splice(0)) rmSync(path, { recursive: true, force: true });
+});
 const request_data = () => ({
   logical_job_id: "test-version-1", product_path: "vocoded", lyrics: "Cedar Loop brings bright sound to your day", seed: 42,
   lines: [{ text: "Cedar Loop brings bright sound to your day", syllables: ["Ce", "dar", "Loop", "brings", "bright", "sound", "to", "your", "day"], start_seconds: 3, end_seconds: 7 }],
@@ -150,6 +154,16 @@ describe("creative score contracts", () => {
 });
 
 describe("DSP artifacts", () => {
+  it("uses three stable curated palettes and rejects a configured missing bank", async () => {
+    expect(new Set(Array.from({ length: 24 }, (_, seed) => instrument_palette(seed).name)).size).toBe(3);
+    const notes = compose(42, 12);
+    vi.stubEnv("EARWYRM_SOUNDFONT", undefined);
+    const rendered = await render_backing(notes, 42, 12);
+    expect(rendered).toMatchObject({ palette: instrument_palette(42), renderer: "oscillator", soundfont: null });
+    expect(rendered.audio).toHaveLength(12 * SAMPLE_RATE);
+    vi.stubEnv("EARWYRM_SOUNDFONT", join(process.cwd(), `${randomUUID()}.sf2`));
+    await expect(render_backing(notes, 42, 12)).rejects.toThrow("SoundFont render failed");
+  });
   it.each([12, 14, 18, 30])("renders deterministic finite %s-second PCM and matching MIDI", duration_seconds => {
     const frames = duration_seconds * SAMPLE_RATE;
     const notes = compose(42, duration_seconds), first = synthesize(notes, { seed: 42, duration_seconds }), second = synthesize(notes, { seed: 42, duration_seconds });
@@ -160,8 +174,9 @@ describe("DSP artifacts", () => {
     const directory = join(process.cwd(), `.creative-audio-${randomUUID()}`);
     mkdirSync(directory); paths.push(directory);
     write_wav(join(directory, "score.wav"), normalized);
-    write_midi(join(directory, "first.mid"), notes, duration_seconds);
-    write_midi(join(directory, "second.mid"), compose(42, duration_seconds), duration_seconds);
+    const palette = instrument_palette(42);
+    write_midi(join(directory, "first.mid"), notes, duration_seconds, palette);
+    write_midi(join(directory, "second.mid"), compose(42, duration_seconds), duration_seconds, palette);
     const wav = readFileSync(join(directory, "score.wav")), midi = readFileSync(join(directory, "first.mid"));
     expect(wav.toString("ascii", 0, 4)).toBe("RIFF");
     expect(wav.readUInt16LE(22)).toBe(1);
@@ -178,14 +193,27 @@ describe("DSP artifacts", () => {
     expect(midi.readUInt16BE(12)).toBe(480);
     expect(midi.readUInt32BE(18)).toBe(midi.length - 22);
     let offset = 22, ticks = 0, on = 0, off = 0;
+    const programs = new Map<number, number>();
     while (offset < midi.length) {
       let delta = 0, byte;
       do { byte = midi[offset++]; delta = delta * 128 + (byte & 127); } while (byte & 128);
       ticks += delta;
       const status = midi[offset++];
       if (status === 255) { offset++; const length = midi[offset++]; offset += length; }
-      else { if ((status & 240) === 144) on++; if ((status & 240) === 128) off++; offset += 2; }
+      else if ((status & 240) === 192) {
+        expect(ticks).toBe(0);
+        expect(on).toBe(0);
+        programs.set(status & 15, midi[offset++]);
+      } else {
+        if ((status & 240) === 144) {
+          if ((status & 15) !== 9) expect(programs.has(status & 15)).toBe(true);
+          on++;
+        }
+        if ((status & 240) === 128) off++;
+        offset += 2;
+      }
     }
+    expect([...programs]).toEqual([[0, palette.pad], [1, palette.bass], [2, palette.lead]]);
     expect(ticks).toBe(duration_seconds * 960); expect(on).toBe(notes.length); expect(off).toBe(notes.length);
   });
   it("rejects invalid PCM, silence and negative note intervals before file output", () => {

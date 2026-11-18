@@ -1,0 +1,26 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "low-contrast",
+        "value": "*",
+        "files": [
+          ".impeccable/mocks/decision/focused-review.html"
+        ],
+        "createdAt": "2026-11-17T23:59:16.621Z",
+        "reason": "Verified concept text/background pairs using WCAG relative luminance: all are 7.79:1 or higher; static detection misses dark ancestor backgrounds."
+      },
+      {
+        "rule": "overused-font",
+        "value": "helvetica",
+        "files": [
+          "src/index.css"
+        ],
+        "createdAt": "2026-11-18T00:48:10.159Z",
+        "reason": "User approved Campaign Color and its Helvetica Neue/Arial workhorse sans sketch; an Operate workspace intentionally prioritizes familiar, legible controls."
+      }
+    ]
+  }
+}

@@ -257,7 +257,7 @@ export async function transaction<T>(connection: Connection, operation: (connect
     throw error;
   } finally { await connection.close(); }
 }
-export const REQUIRED_TABLES = ["runs", "paid_attempts", "outputs", "evaluations", "render_jobs", "local_outputs", "application_identity", "application_users"] as const;
+export const REQUIRED_TABLES = ["runs", "paid_attempts", "outputs", "evaluations", "render_jobs", "local_outputs", "application_identity", "application_users", "lyric_options"] as const;
 /** Requires the version-one marker and both schemas without initializing, importing, or falling back to SQLite. */
 export async function validate_postgres_store(database_url: string): Promise<void> {
   const connection = new PostgresConnection(database_url, 0x4557524d01);
@@ -267,7 +267,7 @@ export async function validate_postgres_store(database_url: string): Promise<voi
     const metadata = (await connection.execute("SELECT schema_version FROM earwyrm_store_metadata WHERE singleton = 1")).rows;
     if (metadata.length !== 1 || metadata[0]!.schema_version !== 1) throw new StoreNotInitialized("PostgreSQL store initialization marker is invalid");
     for (const name of REQUIRED_TABLES) {
-      if (!(await connection.execute("SELECT to_regclass(?) AS name", [name])).rows[0]?.name) throw new StoreNotInitialized("PostgreSQL store is missing a required table");
+      if (!(await connection.execute("SELECT to_regclass(?) AS name", [name])).rows[0]?.name) throw new StoreNotInitialized("PostgreSQL store is missing a required table; run the explicit database upgrade command");
     }
   } finally { await connection.close(); }
 }

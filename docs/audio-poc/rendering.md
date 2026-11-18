@@ -5,9 +5,23 @@ description: Render original MIDI and synthesized instruments with paired Azure 
 
 ## What this produces
 
-The local TypeScript renderer uses only original note patterns, harmonic oscillators,
-a synthesized kick and seeded noise. It loads no samples or SoundFonts and has
-no cloning, custom voice or artist-imitation interface.
+The renderer composes original note patterns and selects one curated General MIDI
+palette by seed: acoustic pop, bright commercial, or electronic. The MIDI export
+includes the patch assignments. The backend container uses FluidSynth and the
+FluidR3 GM SoundFont to render the same patches in the WAV backing. Speech and
+the vocoder carrier are unchanged; there is no voice cloning or artist imitation.
+
+For host-run web, CLI, or Melody MCP, install FluidSynth and set
+`EARWYRM_SOUNDFONT` to a local General MIDI `.sf2` file before starting the process.
+For example, on Debian with `fluidsynth` and `fluid-soundfont-gm` installed:
+
+```bash
+EARWYRM_SOUNDFONT=/usr/share/sounds/sf2/FluidR3_GM.sf2 npm run render -- --instrumental-only
+```
+
+Leaving the variable unset uses the existing oscillator backing. A configured
+renderer failure is reported, not silently replaced with oscillators. The
+composition metadata records the renderer, palette and SoundFont filename.
 
 Each run gets a unique directory under `renders/`. Each brief gets a MIDI score,
 JSON notes, a script, an alignment map and an evidence manifest.
@@ -194,11 +208,12 @@ never sets the output or overall POC to Pass.
 
 ## Software and origin evidence
 
-The MIDI and WAV writers, synthesis and DSP are native TypeScript using Node.js
-and typed arrays; Speech uses Microsoft's official JavaScript SDK. These are
-software tools, not licensed
-musical samples. Dependency versions and hashes are pinned by the repository's
-`package-lock.json`; retain dependency license notices if redistributing the software.
+The MIDI and WAV writers, compatibility synthesis and DSP use TypeScript and
+Node.js; Speech uses Microsoft's JavaScript SDK. The container installs
+FluidSynth and FluidR3 GM from Debian and retains their package notices under
+`/usr/share/doc`. The [FluidR3 GM bank is MIT-licensed](https://metadata.ftp-master.debian.org/changelogs/main/f/fluid-soundfont/fluid-soundfont_3.1-5.3_copyright).
+Retain applicable notices if redistributing and verify the terms of any
+replacement SoundFont.
 
 * [Node.js license](https://github.com/nodejs/node/blob/main/LICENSE)
 * [Speech SDK license terms](https://aka.ms/csspeech/license)

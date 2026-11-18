@@ -317,17 +317,39 @@ function variable_length(value: number): number[] {
   return result;
 }
 
-/** Synchronously write type-0, 480 PPQ MIDI ending at the selected whole-bar duration. */
-export function write_midi(path: string, notes: readonly Note[], duration_seconds = DURATION): void {
+const GM_PALETTES = [
+  { name: "acoustic-pop", pad: 0, bass: 33, lead: 25 },
+  { name: "bright-commercial", pad: 4, bass: 34, lead: 27 },
+  { name: "electronic", pad: 89, bass: 38, lead: 81 },
+] as const;
+
+/** Repeatable instrument palette independent of score length and speech fit. Programs are zero-based. */
+export function instrument_palette(seed: Seed) {
+  const random = seeded_random(seed);
+  random(); // The first draw selects the duration.
+  return GM_PALETTES[Math.floor(random() * GM_PALETTES.length)];
+}
+
+export type InstrumentPalette = (typeof GM_PALETTES)[number];
+
+/** Synchronously write type-0, 480 PPQ MIDI with GM programs and the selected whole-bar end. */
+export function write_midi(path: string, notes: readonly Note[], duration_seconds = DURATION, palette: InstrumentPalette = GM_PALETTES[0]): void {
   ScoreDuration.parse(duration_seconds);
   const channels: Record<string, number> = { pad: 0, bass: 1, lead: 2, vocal: 3, kick: 9, hat: 9, snare: 9 };
   const events: [number, number[]][] = [[0, [255, 81, 3, 7, 161, 32]]];
+  for (const instrument of ["pad", "bass", "lead", "vocal"] as const) {
+    if (notes.some(note => note.instrument === instrument)) {
+      events.push([0, [192 | channels[instrument], instrument === "vocal" ? 54 : palette[instrument]]]);
+    }
+  }
   for (const note of notes) {
     validate_note(note, duration_seconds);
     const channel = channels[note.instrument], velocity = Math.max(1, Math.min(127, Math.round(note.gain * 300)));
     events.push([Math.round(note.start / BEAT * 480), [144 | channel, note.pitch, velocity]], [Math.round((note.start + note.duration) / BEAT * 480), [128 | channel, note.pitch, 0]]);
   }
-  events.sort((a, b) => a[0] - b[0] || Buffer.compare(Buffer.from(a[1]), Buffer.from(b[1])));
+  // At tick zero, programs must precede the first notes. Otherwise retain note-off before note-on.
+  const order = (message: number[]) => (message[0] & 240) === 192 ? 0 : message[0];
+  events.sort((a, b) => a[0] - b[0] || order(a[1]) - order(b[1]) || Buffer.compare(Buffer.from(a[1]), Buffer.from(b[1])));
   const track: number[] = [];
   let previous = 0;
   for (const [tick, message] of events) { track.push(...variable_length(tick - previous), ...message); previous = tick; }

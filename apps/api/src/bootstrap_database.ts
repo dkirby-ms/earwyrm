@@ -16,6 +16,7 @@ export const WEB_TABLE_COLUMNS: Record<string, readonly string[]> = {
   evaluations: ["output_id", "owner", "brand_transcription", "cta_transcription", "self_rating", "brand_match", "cta_match", "created_at"],
   application_identity: ["singleton", "issuer"],
   application_users: ["issuer", "subject", "enabled", "admin", "paid_speech", "created_at"],
+  lyric_options: ["option_id", "owner", "brief_id", "request_json", "result_json", "created_at"],
 };
 export const MELODY_TABLE_COLUMNS: Record<string, readonly string[]> = {
   render_jobs: ["job_id", "logical_job_id", "request_json", "result_json", "melodies_json", "status", "created_at"],
@@ -28,6 +29,7 @@ export const JSON_COLUMN_TYPES: [string, string, "array" | "object"][] = [
   ["paid_attempts", "per_brief_estimates_json", "object"], ["paid_attempts", "evidence_json", "object"],
   ["outputs", "manifest_json", "object"], ["render_jobs", "request_json", "object"],
   ["render_jobs", "result_json", "object"], ["render_jobs", "melodies_json", "object"], ["local_outputs", "melodies_json", "object"],
+  ["lyric_options", "request_json", "object"], ["lyric_options", "result_json", "object"],
 ];
 /** The caller owns the returned release function; the lock interoperates with Python flock writers. */
 export function acquire_writer_lock(root: string): () => void {
@@ -52,7 +54,7 @@ function require_root(root: string): string {
   return realpathSync(root);
 }
 const RESET_TABLES = [
-  "application_users", "application_identity", "evaluations", "outputs", "paid_attempts",
+  "lyric_options", "application_users", "application_identity", "evaluations", "outputs", "paid_attempts",
   "runs", "local_outputs", "render_jobs", "earwyrm_store_metadata",
 ] as const;
 const RESET_DATA_ENTRIES = ["audio", "work", "melody", "earwyrm.sqlite3", ".earwyrm-initialized"] as const;
@@ -106,7 +108,7 @@ export async function initialize_fresh(directory: string, database_url: string, 
       const count = (await c.execute(`SELECT count(*) AS table_count FROM pg_catalog.pg_class
         WHERE relnamespace = current_schema()::regnamespace AND relkind IN ('r', 'p')
         AND relname IN (${REQUIRED_TABLES.map(() => "?").join(",")})`, REQUIRED_TABLES)).rows[0];
-      if (Number(count?.table_count) !== 8) throw new Error("New PostgreSQL store schema is incomplete");
+      if (Number(count?.table_count) !== REQUIRED_TABLES.length) throw new Error("New PostgreSQL store schema is incomplete");
       await write_marker(c);
     });
     reset_application_data(root);
@@ -209,7 +211,10 @@ export async function import_sqlite(directory: string, database_url: string): Pr
   try {
     web = new SqliteConnection(webPath, true);
     melody = new SqliteConnection(melodyPath, true);
-    const webTables = await validate_source(web, WEB_TABLE_COLUMNS, new Set(["application_identity", "application_users"]));
+    const sourceColumns = { ...WEB_TABLE_COLUMNS };
+    const hasLyrics = (await web.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'lyric_options'")).rows.length > 0;
+    if (!hasLyrics) delete sourceColumns.lyric_options;
+    const webTables = await validate_source(web, sourceColumns, new Set(["application_identity", "application_users"]));
     await validate_source(melody, MELODY_TABLE_COLUMNS);
     await validate_web(web, root, webTables);
     await validate_melody(melody, root);
@@ -247,10 +252,10 @@ export async function main(args: string[] = process.argv.slice(2), environment: 
     const parsed = create_parser(args);
     const command = parsed.positionals[0], values = parsed.values;
     if (values.help) {
-      console.log("Usage: database [--data-dir DATA_DIR] {initialize-fresh,import-sqlite,bootstrap-owner,set-user,list-users}\ninitialize-fresh: requires EARWYRM_DATA_RESET_APPROVED=true and owner identity env vars matching ENTRA_EXPECTED_ISSUER\nbootstrap-owner: --issuer ISSUER --subject SUBJECT\nset-user: --issuer ISSUER --subject SUBJECT --enabled {yes,no} --admin {yes,no} --paid-speech {yes,no}");
+      console.log("Usage: database [--data-dir DATA_DIR] {initialize-fresh,import-sqlite,upgrade,bootstrap-owner,set-user,list-users}\nupgrade: adds lyric-option storage to an initialized PostgreSQL store without deleting records\ninitialize-fresh: requires EARWYRM_DATA_RESET_APPROVED=true and owner identity env vars matching ENTRA_EXPECTED_ISSUER\nbootstrap-owner: --issuer ISSUER --subject SUBJECT\nset-user: --issuer ISSUER --subject SUBJECT --enabled {yes,no} --admin {yes,no} --paid-speech {yes,no}");
       return 0;
     }
-    if (parsed.positionals.length !== 1 || !["initialize-fresh", "import-sqlite", "bootstrap-owner", "set-user", "list-users"].includes(command ?? "")) throw new TypeError("A valid operator command is required");
+    if (parsed.positionals.length !== 1 || !["initialize-fresh", "import-sqlite", "upgrade", "bootstrap-owner", "set-user", "list-users"].includes(command ?? "")) throw new TypeError("A valid operator command is required");
     const value = (key: string): string | undefined => typeof values[key] === "string" ? values[key] as string : undefined;
     const identity_command = command === "bootstrap-owner" || command === "set-user";
     const permitted = new Set(["data-dir", ...(identity_command ? ["issuer", "subject"] : []), ...(command === "set-user" ? ["enabled", "admin", "paid-speech"] : [])]);
@@ -264,6 +269,20 @@ export async function main(args: string[] = process.argv.slice(2), environment: 
     if (!selectedRoot) throw new TypeError("An existing absolute data directory is required");
     const root = require_root(selectedRoot);
     const database_url = database_url_from_environment(environment);
+    if (command === "upgrade") {
+      if (!database_url) throw new TypeError("Explicit upgrade requires PostgreSQL; SQLite upgrades on initialization");
+      await transaction(new PostgresConnection(database_url, 0x4557524d01), async c => {
+        const marker = (await c.execute("SELECT schema_version FROM earwyrm_store_metadata WHERE singleton = 1")).rows;
+        if (marker.length !== 1 || marker[0]!.schema_version !== 1) throw new TypeError("Upgrade requires an initialized version-one store");
+        for (const table of REQUIRED_TABLES.filter(name => name !== "lyric_options")) {
+          if (!(await c.execute("SELECT to_regclass(?) AS name", [table])).rows[0]?.name) throw new TypeError("Upgrade requires a complete existing store");
+        }
+        await WebStorage._create_lyric_schema(c);
+      });
+      await validate_postgres_store(database_url);
+      console.log("PostgreSQL lyric-option storage upgraded without deleting records");
+      return 0;
+    }
     if (command === "initialize-fresh" || command === "import-sqlite") {
       if (!database_url) throw new TypeError(command === "initialize-fresh" ? "Fresh initialization requires PostgreSQL" : "SQLite import requires PostgreSQL");
       if (command === "initialize-fresh") {

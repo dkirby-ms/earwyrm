@@ -1,0 +1,173 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-18T01:05:26Z",
+  "title": "Design System: Earwyrm",
+  "extensions": {
+    "colorMeta": {
+      "ink": { "role": "neutral", "displayName": "Dark Ink", "tonalRamp": ["oklch(15% 0.012 250)", "oklch(26% 0.02 250)", "oklch(38% 0.025 250)", "oklch(50% 0.025 250)", "oklch(62% 0.025 250)", "oklch(74% 0.02 250)", "oklch(85% 0.012 250)", "oklch(95% 0.004 250)"] },
+      "muted": { "role": "neutral", "displayName": "Muted Ink", "tonalRamp": ["oklch(15% 0.006 20)", "oklch(26% 0.012 20)", "oklch(38% 0.018 20)", "oklch(50% 0.018 20)", "oklch(62% 0.018 20)", "oklch(74% 0.012 20)", "oklch(85% 0.006 20)", "oklch(95% 0.002 20)"] },
+      "paper": { "role": "neutral", "displayName": "Warm Paper", "tonalRamp": ["oklch(15% 0.004 85)", "oklch(26% 0.008 85)", "oklch(38% 0.012 85)", "oklch(50% 0.012 85)", "oklch(62% 0.012 85)", "oklch(74% 0.01 85)", "oklch(85% 0.008 85)", "oklch(95% 0.004 85)"] },
+      "surface": { "role": "neutral", "displayName": "White Surface", "tonalRamp": ["oklch(15% 0 0)", "oklch(26% 0 0)", "oklch(38% 0 0)", "oklch(50% 0 0)", "oklch(62% 0 0)", "oklch(74% 0 0)", "oklch(85% 0 0)", "oklch(95% 0 0)"] },
+      "line": { "role": "neutral", "displayName": "Neutral Rule", "tonalRamp": ["oklch(15% 0.004 35)", "oklch(26% 0.008 35)", "oklch(38% 0.012 35)", "oklch(50% 0.012 35)", "oklch(62% 0.012 35)", "oklch(74% 0.01 35)", "oklch(85% 0.008 35)", "oklch(95% 0.003 35)"] },
+      "accent": { "role": "primary", "displayName": "Advertiser Red", "tonalRamp": ["oklch(15% 0.04 23)", "oklch(26% 0.08 23)", "oklch(38% 0.13 23)", "oklch(50% 0.17 23)", "oklch(62% 0.17 23)", "oklch(74% 0.12 23)", "oklch(85% 0.06 23)", "oklch(95% 0.018 23)"] },
+      "accent-strong": { "role": "primary", "displayName": "Deep Advertiser Red", "tonalRamp": ["oklch(15% 0.04 23)", "oklch(26% 0.08 23)", "oklch(38% 0.13 23)", "oklch(50% 0.17 23)", "oklch(62% 0.17 23)", "oklch(74% 0.12 23)", "oklch(85% 0.06 23)", "oklch(95% 0.018 23)"] },
+      "highlight": { "role": "secondary", "displayName": "Selection Yellow", "tonalRamp": ["oklch(15% 0.025 95)", "oklch(26% 0.05 95)", "oklch(38% 0.075 95)", "oklch(50% 0.10 95)", "oklch(62% 0.125 95)", "oklch(74% 0.14 95)", "oklch(85% 0.12 95)", "oklch(95% 0.04 95)"] },
+      "selected": { "role": "secondary", "displayName": "Selected Paper", "tonalRamp": ["oklch(15% 0.025 95)", "oklch(26% 0.05 95)", "oklch(38% 0.075 95)", "oklch(50% 0.10 95)", "oklch(62% 0.125 95)", "oklch(74% 0.14 95)", "oklch(85% 0.12 95)", "oklch(95% 0.04 95)"] },
+      "danger": { "role": "tertiary", "displayName": "Danger Ink", "tonalRamp": ["oklch(15% 0.04 23)", "oklch(26% 0.08 23)", "oklch(38% 0.13 23)", "oklch(50% 0.17 23)", "oklch(62% 0.17 23)", "oklch(74% 0.12 23)", "oklch(85% 0.06 23)", "oklch(95% 0.018 23)"] },
+      "shell-copy": { "role": "primary", "displayName": "Pale Shell Copy", "tonalRamp": ["oklch(15% 0.012 20)", "oklch(26% 0.025 20)", "oklch(38% 0.04 20)", "oklch(50% 0.05 20)", "oklch(62% 0.05 20)", "oklch(74% 0.04 20)", "oklch(85% 0.03 20)", "oklch(95% 0.012 20)"] },
+      "shell-line": { "role": "primary", "displayName": "Shell Outline", "tonalRamp": ["oklch(15% 0.02 15)", "oklch(26% 0.04 15)", "oklch(38% 0.06 15)", "oklch(50% 0.085 15)", "oklch(62% 0.09 15)", "oklch(74% 0.08 15)", "oklch(85% 0.05 15)", "oklch(95% 0.015 15)"] },
+      "hover": { "role": "primary", "displayName": "Warm Hover", "tonalRamp": ["oklch(15% 0.004 30)", "oklch(26% 0.008 30)", "oklch(38% 0.015 30)", "oklch(50% 0.02 30)", "oklch(62% 0.02 30)", "oklch(74% 0.018 30)", "oklch(85% 0.012 30)", "oklch(95% 0.006 30)"] },
+      "control-line": { "role": "neutral", "displayName": "Control Edge", "tonalRamp": ["oklch(15% 0.004 35)", "oklch(26% 0.008 35)", "oklch(38% 0.012 35)", "oklch(50% 0.012 35)", "oklch(62% 0.012 35)", "oklch(74% 0.01 35)", "oklch(85% 0.008 35)", "oklch(95% 0.003 35)"] },
+      "field-line": { "role": "neutral", "displayName": "Field Edge", "tonalRamp": ["oklch(15% 0.006 20)", "oklch(26% 0.012 20)", "oklch(38% 0.018 20)", "oklch(50% 0.018 20)", "oklch(62% 0.018 20)", "oklch(74% 0.012 20)", "oklch(85% 0.006 20)", "oklch(95% 0.002 20)"] },
+      "notice-ink": { "role": "neutral", "displayName": "Notice Ink", "tonalRamp": ["oklch(15% 0.008 20)", "oklch(26% 0.016 20)", "oklch(38% 0.025 20)", "oklch(50% 0.025 20)", "oklch(62% 0.025 20)", "oklch(74% 0.018 20)", "oklch(85% 0.01 20)", "oklch(95% 0.003 20)"] },
+      "notice-bg": { "role": "neutral", "displayName": "Notice Paper", "tonalRamp": ["oklch(15% 0.004 40)", "oklch(26% 0.008 40)", "oklch(38% 0.012 40)", "oklch(50% 0.014 40)", "oklch(62% 0.014 40)", "oklch(74% 0.012 40)", "oklch(85% 0.01 40)", "oklch(95% 0.005 40)"] },
+      "alert-line": { "role": "tertiary", "displayName": "Alert Edge", "tonalRamp": ["oklch(15% 0.02 15)", "oklch(26% 0.04 15)", "oklch(38% 0.07 15)", "oklch(50% 0.10 15)", "oklch(62% 0.10 15)", "oklch(74% 0.08 15)", "oklch(85% 0.04 15)", "oklch(95% 0.012 15)"] },
+      "alert-bg": { "role": "tertiary", "displayName": "Alert Paper", "tonalRamp": ["oklch(15% 0.01 30)", "oklch(26% 0.02 30)", "oklch(38% 0.035 30)", "oklch(50% 0.04 30)", "oklch(62% 0.04 30)", "oklch(74% 0.035 30)", "oklch(85% 0.025 30)", "oklch(95% 0.01 30)"] },
+      "selection-line": { "role": "secondary", "displayName": "Selection Edge", "tonalRamp": ["oklch(15% 0.025 95)", "oklch(26% 0.05 95)", "oklch(38% 0.075 95)", "oklch(50% 0.10 95)", "oklch(62% 0.125 95)", "oklch(74% 0.14 95)", "oklch(85% 0.12 95)", "oklch(95% 0.04 95)"] },
+      "pass-ink": { "role": "tertiary", "displayName": "Pass Ink", "tonalRamp": ["oklch(15% 0.025 150)", "oklch(26% 0.05 150)", "oklch(38% 0.075 150)", "oklch(50% 0.10 150)", "oklch(62% 0.10 150)", "oklch(74% 0.08 150)", "oklch(85% 0.05 150)", "oklch(95% 0.015 150)"] },
+      "pass-line": { "role": "tertiary", "displayName": "Pass Edge", "tonalRamp": ["oklch(15% 0.012 150)", "oklch(26% 0.025 150)", "oklch(38% 0.04 150)", "oklch(50% 0.05 150)", "oklch(62% 0.06 150)", "oklch(74% 0.05 150)", "oklch(85% 0.035 150)", "oklch(95% 0.012 150)"] },
+      "pass-bg": { "role": "tertiary", "displayName": "Pass Paper", "tonalRamp": ["oklch(15% 0.006 150)", "oklch(26% 0.012 150)", "oklch(38% 0.02 150)", "oklch(50% 0.025 150)", "oklch(62% 0.025 150)", "oklch(74% 0.02 150)", "oklch(85% 0.015 150)", "oklch(95% 0.006 150)"] },
+      "focus": { "role": "tertiary", "displayName": "Focus Brown", "tonalRamp": ["oklch(15% 0.02 85)", "oklch(26% 0.04 85)", "oklch(38% 0.06 85)", "oklch(50% 0.08 85)", "oklch(62% 0.10 85)", "oklch(74% 0.09 85)", "oklch(85% 0.05 85)", "oklch(95% 0.015 85)"] },
+      "evidence-bg": { "role": "neutral", "displayName": "Evidence Paper", "tonalRamp": ["oklch(15% 0.004 45)", "oklch(26% 0.008 45)", "oklch(38% 0.012 45)", "oklch(50% 0.014 45)", "oklch(62% 0.014 45)", "oklch(74% 0.012 45)", "oklch(85% 0.01 45)", "oklch(95% 0.005 45)"] }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Advertiser Heading", "purpose": "Fluid primary heading; approved workhorse sans." },
+      "headline": { "displayName": "Section Heading", "purpose": "Main work sections." },
+      "title": { "displayName": "Working Title", "purpose": "Lyric options and audio versions." },
+      "body": { "displayName": "Working Body", "purpose": "Default text; inherited family for all non-monospace roles." },
+      "body-compact": { "displayName": "Compact Body", "purpose": "Descriptions and lyric source details." },
+      "supporting": { "displayName": "Supporting Text", "purpose": "Guidance and notices." },
+      "label": { "displayName": "Compact Label", "purpose": "Selected state and review labels, not every form label." },
+      "metadata": { "displayName": "Metadata", "purpose": "Provenance, session details, and footer." },
+      "button": { "displayName": "Action Label", "purpose": "Bold controls; mobile session actions override font size." },
+      "wordmark": { "displayName": "Product Wordmark", "purpose": "Earwyrm product name." },
+      "run-id": { "displayName": "Run Identifier", "purpose": "Technical identifiers only." }
+    },
+    "shadows": [
+      { "name": "modal-lift", "value": "0 1.5rem 5rem rgb(0 0 0 / 25%)", "purpose": "Paid confirmation dialog only." },
+      { "name": "navigation-selection", "value": "inset 0 -3px var(--accent)", "purpose": "Active navigation underline, not elevation." }
+    ],
+    "motion": [
+      { "name": "source-reveal", "value": "source-reveal 0.6s cubic-bezier(0.16, 1, 0.3, 1)", "purpose": "Lyric-source background animates from var(--selected) to transparent." },
+      { "name": "reduced-motion", "value": "animation: none !important; transition: none !important; scroll-behavior: auto !important;", "purpose": "Applied to all elements and pseudo-elements under prefers-reduced-motion: reduce." }
+    ],
+    "breakpoints": [
+      { "name": "compact-shell-max", "value": "48rem" },
+      { "name": "compact-review-max", "value": "75rem" },
+      { "name": "wide-work-min", "value": "100rem" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Explicit primary action; paid actions still require consent and confirmation.",
+      "html": "<button class=\"ds-primary\" type=\"button\">Estimate voice + music</button>",
+      "css": ".ds-primary{font:700 1rem/1.4 \"Helvetica Neue\",Arial,sans-serif;min-height:2.75rem;padding:.65rem 1rem;border:1px solid transparent;border-radius:4px;color:var(--surface);background:var(--accent);cursor:pointer}.ds-primary:hover:not(:disabled){background:var(--accent-strong)}.ds-primary:focus-visible{outline:3px solid #634a00;outline-offset:4px}.ds-primary:disabled{opacity:.6;cursor:not-allowed}"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Listening, inspecting, and cancelling without primary-action emphasis.",
+      "html": "<button class=\"ds-secondary\" type=\"button\">View brief</button>",
+      "css": ".ds-secondary{font:700 1rem/1.4 \"Helvetica Neue\",Arial,sans-serif;min-height:2.75rem;padding:.65rem 1rem;border:1px solid #aaa09e;border-radius:4px;color:var(--ink);background:var(--surface);cursor:pointer}.ds-secondary:hover:not(:disabled){background:#faeeed;border-color:var(--accent)}.ds-secondary:focus-visible{outline:3px solid #634a00;outline-offset:4px}.ds-secondary:disabled{opacity:.6;cursor:not-allowed}"
+    },
+    {
+      "name": "Advertiser Shell Action",
+      "kind": "button",
+      "refersTo": "button-shell",
+      "description": "Outlined rail action on the advertiser-red shell.",
+      "html": "<div class=\"ds-shell\"><button class=\"ds-shell-action\" type=\"button\">Enter or upload brief</button></div>",
+      "css": ".ds-shell{padding:1.25rem;background:var(--accent)}.ds-shell-action{font:700 .85rem/1.4 \"Helvetica Neue\",Arial,sans-serif;min-height:2.75rem;width:100%;padding:.65rem 1rem;border:1px solid #e89ba1;border-radius:4px;background:transparent;color:var(--surface);text-align:left;cursor:pointer}.ds-shell-action:hover:not(:disabled){background:var(--accent-strong)}.ds-shell-action:focus-visible{outline:3px solid white;outline-offset:4px}.ds-shell-action:disabled{opacity:.6;cursor:not-allowed}@media(max-width:48rem){.ds-shell-action{font-size:.8rem;text-align:center}}"
+    },
+    {
+      "name": "Text Field",
+      "kind": "input",
+      "refersTo": "field",
+      "description": "Native labelled field; actual validation and disabled state remain native.",
+      "html": "<label class=\"ds-field-label\">Brand name<input class=\"ds-field\" type=\"text\" placeholder=\"Brand name\" maxlength=\"400\" required></label>",
+      "css": ".ds-field-label{display:grid;gap:.4rem;font:700 1rem/1.55 \"Helvetica Neue\",Arial,sans-serif;color:var(--ink)}.ds-field{font:400 1rem/1.55 \"Helvetica Neue\",Arial,sans-serif;width:100%;max-width:44rem;min-height:2.75rem;padding:.65rem .75rem;border:1px solid #928383;border-radius:4px;color:var(--ink);background:var(--surface);caret-color:var(--accent)}.ds-field::placeholder{color:var(--muted);opacity:1}.ds-field:focus-visible{outline:3px solid #634a00;outline-offset:4px}"
+    },
+    {
+      "name": "Brief Section Navigation",
+      "kind": "nav",
+      "refersTo": "navigation-item",
+      "description": "Text navigation with an inset red selected underline.",
+      "html": "<nav class=\"ds-nav\" aria-label=\"Active brief sections\"><button class=\"ds-nav-item\" type=\"button\" aria-pressed=\"false\">Create</button><button class=\"ds-nav-item\" type=\"button\" aria-pressed=\"true\">Listen &amp; review</button></nav>",
+      "css": ".ds-nav{display:flex;flex-wrap:wrap;gap:2rem;border-bottom:1px solid var(--line);margin:2rem 0}.ds-nav-item{font:700 1rem/1.55 \"Helvetica Neue\",Arial,sans-serif;min-height:2.75rem;padding:.6rem 0;border:0;border-radius:0;color:var(--muted);background:transparent;cursor:pointer}.ds-nav-item:hover:not(:disabled){color:var(--accent-strong);background:#faeeed}.ds-nav-item[aria-pressed=true]{color:var(--accent-strong);box-shadow:inset 0 -3px var(--accent)}.ds-nav-item:focus-visible{outline:3px solid #634a00;outline-offset:4px}.ds-nav-item:disabled{opacity:.6;cursor:not-allowed}@media(max-width:48rem){.ds-nav{margin-block:1.5rem}.ds-nav-item{font-size:.85rem}}"
+    },
+    {
+      "name": "Selected Lyric",
+      "kind": "card",
+      "refersTo": "lyric-selected",
+      "description": "Selected accepted draft; retained line breaks and an explicit selection label.",
+      "html": "<article class=\"ds-lyric\"><div class=\"ds-lyric-heading\"><h3>Option 1</h3><span>Selected for audio</span></div><p class=\"ds-lyric-text\">Selected saved lyric text</p><div class=\"ds-lyric-actions\"><button class=\"ds-lyric-select\" type=\"button\" aria-pressed=\"true\">Selected lyrics</button><button class=\"ds-lyric-estimate\" type=\"button\">Estimate voice + music</button></div></article>",
+      "css": ".ds-lyric{font:400 1rem/1.55 \"Helvetica Neue\",Arial,sans-serif;color:var(--ink);padding:1.5rem 1.25rem;border-top:1px solid var(--line);border-radius:4px;background:var(--selected);outline:1px solid #ad8d17;outline-offset:-1px}.ds-lyric-heading{display:flex;align-items:center;justify-content:space-between;gap:1.25rem;margin-bottom:.5rem}.ds-lyric-heading h3{margin:0;font-size:1.25rem;line-height:1.2;overflow-wrap:anywhere;text-wrap:balance}.ds-lyric-heading span{font-size:.85rem;font-weight:700}.ds-lyric-text{white-space:pre-wrap;overflow-wrap:anywhere;max-width:72ch}.ds-lyric-actions{display:flex;flex-wrap:wrap;gap:.65rem;margin-top:1rem}.ds-lyric-select,.ds-lyric-estimate{font:700 1rem/1.4 \"Helvetica Neue\",Arial,sans-serif;min-height:2.75rem;padding:.65rem 1rem;border:1px solid transparent;border-radius:4px;cursor:pointer}.ds-lyric-select{background:var(--surface);color:var(--ink);border-color:#aaa09e}.ds-lyric-estimate{background:var(--accent);color:var(--surface)}.ds-lyric-select:hover:not(:disabled){background:#faeeed;border-color:var(--accent)}.ds-lyric-estimate:hover:not(:disabled){background:var(--accent-strong)}.ds-lyric button:focus-visible{outline:3px solid #634a00;outline-offset:4px}.ds-lyric button:disabled{opacity:.6;cursor:not-allowed}@media(max-width:48rem){.ds-lyric-heading{align-items:start;gap:.75rem;flex-wrap:wrap}}"
+    },
+    {
+      "name": "Evaluation Badge",
+      "kind": "chip",
+      "refersTo": "status-badge",
+      "description": "Noninteractive textual evaluation state; never broadcast approval.",
+      "html": "<p class=\"ds-badge\" data-status=\"Pass\">Evaluation: Pass</p>",
+      "css": ".ds-badge{display:inline-flex;align-items:center;gap:.5rem;margin:.5rem 0;padding:.2rem .6rem;border:1px solid var(--line);border-radius:4px;font:700 .8rem/1.55 \"Helvetica Neue\",Arial,sans-serif;color:var(--ink)}.ds-badge[data-status=Pass]{color:#15552f;border-color:#9ac5a5;background:#e6f4e9}.ds-badge[data-status=Fail]{color:var(--danger);border-color:#b75a63;background:#fff0ee}"
+    },
+    {
+      "name": "Review Filters and Status",
+      "kind": "custom",
+      "refersTo": "review-disclosure",
+      "description": "Native disclosure keeps review filters available outside the primary listening flow.",
+      "html": "<details class=\"ds-review\"><summary>Review filters and status</summary><label>Results from<select><option>All runs for this brief</option></select></label><p>Listen first. Compare versions, then record your review. Evaluation status never blocks playback.</p></details>",
+      "css": ".ds-review{min-width:0;font:400 1rem/1.55 \"Helvetica Neue\",Arial,sans-serif;color:var(--ink)}.ds-review summary{cursor:pointer;font-size:.9rem;font-weight:700;min-height:2.75rem;padding-block:.5rem;color:var(--muted)}.ds-review label{display:grid;gap:.5rem;font-size:.85rem;font-weight:700}.ds-review select{font:inherit;width:100%;max-width:44rem;min-height:2.75rem;padding:.65rem .75rem;border:1px solid #928383;border-radius:4px;color:var(--ink);background:var(--surface);caret-color:var(--accent)}.ds-review p{max-width:72ch;color:var(--muted)}.ds-review summary:focus-visible,.ds-review select:focus-visible{outline:3px solid #634a00;outline-offset:4px}"
+    },
+    {
+      "name": "Audio Version",
+      "kind": "custom",
+      "refersTo": "audio-version",
+      "description": "Native playback, source metadata, and a separate review action; no provider or audio asset is embedded.",
+      "html": "<article class=\"ds-version\"><div class=\"ds-playback\"><button class=\"ds-version-button\" type=\"button\">Listen to version 1</button><audio controls preload=\"none\" aria-label=\"Play version 1\"></audio></div><div class=\"ds-version-description\"><h3>Version 1</h3><p>Audio ready</p><p class=\"ds-version-muted\">Original brief script; no selected lyric draft</p><p class=\"ds-version-state\">Human review not recorded</p></div><button class=\"ds-version-button\" type=\"button\">Review this version</button></article>",
+      "css": ".ds-version{display:grid;grid-template-columns:minmax(12rem,.85fr) minmax(0,1.35fr) auto;align-items:center;gap:1.5rem;padding:1.5rem 1rem;border-bottom:1px solid var(--line);font:400 1rem/1.55 \"Helvetica Neue\",Arial,sans-serif;color:var(--ink)}.ds-version[data-selected=true]{background:var(--selected);outline:1px solid #ad8d17;outline-offset:-1px;border-radius:4px}.ds-playback{min-width:0}.ds-version-button{font:700 1rem/1.4 \"Helvetica Neue\",Arial,sans-serif;min-height:2.75rem;padding:.65rem 1rem;border:1px solid #aaa09e;border-radius:4px;color:var(--ink);background:var(--surface);cursor:pointer}.ds-playback .ds-version-button{width:100%}.ds-version-button:hover:not(:disabled){background:#faeeed;border-color:var(--accent)}.ds-version-button:focus-visible,.ds-playback audio:focus-visible{outline:3px solid #634a00;outline-offset:4px}.ds-version-button:disabled{opacity:.6;cursor:not-allowed}.ds-playback audio{display:block;width:100%;min-width:0;height:2.6rem;margin-top:.65rem}.ds-version-description h3{margin:0 0 .5rem;font-size:1.25rem;line-height:1.2;overflow-wrap:anywhere;text-wrap:balance}.ds-version-description p{margin:.35rem 0;font-size:.85rem;max-width:72ch}.ds-version-muted,.ds-version-state{color:var(--muted)}.ds-version-description .ds-version-state{font-size:.8rem}@media(max-width:75rem){.ds-version{grid-template-columns:minmax(11rem,.8fr) minmax(0,1fr)}.ds-version>.ds-version-button{grid-column:2;justify-self:start}}@media(max-width:48rem){.ds-version{grid-template-columns:minmax(0,1fr);padding:1.25rem;gap:1rem}.ds-version-description{grid-row:1}.ds-version>.ds-version-button{grid-column:1;justify-self:stretch}.ds-playback{width:100%}}"
+    },
+    {
+      "name": "Paid Estimate Dialog",
+      "kind": "custom",
+      "refersTo": "estimate-dialog",
+      "description": "Static open preview; production uses showModal, server-bound content, cancellation, and explicit confirmation.",
+      "html": "<dialog class=\"ds-estimate\" open aria-labelledby=\"ds-estimate-title\"><div class=\"ds-estimate-content\"><h2 id=\"ds-estimate-title\">Confirm this Azure voice estimate</h2><p>Server-computed estimate and selected advertiser appear here.</p><div class=\"ds-estimate-lyric\"><p><strong>Option 1: Saved hook</strong></p><p class=\"ds-estimate-text\">Full saved lyric text appears here.</p></div><p class=\"ds-estimate-muted\">Confirmation is bound to the selected lyric draft and server-computed estimate.</p><div class=\"ds-estimate-actions\"><button class=\"ds-estimate-cancel\" type=\"button\">Do not render</button><button class=\"ds-estimate-confirm\" type=\"button\">Confirm and render</button></div></div></dialog>",
+      "css": ".ds-estimate{width:min(100% - 2rem,35rem);max-height:calc(100dvh - 2rem);overflow:auto;padding:0;border:1px solid var(--line);border-radius:6px;color:var(--ink);background:var(--paper);box-shadow:0 1.5rem 5rem rgb(0 0 0 / 25%);font:400 1rem/1.55 \"Helvetica Neue\",Arial,sans-serif}.ds-estimate::backdrop{background:rgb(34 43 53 / 65%)}.ds-estimate-content{padding:clamp(1.5rem,4vw,2.5rem)}.ds-estimate h2{margin:0 0 .75rem;font-size:1.65rem;line-height:1.2;letter-spacing:-.025em;overflow-wrap:anywhere;text-wrap:balance}.ds-estimate p{max-width:72ch}.ds-estimate-lyric{margin-block:1.25rem;padding:1rem;border:1px solid #ad8d17;border-radius:4px;background:var(--selected)}.ds-estimate-lyric p{margin:0;font-size:.95rem}.ds-estimate-lyric .ds-estimate-text{margin-top:.65rem;white-space:pre-wrap;overflow-wrap:anywhere}.ds-estimate-muted{color:var(--muted)}.ds-estimate-actions{display:flex;flex-wrap:wrap;gap:.65rem;margin-top:1rem}.ds-estimate button{font:700 1rem/1.4 \"Helvetica Neue\",Arial,sans-serif;min-height:2.75rem;padding:.65rem 1rem;border:1px solid transparent;border-radius:4px;cursor:pointer}.ds-estimate .ds-estimate-cancel{color:var(--ink);background:var(--surface);border-color:#aaa09e}.ds-estimate-confirm{color:var(--surface);background:var(--accent)}.ds-estimate .ds-estimate-cancel:hover:not(:disabled){background:#faeeed;border-color:var(--accent)}.ds-estimate-confirm:hover:not(:disabled){background:var(--accent-strong)}.ds-estimate button:focus-visible{outline:3px solid #634a00;outline-offset:4px}.ds-estimate button:disabled{opacity:.6;cursor:not-allowed}"
+    }
+  ],
+  "narrative": {
+    "northStar": "Campaign Color",
+    "overview": "A red advertiser navigation shell frames white paper work areas and dark ink.\nThe interface is precise, restrained, and familiar to ad sellers. Color supplies\norientation; a workhorse sans-serif carries the working content without spectacle.\n\nControls retain native expectations, compact proportions, thin rules, and small\ncorners. Selected lyrics and their audio source receive the yellow emphasis.\nListening, paid confirmation, and human review remain distinct, legible actions.",
+    "keyCharacteristics": [
+      "Red advertiser shell and paper work areas",
+      "Dark ink and approved workhorse sans-serif typography",
+      "Yellow emphasis for selected lyrics and linked audio",
+      "Flat sections, thin rules, and small control corners",
+      "Native controls and explicit human approval safeguards"
+    ],
+    "rules": [
+      { "name": "The Selection Has Meaning Rule", "body": "Reserve yellow emphasis for selected lyrics,\nlinked audio, and source context, not decoration or general success.", "section": "colors" },
+      { "name": "The Working Type Rule", "body": "Keep the approved sans-serif for display and controls;\nuse size, weight, and spacing rather than an ornamental display face.", "section": "typography" },
+      { "name": "The Flat Work Area Rule", "body": "Keep working sections flat; reserve lifted depth for\nthe confirmation dialog.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do use the red advertiser shell, paper work areas, and dark working text.",
+      "Do preserve native inputs, audio controls, disclosure, and modal behavior.",
+      "Do pair selection color with explicit state text and accessible control state.",
+      "Do show the exact lyric option, hook, and full text before paid confirmation.",
+      "Do preserve permissions, paid consent, held drafts, provenance, and human approval.",
+      "Do respect reduced motion and retain visible keyboard focus."
+    ],
+    "donts": [
+      "Don't use yellow as decoration or as a substitute for approval.",
+      "Don't add raised shadows to ordinary work sections.",
+      "Don't replace the approved workhorse type with an ornamental display face.",
+      "Don't turn generated, screened, or playable status into broadcast approval.",
+      "Don't treat the sidecar's illustrative tonal ramps as additional shipped colors."
+    ]
+  }
+}

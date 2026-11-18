@@ -29,12 +29,15 @@ export function validate_custom_brief(value: unknown): CustomBrief {
   return expected;
 }
 
-/** The current audio renderer uses the supplied facts, not independently generated lyric drafts. */
+/** Default script for renders that do not explicitly select a screened lyric draft. */
 export function custom_script(value: CustomBrief): string {
   return `${value.brief.name}. ${value.brief.offer}. ${value.cta}`;
 }
 
 /** Bind paid approval to custom contents as well as IDs and character estimates. */
-export function input_fingerprint(values: readonly CustomBrief[]): string {
-  return createHash('sha256').update(canonical_json(values)).digest('hex');
+export function input_fingerprint(
+  values: readonly CustomBrief[],
+  lyrics: readonly { brief_id: string; option_id: string; lyrics: string }[] = [],
+): string {
+  return createHash('sha256').update(canonical_json(lyrics.length ? { custom_briefs: values, lyrics } : values)).digest('hex');
 }

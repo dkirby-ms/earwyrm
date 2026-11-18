@@ -8,8 +8,8 @@ ms.topic: how-to
 ## Scope and boundaries
 
 The web POC adds a same-origin browser workflow to the local audio proof. It
-supports Entra External ID sign-in, sample and custom briefs, optional screened
-lyric drafts, offline instrumental rendering, comparison, unblinded evaluation, and protected audio
+supports Entra External ID sign-in, sample and custom briefs, screened
+lyric selection for audio, offline instrumental rendering, comparison, unblinded evaluation, and protected audio
 and evidence downloads. The TypeScript API validates access tokens and delegated
 permissions; Speech credentials, evaluator answers, audio, and evaluation
 records remain server-side.
@@ -364,17 +364,18 @@ Audio playback uses authenticated same-origin API requests followed by local
 Blob URLs. The CSP permits these URLs only for media with
 `media-src 'self' blob:`; script and default sources remain restricted.
 
-## Work with briefs and rendered variants
+## Create and review for an advertiser
 
-The **Brief workspace** keeps the loaded-brief collection, active work area,
-recent runs and render controls together. Wider screens place the collection
-and run history beside the active work area; long detail content scrolls within
-that area rather than expanding every brief and output into one page.
+Select an advertiser in the red navigation rail, or use the advertiser selector
+on small screens. Its brief summary stays above **Create** and **Listen & review**.
+Select **View brief** for the full input facts.
 
-Select **Use sample brief** to inspect a pre-populated sample, or select a
-brief's name in **Loaded briefs**. The **Brief**, **Lyrics** and **Variants**
-controls show one kind of detail at a time. Inspecting a brief does not change
-the render batch: use the collection checkboxes to select one to three briefs.
+In **Create**, generate lyric options, select an accepted draft, and choose
+**Estimate voice + music**. Review the server-computed cost and confirm before
+any Speech request starts. The estimate binds the brief and exact selected
+lyric identity and content. Changing the draft requires a new estimate.
+**Preview music only** renders the active brief without requiring a lyric choice
+or a paid voice request.
 
 Select **Enter or upload brief** to enter advertiser facts and a call to action
 (CTA), then select **Validate and load brief**. Alternatively, upload a JSON
@@ -403,30 +404,36 @@ must fit the 400-character render script. Validation errors preserve the
 existing collection and unfinished manual form.
 
 Custom inputs receive content-derived IDs. Changed facts create a different
-brief rather than rewriting the original. Unrendered validated inputs remain
-in identity-scoped browser session storage, not a server draft store. Signing
+brief rather than rewriting the original. Until used for lyric generation or
+rendering, validated inputs remain in identity-scoped browser session storage.
+Signing
 out clears those drafts; keep your original JSON if you need to reuse it.
-Rendered custom snapshots are saved with owned outputs and recovered on later
-sign-in under the existing private-storage retention policy.
+Custom snapshots used for lyric generation or rendering are saved with owned
+records and recovered on later sign-in under the existing private-storage
+retention policy.
 
-Select **Render instrumental preview** for the selected batch. To request paid
+Open **Batch tools** for the secondary multi-brief workflow. Select one to three
+briefs, then **Render instrumental preview**. Batch tools use original scripts,
+not the selected draft from Create. To request paid
 voice, enable **Include vocals**, select **Estimate vocal render**, then review
 the exact batch and cost before confirming. Speech prerequisites below still
 apply. For custom inputs, confirmation also binds the immutable input contents.
 
-Completed work opens **Variants** when it belongs to the active brief and does
+Completed work opens **Listen & review** when it belongs to the active brief and does
 not replace an unfinished form or evaluation. Otherwise, inspect it through
-**Recent render runs**. Run inspection preserves batch selection and evaluation
-drafts. Use **Results from** to filter a brief's variants, then inspect one
-output to evaluate it. Select **Load protected audio**, then press **Play** in
-its audio controls, or select **Download WAV**.
+**Generation history**. Run inspection preserves batch selection and evaluation
+drafts. Use **Results from** to filter versions, then **Listen to version** to
+fetch protected audio and start playback. Native audio controls remain available
+for pause, seek, replay, and volume. Only one version plays at a time.
+Select **Review this version** to open its human evaluation and linked lyrics,
+or select **Download WAV**. Technical and usage evidence stays expandable.
 
 **Pending** is an evaluation status, not render progress, and does not block
 playback. Instrumental previews remain Pending because they are not vocal
-proof. **Recent render runs** reports whether rendering completed.
+proof. **Generation history** reports whether rendering completed.
 **Input ready** only means brief validation succeeded, not that rendered audio
 has passed evaluation. Paid usage awaiting reconciliation remains visible
-throughout the workspace.
+in a collapsible workspace notice; paid voice remains blocked until reconciled.
 
 ## Optional paid lyric alternatives
 
@@ -439,7 +446,7 @@ be enabled and have the existing paid Speech entitlement; no cloud credentials
 are sent to the browser. Enablement and spending require a separate operator
 decision.
 
-Open **Lyrics** for the active brief, authorize the disclosed paid Foundry and
+Open **Create** for the active advertiser, authorize the disclosed paid Foundry and
 Content Safety requests, then select **Generate 3 lyric options**. This action
 has no upfront cost estimate or Speech-budget reconciliation: the consent is
 for this lyric-generation action only. Each of three candidate slots uses the
@@ -449,11 +456,37 @@ Only screened accepted or human-held results include lyric text. Review status
 and reasons for every option; generated lyrics require human review before
 broadcast.
 
-Options are per-brief, in-memory drafts and are lost on page reload or sign-out.
-They do not automatically replace the audio script or trigger a render.
-Custom audio currently uses the supplied brand, offer and CTA; sample audio
-retains its fixture script. Missing configuration or entitlement disables
-generation rather than substituting fake local lyrics.
+Options are stored server-side with their owner, brief, screened request and
+result. They survive reload and sign-out, but are never shared with another
+owner. **Use option** is enabled only for accepted results. Held, rejected,
+duplicate, and unavailable options cannot be used for audio.
+Selecting a draft does not itself spend money or render audio.
+
+The browser sends only an option ID and brief ID, never trusted lyric text or
+screening status. The API checks ownership, accepted status, current brief
+contents, and deterministic lyric rules before estimating or rendering. It
+uses the saved lyric text for Speech, binds it into the confirmation fingerprint,
+and saves its identity and text with every resulting output. Original scripts
+remain the explicit fallback for batch rendering and legacy requests without
+a lyric selection. Missing configuration or entitlement disables generation
+rather than substituting fake local lyrics.
+
+### Upgrade an existing PostgreSQL store
+
+The redesign adds the `lyric_options` table. Fresh bootstrap and SQLite
+initialization include it. Existing PostgreSQL stores require an explicit,
+additive upgrade before the updated application starts:
+
+```bash
+npm run database -- upgrade --data-dir /absolute/path/to/private-data
+```
+
+Use the existing approved database environment. This command preserves users,
+runs, evaluations, and audio; it does not call `initialize-fresh` or reset data.
+It is safe to repeat and refuses an uninitialized or incomplete store.
+SQLite import accepts both older stores without lyric options and newer stores
+containing owned lyric records. Do not run a production upgrade without the
+normal operator approval and backup procedure.
 
 ## Local audio and evaluation storage
 

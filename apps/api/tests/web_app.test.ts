@@ -12,8 +12,9 @@ import { AuthSettings, TokenValidator, type Environment } from '../src/web_auth.
 import { STATIC_ROOT, WebStorage } from '../src/web_storage.js';
 import { acquire_writer_lock, prepare_databases } from '../src/cloud_web.js';
 import { write_wav } from '../src/dsp.js';
-import { render_brief } from '../src/render.js';
+import { load_inputs, render_brief } from '../src/render.js';
 import type { LyricBackend } from '../src/lyric_cloud.js';
+import { LyricRequest, LyricResult } from '../src/lyrics.js';
 
 const issuer = 'https://tenant.example.test/tenant/v2.0';
 const authority = 'https://tenant.example.test/tenant';
@@ -202,6 +203,85 @@ describe('same-origin Express API', () => {
     const redirect = await request(app).get('/api/config/?query=value');
     expect(redirect.status).toBe(307);
     expect(redirect.headers.location).toBe('/api/config?query=value');
+  });
+
+  it.each(['custom', 'sample'] as const)('renders only the owned accepted %s draft and binds estimates and saved audio to its exact identity', async source => {
+    const root = root_dir();
+    const sample = load_inputs()[0]!;
+    const selectedCta = source === 'custom' ? custom_details.cta : sample[1].split(/(?<=[.!?])\s+/).at(-1)!;
+    const hook = `${source === 'custom' ? 'Bright Bike' : sample[0].name}, a tune up for your ride`;
+    const draft = { hook, lyrics: `${hook}\n${selectedCta}`, syllables_per_line: source === 'custom' ? [8, 8] : [12, 16], rhyme_scheme: '--', brand_count: 2, cta: selectedCta };
+    const backend: LyricBackend = {
+      preflight: async () => ({ english: true, artist_imitation: false, risky_claims: false }),
+      generate: async () => JSON.stringify(draft),
+      assess: async () => ({ english: true, grounded: true, risky_claims: false }),
+      screen: async () => ({ moderation_passed: true, protected_material_detected: false }),
+    };
+    const synthesize = vi.fn(async () => ({ audio: new Float64Array(480), words: [], result_id: 'test-only' }));
+    const speech_factory = vi.fn(() => ({ synthesize }));
+    const renderer = vi.fn(fake_render);
+    const { app, store, access_token } = await fixture({
+      data_dir: root, environ: { ...speech_environment(root, { SPEECH_TOTAL_BUDGET_USD: '2' }), LYRIC_ENABLED: 'true' },
+      lyric_backend: backend, speech_factory, render: renderer,
+    });
+    const loaded = source === 'custom'
+      ? (await request(app).post('/api/briefs/validate').auth(access_token, { type: 'bearer' }).send(custom_details)).body
+      : { ...sample[0], source: 'sample', cta: selectedCta };
+    const { source: _source, cta, ...brief } = loaded;
+    const selection = { brief_ids: [brief.brief_id], ...(source === 'custom' ? { custom_briefs: [{ brief, cta }] } : {}) };
+    const generated = await request(app).post('/api/lyrics/options').auth(access_token, { type: 'bearer' })
+      .send({ ...selection, confirm_paid_generation: true });
+    const option = generated.body.options[0];
+    expect(option.status).toBe('accepted');
+    const selected = { ...selection, lyric_selections: [{ brief_id: brief.brief_id, option_id: option.option_id }] };
+    const estimateResponse = await request(app).post('/api/renders/estimate').auth(access_token, { type: 'bearer' }).send(selected);
+    expect(estimateResponse.status).toBe(200);
+    const estimate = estimateResponse.body;
+    expect(estimate.estimated_cost_usd).toBe(String(draft.lyrics.length / 1000));
+    expect(estimate.lyric_selections).toEqual(selected.lyric_selections);
+
+    const lyricRequest = LyricRequest.parse({ brief, cta, product_path: 'spoken' });
+    const secondHook = hook.replace('ride', 'trip');
+    const alternate = await store.save_lyric_option('user-a', lyricRequest, LyricResult.parse({
+      status: 'accepted', attempts: 1, output: { ...draft, hook: secondHook, lyrics: `${secondHook}\n${cta}` },
+    }));
+    const held = await store.save_lyric_option('user-a', lyricRequest, LyricResult.parse({
+      status: 'human_review_required', attempts: 1, output: draft, reasons: ['risky_claims_require_human_review'],
+    }));
+    for (const [option_id, expectedStatus, owner] of [
+      [alternate.option_id, 409, 'user-a'],
+      [held.option_id, 409, 'user-a'],
+      [option.option_id, 404, 'user-b'],
+    ] as const) {
+      const rejected = await request(app).post('/api/renders').auth(await token(owner), { type: 'bearer' }).send({
+        ...selected, lyric_selections: [{ brief_id: brief.brief_id, option_id }], mode: 'azure', confirmation: estimate,
+      });
+      expect(rejected.status).toBe(expectedStatus);
+    }
+    expect((await request(app).post('/api/renders/estimate').auth(access_token, { type: 'bearer' }).send({
+      brief_ids: ['brief-002'], lyric_selections: [{ brief_id: 'brief-002', option_id: option.option_id }],
+    })).status).toBe(404);
+    expect((await request(app).post('/api/renders').auth(access_token, { type: 'bearer' })
+      .send({ ...selected, mode: 'instrumental' })).status).toBe(422);
+    expect(speech_factory).not.toHaveBeenCalled();
+    expect(renderer).not.toHaveBeenCalled();
+
+    const rendered = await request(app).post('/api/renders').auth(access_token, { type: 'bearer' }).send({
+      ...selected, mode: 'azure', confirmation: estimate,
+      lyrics: 'Browser text must never replace the server-owned draft',
+    });
+    expect(rendered.status).toBe(200);
+    expect(synthesize).toHaveBeenCalledExactlyOnceWith(draft.lyrics);
+    expect(renderer.mock.calls[0]?.[2]).toBe(draft.lyrics);
+    const saved = (await store.list_outputs('user-a'))[0]!;
+    expect(saved.manifest.lyric_source).toMatchObject({ option_id: option.option_id, lyrics: draft.lyrics, broadcast_approval_required: true });
+    expect(saved.manifest.script_source).toBe('Selected server-screened lyric draft');
+    expect(rendered.body.outputs[0].lyric_source).toMatchObject({ option_id: option.option_id, lyrics: draft.lyrics });
+    expect((await request(app).get('/api/lyrics/options').auth(access_token, { type: 'bearer' })).body.options)
+      .toContainEqual(expect.objectContaining({ option_id: option.option_id }));
+    expect((await request(app).get('/api/lyrics/options').auth(await token('user-b'), { type: 'bearer' })).body.options).toEqual([]);
+    const reopened = new WebStorage(root);
+    expect((await reopened.get_lyric_option(option.option_id, 'user-a'))?.result.output?.lyrics).toBe(draft.lyrics);
   });
 
   it('keeps discovery available to unknown identities while denying disabled and unenrolled users', async () => {
