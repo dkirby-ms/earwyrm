@@ -397,7 +397,7 @@ function App() {
     try {
       await client.logoutPopup({
         account,
-        postLogoutRedirectUri: window.location.origin,
+        postLogoutRedirectUri: `${window.location.origin}/auth-callback.html`,
       })
       if (identity) {
         try { window.sessionStorage.removeItem(briefSessionKey(identity)) }

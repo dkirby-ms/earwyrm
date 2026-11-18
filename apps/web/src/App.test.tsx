@@ -39,6 +39,10 @@ const output = {
 function installMocks(denyAccess = false, capabilities: { lyrics?: boolean; vocals?: boolean } = {}) {
   vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => undefined)
   vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined)
+  const logoutPopup = vi.fn(async (_request: {
+    account: typeof account
+    postLogoutRedirectUri: string
+  }) => undefined)
   class FakePublicClientApplication {
     activeAccount: typeof account | null = null
     settings: unknown
@@ -55,7 +59,7 @@ function installMocks(denyAccess = false, capabilities: { lyrics?: boolean; voca
       this.activeAccount = nextAccount
     }
     loginPopup = vi.fn(async () => ({ account }))
-    logoutPopup = vi.fn(async () => undefined)
+    logoutPopup = logoutPopup
     acquireTokenSilent = vi.fn(async () => ({ accessToken: 'test-access-token' }))
     acquireTokenPopup = vi.fn(async () => ({ accessToken: 'test-access-token' }))
   }
@@ -191,7 +195,7 @@ function installMocks(denyAccess = false, capabilities: { lyrics?: boolean; voca
   })
 
   vi.stubGlobal('fetch', fetchMock)
-  return { fetchMock }
+  return { fetchMock, logoutPopup }
 }
 
 function installDialogMock(): void {
@@ -390,7 +394,7 @@ describe('React workspace', () => {
 
   it('restores uploaded custom briefs within the identity session and clears them on sign-out', async () => {
     const user = userEvent.setup()
-    installMocks()
+    const { logoutPopup } = installMocks()
     const first = render(<App />)
     await user.click(await screen.findByRole('button', { name: 'Sign in with Entra External ID' }))
     await user.click(await screen.findByRole('button', { name: 'Enter or upload brief' }))
@@ -401,8 +405,26 @@ describe('React workspace', () => {
     await user.click(await screen.findByRole('button', { name: 'Sign in with Entra External ID' }))
     expect(await screen.findByRole('button', { name: /Bright Bike/ })).toBeVisible()
     await user.click(screen.getByRole('button', { name: 'Sign out' }))
+    expect(logoutPopup).toHaveBeenCalledExactlyOnceWith({
+      account,
+      postLogoutRedirectUri: `${window.location.origin}/auth-callback.html`,
+    })
     expect(await screen.findByRole('button', { name: 'Sign in with Entra External ID' })).toBeVisible()
     expect(window.sessionStorage.length).toBe(0)
+  })
+
+  it('reports sign-out failures without presenting a signed-out workspace', async () => {
+    const user = userEvent.setup()
+    const { logoutPopup } = installMocks()
+    logoutPopup.mockRejectedValueOnce(new Error('The sign-out window could not be opened.'))
+    render(<App />)
+
+    await user.click(await screen.findByRole('button', { name: 'Sign in with Entra External ID' }))
+    await user.click(await screen.findByRole('button', { name: 'Sign out' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('The sign-out window could not be opened.')
+    expect(screen.getByRole('button', { name: 'Sign out' })).toBeEnabled()
+    expect(screen.queryByRole('button', { name: 'Sign in with Entra External ID' })).not.toBeInTheDocument()
   })
 
   it('estimates optional vocals without dispatching until the user confirms the exact batch', async () => {

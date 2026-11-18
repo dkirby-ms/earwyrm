@@ -115,6 +115,9 @@ The usual separation is two app registrations in the external tenant:
   match the browser origin followed by `/auth-callback.html`, for example
   `http://localhost:8000/auth-callback.html` for the local command above.
   This callback is required for MSAL Browser 5 popup and silent flows.
+  Sign-out also returns its popup to this lightweight redirect-bridge page,
+  not the workspace, so the popup closes without starting another
+  authentication flow.
 * The web API registration identifies the protected resource. Its **Expose an
   API** settings provide the Application ID URI and delegated scopes. The
   browser registration needs permission and consent for those scopes.
