@@ -149,7 +149,9 @@ export async function main(): Promise<void> {
       stage = 'database-configuration';
       const database_url = database_url_from_environment(process.env);
       stage = 'database-preparation';
-      await prepare_databases(directory, { database_url, upgrade_postgres: process.env.LYRIC_ENABLED === 'true' });
+      await prepare_databases(directory, {
+        database_url, upgrade_postgres: (process.env.LYRIC_ENABLED ?? 'false').trim().toLowerCase() === 'true',
+      });
       stage = 'worker';
       const entrypoint = fileURLToPath(new URL('./web_app.js', import.meta.url));
       const child = spawn(process.execPath, [entrypoint], {

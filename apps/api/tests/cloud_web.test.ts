@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChildProcess, spawn } from 'node:child_process';
 import { closeSync, fstatSync, lstatSync, openSync, readFileSync, realpathSync } from 'node:fs';
 import { main } from '../src/cloud_web.js';
+import { upgrade_postgres_store } from '../src/bootstrap_database.js';
 import { database_url_from_environment, StoreNotInitialized, validate_postgres_store } from '../src/persistence.js';
 
 vi.mock('node:fs', async importOriginal => ({
@@ -23,10 +24,14 @@ vi.mock('../src/persistence.js', async importOriginal => ({
   database_url_from_environment: vi.fn(),
   validate_postgres_store: vi.fn(),
 }));
+vi.mock('../src/bootstrap_database.js', () => ({
+  upgrade_postgres_store: vi.fn(),
+}));
 
 describe('secret-safe cloud startup diagnostics', () => {
   beforeEach(() => {
     vi.stubEnv('EARWYRM_DATA_DIR', '/mnt/private-do-not-log');
+    vi.stubEnv('LYRIC_ENABLED', undefined);
     vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.mocked(realpathSync).mockReturnValue('/mnt/private-do-not-log');
     vi.mocked(readFileSync).mockReturnValue('1 2 0:1 / /mnt/private-do-not-log rw - cifs share rw');
@@ -83,6 +88,20 @@ describe('secret-safe cloud startup diagnostics', () => {
     expect(console.error).toHaveBeenCalledWith(expect.stringContaining('stage=database-configuration; unrecognized failure; raw error withheld'));
     expect(validate_postgres_store).not.toHaveBeenCalled();
     expect(closeSync).toHaveBeenCalledWith(3);
+  });
+  it.each(['true', 'True', ' TRUE '])('upgrades PostgreSQL before starting the worker when LYRIC_ENABLED=%s', async enabled => {
+    vi.stubEnv('LYRIC_ENABLED', enabled);
+    await expect(main()).resolves.toBeUndefined();
+    expect(upgrade_postgres_store).toHaveBeenCalledExactlyOnceWith('private-database-url');
+    expect(validate_postgres_store).not.toHaveBeenCalled();
+    expect(vi.mocked(upgrade_postgres_store).mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(spawn).mock.invocationCallOrder[0]!);
+  });
+  it.each([undefined, 'false', 'False', ''])('does not upgrade PostgreSQL when LYRIC_ENABLED=%s', async enabled => {
+    vi.stubEnv('LYRIC_ENABLED', enabled);
+    await expect(main()).resolves.toBeUndefined();
+    expect(upgrade_postgres_store).not.toHaveBeenCalled();
+    expect(validate_postgres_store).toHaveBeenCalledExactlyOnceWith('private-database-url');
   });
   it('reports a failed worker exit and removes signal handlers', async () => {
     const terms = process.listenerCount('SIGTERM'), ints = process.listenerCount('SIGINT');

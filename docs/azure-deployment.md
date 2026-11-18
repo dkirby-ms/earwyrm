@@ -326,6 +326,10 @@ external share writers are stopped. The run stops the app, provisions Azure
 resources, verifies private PostgreSQL networking, publishes the web image,
 and resumes the app. At startup, the app verifies the initialized database
 and adds any missing paid-text tables without resetting existing data.
+Startup accepts `LYRIC_ENABLED` case-insensitively, including Azure's `True`
+value, so the additive upgrade runs whenever the API considers lyrics enabled.
+If chat remains unavailable after deployment, also verify the account's
+`paid_speech` entitlement, text configuration, and lyric-budget table.
 
 `preview` is optional and still leaves an existing app stopped. Use
 `provision` only if you need infrastructure without deploying the app, such
