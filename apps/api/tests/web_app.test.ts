@@ -151,6 +151,12 @@ describe('same-origin Express API', () => {
     const audio = async (url: string, bearer = access_token) => request(app).get(url).auth(bearer, { type: 'bearer' });
     const wavs = await Promise.all(arrangements.map((item: typeof arrangements[0]) => audio(item.output.audio_url)));
     expect(wavs.every(wav => wav.status === 200 && Buffer.from(wav.body).subarray(0, 4).toString() === 'RIFF')).toBe(true);
+    for (const [index, wav] of wavs.entries()) {
+      const duration = arrangements[index].output.duration_seconds;
+      expect(duration).toBeGreaterThanOrEqual(14);
+      expect(duration).toBeLessThanOrEqual(20);
+      expect((Buffer.from(wav.body).length - 44) / (2 * SAMPLE_RATE)).toBe(duration);
+    }
     expect(new Set(wavs.map(wav => createHash('sha256').update(wav.body).digest('hex'))).size).toBe(3);
     expect((await audio(output.audio_url, await token('user-b'))).status).toBe(404);
     expect(generate).not.toHaveBeenCalled();
@@ -196,7 +202,11 @@ describe('same-origin Express API', () => {
     expect(selected?.backing).toEqual(Buffer.from(wavs[0].body));
     const preview = await new MelodyService(join(root, 'melody')).get_job(job_id);
     expect(selected?.result.syllable_timing.map(event => ({ ...event, syllable: '' }))).toEqual(preview.syllable_timing);
+    expect(preview.syllable_timing[0].start_seconds).toBe(3);
+    const last = preview.syllable_timing.at(-1)!;
+    expect(last.start_seconds + last.duration_seconds).toBeLessThanOrEqual(output.duration_seconds - 2);
     expect(rendered.body.outputs.map((item: typeof output) => item.variant).sort()).toEqual(['spoken', 'vocoded']);
+    expect(rendered.body.outputs.map((item: typeof output) => item.duration_seconds)).toEqual([output.duration_seconds, output.duration_seconds]);
   }, 20_000);
 
   it('creates three offline arrangements for every fixture brief', async () => {
@@ -206,6 +216,10 @@ describe('same-origin Express API', () => {
         .send({ brief_ids: [brief.brief_id], custom_briefs: [] });
       expect(result.status, `${brief.brief_id}: ${JSON.stringify(result.body)}`).toBe(200);
       expect(result.body.arrangements).toHaveLength(3);
+      for (const item of result.body.arrangements) {
+        expect(item.output.duration_seconds).toBeGreaterThanOrEqual(14);
+        expect(item.output.duration_seconds).toBeLessThanOrEqual(20);
+      }
     }
     expect(speech_factory).not.toHaveBeenCalled();
   }, 20_000);

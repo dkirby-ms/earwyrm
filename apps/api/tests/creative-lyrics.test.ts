@@ -14,6 +14,17 @@ const draft_fixture = (): LyricDraft => LyricDraft.parse({
   lyrics: "Bright Bike, a tune up for your ride\nCall Bright Bike to plan your next ride",
   syllables_per_line: [8, 8], rhyme_scheme: "--", brand_count: 2, cta: "Call Bright Bike to plan your next ride",
 });
+const guided_fixture = () => {
+  const cta = "Call Bright Bike to plan your next day";
+  const syllables_per_line = [8, 9, 9, 8];
+  const lines = ["Bright Bike, a tune up for your ride", "A tune up for the bike at your side", "A tune to take along on your way", cta];
+  const request = LyricRequest.parse({
+    ...request_fixture(), product_path: "vocoded", cta,
+    arrangement: { job_id: "00000000-0000-4000-8000-000000000001", timing_sha256: "a".repeat(64), syllables_per_line },
+  });
+  const candidate = { lyrics: lines.join("\n"), cta, syllables_per_line, rhyme_scheme: "AABB", brand_count: 2 };
+  return { request, candidate, hook: lines[0] };
+};
 const backend_fixture = () => ({
   preflight: vi.fn<LyricBackend["preflight"]>().mockResolvedValue({ english: true, artist_imitation: false, risky_claims: false }),
   generate: vi.fn<LyricBackend["generate"]>().mockResolvedValue(JSON.stringify(draft_fixture())),
@@ -97,6 +108,28 @@ describe("four-attempt fail-closed writer", () => {
     expect(result.status).toBe("accepted"); expect(result.attempts).toBe(2);
     expect(backend.generate.mock.calls.map(call => call[1])).toEqual([[], ["malformed_lyric_output"]]);
   });
+  it.each([undefined, "Bright Bike a tune up for your ride"])("derives the guided hook and retries an unknown pronunciation (provided hook: %s)", async supplied_hook => {
+    const { request, candidate, hook } = guided_fixture();
+    const backend = backend_fixture();
+    backend.generate
+      .mockResolvedValueOnce(JSON.stringify({ ...candidate, lyrics: candidate.lyrics.replace("your side", "your qzx") }))
+      .mockResolvedValueOnce(JSON.stringify({ ...candidate, hook: supplied_hook }));
+    const result = await new LyricWriter(backend).write(request);
+    expect(backend.generate.mock.calls.map(([, feedback, line]) => [feedback, line]))
+      .toEqual([[[], undefined], [["unknown_pronunciation"], 2]]);
+    expect(result).toMatchObject({ status: "accepted", attempts: 2, output: { ...candidate, hook } });
+    expect(backend.assess).toHaveBeenCalledExactlyOnceWith(request, result.output);
+    expect(backend.screen).toHaveBeenCalledExactlyOnceWith(candidate.lyrics);
+  });
+  it("does not bypass guided meter checks when the model omits the hook", async () => {
+    const { request, candidate } = guided_fixture();
+    const backend = backend_fixture();
+    backend.generate.mockResolvedValue(JSON.stringify({ ...candidate, lyrics: candidate.lyrics.replace("on your way", "on the long way") }));
+    const result = await new LyricWriter(backend).write(request);
+    expect(result).toMatchObject({ status: "retry_exhausted", attempts: 4, reasons: ["arrangement_meter"], output: null });
+    expect(backend.assess).not.toHaveBeenCalled();
+    expect(backend.screen).not.toHaveBeenCalled();
+  });
   it.each(["preflight", "assess", "screen", "generate"] as const)("does not retry unavailable %s evidence", async stage => {
     const backend = backend_fixture();
     backend[stage].mockRejectedValue(new CloudFailure("missing_evidence", { retryable: stage === "screen" }));
@@ -161,6 +194,19 @@ describe("Azure wire contracts without paid requests", () => {
     expect(new Set(schema.schema.required)).toEqual(new Set(Object.keys(draft_fixture())));
     const data = JSON.parse(body.messages[1].content);
     expect(data.brief).toEqual(request_fixture().brief); expect(data.failed_rules).toEqual(["meter"]);
+  });
+  it("requests guided lyrics without a hook field and sends only the failed pronunciation line number", async () => {
+    const { request, candidate } = guided_fixture();
+    const client = transport(completion(JSON.stringify(candidate)));
+    const backend = new AzureLyricBackend(settings, credential, client);
+    await backend.generate(request, ["unknown_pronunciation"], 2);
+    const body = JSON.parse(String(client.mock.calls.at(-1)?.[1].body));
+    const schema = body.response_format.json_schema.schema;
+    expect(schema.required).not.toContain("hook");
+    const data = JSON.parse(body.messages[1].content);
+    expect(data).toMatchObject({ failed_rules: ["unknown_pronunciation"], pronunciation_retry_line: 2 });
+    expect(data).not.toHaveProperty("lyrics");
+    expect(body.messages[0].content).toContain("CMU Pronouncing Dictionary");
   });
   it.each([
     [completion("", { message: { refusal: "Cannot comply" } }), "model_refusal", false],

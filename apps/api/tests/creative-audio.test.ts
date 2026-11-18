@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { FRAMES, SAMPLE_RATE, Seed, compose, instrument_palette, jingle_duration, mix, musical_form, musical_plan, normalize, parse_seed, seeded_random, synthesize, tone, vocode, write_midi, write_wav } from "../src/dsp.js";
 import { render_backing } from "../src/backing.js";
-import { CompositionRequest, arrange } from "../src/melody.js";
+import { CompositionRequest, PreviewCompositionRequest, arrange, arrange_preview, preview_duration } from "../src/melody.js";
 import { KNOWN_TUNES, SimilarityError, screen, select_screened, similarity } from "../src/similarity.js";
 import { align, decode_pcm, place_spoken, speech_settings, validate_utterance, type Utterance } from "../src/speech.js";
 import { JingleTools } from "../src/jingle_tools.js";
@@ -191,6 +191,19 @@ describe("creative score contracts", () => {
       expect(density(form.hook_start_seconds, form.cadence_start_seconds)).toBeGreaterThan(density(0, form.hook_start_seconds));
       expect(score.some(note => note.instrument === "snare" && note.start < form.hook_start_seconds)).toBe(false);
     }
+  });
+  it("extends a guided preview for a long CTA without clipping the guide or cadence", () => {
+    const syllables_per_line = [10, 11, 10, 44];
+    const duration_seconds = preview_duration(42, syllables_per_line);
+    const preview = arrange_preview(PreviewCompositionRequest.parse({
+      logical_job_id: "long-cta", product_path: "vocoded", duration_seconds, syllables_per_line,
+    }), 42);
+    const cadence = duration_seconds - 2;
+    expect(duration_seconds).toBeGreaterThan(20);
+    const final_phrase = preview.timing.filter(note => note.line_index === 3);
+    expect(final_phrase).toHaveLength(44);
+    expect(final_phrase.at(-1)!.start_seconds + final_phrase.at(-1)!.duration_seconds).toBeLessThanOrEqual(cadence);
+    expect(preview.backing.some(note => note.instrument === "lead" && note.start === cadence)).toBe(true);
   });
   it("rejects unfit durations and lyric windows without truncating events", () => {
     const data = request_data();

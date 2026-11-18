@@ -58,12 +58,14 @@ export const LyricRequest = z.strictObject({
   }
 });
 export type LyricRequest = z.infer<typeof LyricRequest>;
-/** Six fixed model fields; prosody and brand metadata must be independently recomputed. */
+/** Saved lyric fields; prosody and brand metadata must be independently recomputed. */
 export const LyricDraft = z.strictObject({
   hook: Text, lyrics: z.string().min(1).max(400), syllables_per_line: z.array(z.number().int()).min(2).max(4),
   rhyme_scheme: z.enum(["--", "AABB"]), brand_count: z.number().int().min(0).max(20), cta: Text,
 });
 export type LyricDraft = z.infer<typeof LyricDraft>;
+/** Guided model responses omit the hook; the writer takes it from the first line. */
+export const GuidedLyricCandidate = LyricDraft.omit({ hook: true });
 /** Only technically accepted or human-held results may contain screened text. */
 export const LyricResult = z.strictObject({
   schema_version: z.literal(1).default(1),
@@ -77,9 +79,9 @@ export const LyricResult = z.strictObject({
 });
 export type LyricResult = z.infer<typeof LyricResult>;
 
-/** Content-free retryable rule code, never rejected model text. */
+/** Content-free retryable rule code with an optional one-based lyric line. */
 export class LyricRuleError extends Error {
-  constructor(code: string) { super(code); this.name = "LyricRuleError"; }
+  constructor(code: string, readonly line?: number) { super(code); this.name = "LyricRuleError"; }
 }
 
 /** Normalize English words for dictionary lookup and full-token brand matching. */
@@ -87,10 +89,10 @@ export function words(text: string): string[] {
   return text.toLowerCase().match(WORD) ?? [];
 }
 
-function pronunciation(word: string, overrides: Record<string, string[]>): string[] {
+function pronunciation(word: string, overrides: Record<string, string[]>, line?: number): string[] {
   if (Object.hasOwn(overrides, word)) return overrides[word];
   const phones = Object.hasOwn(dictionary, word) ? dictionary[word] : undefined;
-  if (!phones) throw new LyricRuleError("unknown_pronunciation");
+  if (!phones) throw new LyricRuleError("unknown_pronunciation", line);
   return phones.split(" ");
 }
 
@@ -139,7 +141,7 @@ export function validate_draft(request: LyricRequest, draft: LyricDraft): LyricD
   if (!lines.slice(0, -1).includes(draft.hook)) throw new LyricRuleError("hook_placement");
   const token_lines = lines.map(words);
   if (token_lines.some(tokens => !tokens.length) || !pronounceable(draft.lyrics)) throw new LyricRuleError("use_pronounceable_words");
-  const phones = token_lines.map(tokens => tokens.map(word => pronunciation(word, request.pronunciations)));
+  const phones = token_lines.map((tokens, index) => tokens.map(word => pronunciation(word, request.pronunciations, index + 1)));
   const counts = phones.map(row => row.flat().filter(phone => /[012]$/.test(phone)).length);
   if (request.arrangement) {
     if (counts.some((count, index) => count !== request.arrangement!.syllables_per_line[index])) throw new LyricRuleError("arrangement_meter");

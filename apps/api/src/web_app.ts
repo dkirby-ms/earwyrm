@@ -13,7 +13,7 @@ import { AzureLyricBackend, CloudFailure, LyricCloudSettings, type LyricBackend 
 import { LyricWriter } from './lyric_service.js';
 import { has_cta_rhyme, LyricRequest, LyricResult, LyricRuleError, validate_draft } from './lyrics.js';
 import { bind_timing, digest, GuidedPreview, guided_pronunciations, known_meter, phrase_counts } from './guided_arrangement.js';
-import { PreviewCompositionRequest } from './melody.js';
+import { PreviewCompositionRequest, preview_duration } from './melody.js';
 import { MelodyService, CompositionUnavailable } from './melody_service.js';
 import { SimilarityError } from './similarity.js';
 import { ChatMessage, ChatSelection, composition_request, type JingleAdvisor } from './jingle_chat.js';
@@ -580,9 +580,13 @@ export function create_app(options: CreateAppOptions = {}): Express {
       const arrangements = [];
       for (let index = 0; index < 3; index++) {
         const started = performance.now();
+        const syllables_per_line = [verse_count, Math.min(44, verse_count + index), verse_count, cta_count];
+        const key = digest([issuer, owner, brief_sha256, index]);
+        const duration_seed = Number.parseInt(key.slice(0, 12), 16);
         const committed = await melody.submit(PreviewCompositionRequest.parse({
-          logical_job_id: `guided-v1-${digest([issuer, owner, brief_sha256, index])}`, product_path: 'vocoded',
-          syllables_per_line: [verse_count, Math.min(44, verse_count + index), verse_count, cta_count],
+          logical_job_id: `guided-v2-${key}`, product_path: 'vocoded',
+          duration_seconds: preview_duration(duration_seed, syllables_per_line),
+          syllables_per_line,
         }));
         const { job_id, artifacts } = committed;
         const label = `Arrangement ${index + 1}`;

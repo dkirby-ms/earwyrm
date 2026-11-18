@@ -62,10 +62,15 @@ can also use `npm run database -- --help`.
    own. Check the brief and call to action (CTA), then select **Continue to music**.
 2. Select **Generate 3 arrangements**. Play the instrumental previews and
    choose one before continuing. This step does not use paid lyric or voice services.
-   Generating arrangements again for the same brief reopens the saved set.
+   New arrangements use a recurring hook and usually run 14 to 20 seconds.
+   Longer briefs can extend the music to fit the complete call to action.
+   Generating again reopens the current set; older previews remain in history.
 3. Authorize **Generate 3 lyric drafts**. The writer fits the rhyming drafts to
    the selected arrangement. Choose an eligible draft to continue. If you
    change the music, only drafts fitted to the new selection are shown.
+   The first line is used as the hook. If a candidate contains a word the
+   pronunciation dictionary cannot verify, the writer retries with guidance
+   for that line. Drafts still need to pass the same timing and screening checks.
    If pronunciation or rhyme cannot be verified for your brief, revise the
    brand spelling or CTA as indicated, or keep the instrumental preview.
 4. Select **Estimate voice demo** and confirm the estimate to render the selected
