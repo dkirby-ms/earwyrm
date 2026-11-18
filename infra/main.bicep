@@ -75,6 +75,9 @@ param speechSettingsEncoded string = 'bnVsbA=='
 @description('Base64-encoded nonsecret Foundry and Content Safety settings JSON; encoded null disables text.')
 param lyricSettingsEncoded string = 'bnVsbA=='
 
+@description('Approved Foundry region, or null to use the application region.')
+param aiLocation string?
+
 resource resourceGroup 'Microsoft.Resources/resourceGroups@2025-04-01' = {
   name: 'rg-${environmentName}'
   location: location
@@ -103,6 +106,7 @@ module platform './platform.bicep' = {
     bootstrapImage: bootstrapImage
     speechSettings: base64ToJson(speechSettingsEncoded)
     lyricSettings: base64ToJson(lyricSettingsEncoded)
+    aiLocation: aiLocation ?? location
   }
 }
 
@@ -122,6 +126,8 @@ output AZURE_CONTAINER_ENVIRONMENT_NAME string = platform.outputs.environmentNam
 output AZURE_CONTAINER_APP_NAME string = platform.outputs.appName
 @description('Application managed identity object ID for resource-scoped AI role assignments.')
 output AZURE_WEB_PRINCIPAL_ID string = platform.outputs.webPrincipalId
+@description('Shared Foundry account ID for rate evidence and rollout verification.')
+output AZURE_AI_RESOURCE_ID string? = platform.outputs.?aiResourceId
 @description('PostgreSQL Flexible Server hostname.')
 output AZURE_POSTGRESQL_HOST string = platform.outputs.postgresHostName
 @description('PostgreSQL database name.')

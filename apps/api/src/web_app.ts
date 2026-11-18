@@ -20,7 +20,7 @@ import {
   type SpeechEvidence,
 } from './render.js';
 import { database_url_from_environment, is_storage_error, StoreNotInitialized, validate_postgres_store } from './persistence.js';
-import { AzureSpeech, type SpeechProvider } from './speech.js';
+import { AzureSpeech, speech_settings, type SpeechProvider } from './speech.js';
 import {
   AuthConfigurationError, AuthSettings, TokenValidator, require_scope,
   type AccessTokenValidator, type Claims, type Environment, type JsonFetcher,
@@ -114,7 +114,12 @@ function paid_settings(source: Environment, entitled: boolean): [SpeechEvidence,
   if (enabled === '' || enabled === 'false') throw new PaidRenderingDisabled('Paid Speech rendering is disabled');
   if (enabled !== 'true') throw new PaidConfigurationError('Speech enablement setting is invalid');
   if (!entitled) throw new PaidSubjectDenied('Paid Speech access is not enabled');
-  if (!source.SPEECH_KEY?.trim() || !source.SPEECH_REGION?.trim()) throw new PaidConfigurationError('Speech credentials are missing');
+  let settings;
+  try { settings = speech_settings(source); }
+  catch (error) {
+    if (!(error instanceof TypeError)) throw error;
+    throw new PaidConfigurationError('Speech credentials are missing or invalid');
+  }
   let evidence: SpeechEvidence;
   try {
     evidence = load_evidence(expand_path(source.SPEECH_EVIDENCE_PATH ?? 'renders/speech-evidence.json'));
@@ -127,7 +132,8 @@ function paid_settings(source: Environment, entitled: boolean): [SpeechEvidence,
     throw error;
   }
   const resource = evidence.resource_reference.trim().toLowerCase();
-  if (/^(your |replace |<)/.test(resource) || resource.includes('placeholder') || evidence.region !== source.SPEECH_REGION.trim()) {
+  if (/^(your |replace |<)/.test(resource) || resource.includes('placeholder') || evidence.region !== settings.region ||
+      ('resourceId' in settings && resource !== settings.resourceId.toLowerCase())) {
     throw new PaidConfigurationError('Speech resource evidence is not usable');
   }
   const sanitized = Object.fromEntries(EVIDENCE_FIELDS.map(field => [field, evidence[field] ?? null])) as SpeechEvidence;
@@ -269,7 +275,7 @@ export function create_app(options: CreateAppOptions = {}): Express {
   let storage_pending: Promise<WebAppStorage> | undefined;
   let render_active = false;
   const render = options.render ?? render_brief;
-  const speech_factory = options.speech_factory ?? options.speech_provider_factory ?? (() => new AzureSpeech());
+  const speech_factory = options.speech_factory ?? options.speech_provider_factory ?? (() => new AzureSpeech(speech_settings(source)));
   let lyrics_active = false;
 
   async function jingle_tools(backend?: LyricBackend): Promise<JingleTools> {

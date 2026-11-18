@@ -15,6 +15,9 @@ param speechSettings SpeechSettings?
 @description('Approved text generation settings, or null to leave disabled.')
 param lyricSettings LyricSettings?
 
+@description('Approved region for the shared Foundry account.')
+param aiLocation string
+
 @description('Existing Key Vault name containing the PostgreSQL password.')
 param keyVaultName string
 @description('Resource group containing the existing Key Vault.')
@@ -138,14 +141,51 @@ module databasePasswordReader './keyvault-secret-reader.bicep' = {
   }
 }
 
-module speechKeyReader './keyvault-secret-reader.bicep' = if (speechSettings != null) {
-  scope: resourceGroup(keyVaultResourceGroupName)
-  params: {
-    vaultName: keyVaultName
-    secretName: speechSettings!.keySecretName
-    principalId: pullIdentity.properties.principalId
+var aiName = 'ai-earwyrm-${suffix}'
+var lyricDeploymentName = 'earwyrm-text'
+var shouldProvisionAi = speechSettings != null || lyricSettings != null
+resource ai 'Microsoft.CognitiveServices/accounts@2025-06-01' = if (shouldProvisionAi) {
+  name: aiName
+  kind: 'AIServices'
+  location: aiLocation
+  tags: tags
+  sku: { name: 'S0' }
+  properties: {
+    customSubDomainName: aiName
+    disableLocalAuth: true
   }
 }
+
+resource lyricModel 'Microsoft.CognitiveServices/accounts/deployments@2025-06-01' = if (lyricSettings != null) {
+  parent: ai
+  name: lyricDeploymentName
+  sku: {
+    name: lyricSettings!.modelSku
+    capacity: lyricSettings!.modelCapacity
+  }
+  properties: {
+    model: {
+      format: 'OpenAI'
+      name: lyricSettings!.modelName
+      version: lyricSettings!.modelVersion
+    }
+    versionUpgradeOption: 'NoAutoUpgrade'
+  }
+}
+
+var aiRoles = concat(
+  speechSettings == null ? [] : ['f2dc8367-1007-4938-bd23-fe263f013447'],
+  lyricSettings == null ? [] : ['5e0bd9bd-7b93-4f28-af87-19fc36ad61bd', 'a97b65f3-24c7-4388-baec-2e87135dc908']
+)
+resource aiRuntimeRoles 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for role in aiRoles: {
+  scope: ai
+  name: guid(ai.id, pullIdentity.id, role)
+  properties: {
+    principalId: pullIdentity.properties.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', role)
+  }
+}]
 
 resource pullRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: registry
@@ -301,11 +341,14 @@ module web './service.bicep' = {
     databaseAdminLogin: databaseAdminLogin
     databasePasswordSecretUri: databasePasswordSecretUri
     speechSettings: speechSettings
-    speechKeySecretUri: speechSettings == null ? null : '${credentialVault.properties.vaultUri}secrets/${speechSettings!.keySecretName}'
     lyricSettings: lyricSettings
+    aiName: aiName
+    aiLocation: aiLocation
+    aiResourceId: shouldProvisionAi ? ai!.id : null
+    lyricDeploymentName: lyricDeploymentName
     webClientId: pullIdentity.properties.clientId
   }
-  dependsOn: [pullRole, databasePasswordReader, speechKeyReader, postgresDnsLink]
+  dependsOn: [pullRole, databasePasswordReader, postgresDnsLink, lyricModel, aiRuntimeRoles]
 }
 
 @description('Registry hostname.')
@@ -322,6 +365,8 @@ output environmentName string = containerEnvironment.name
 output appName string = web.outputs.appName
 @description('Application managed identity object ID for AI provider roles.')
 output webPrincipalId string = pullIdentity.properties.principalId
+@description('Shared Foundry account resource ID, if enabled.')
+output aiResourceId string? = shouldProvisionAi ? ai!.id : null
 @description('PostgreSQL Flexible Server hostname.')
 output postgresHostName string = postgres.outputs.hostName
 @description('PostgreSQL database name.')

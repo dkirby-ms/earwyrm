@@ -3,7 +3,9 @@
   "task_slug": "paid-cloud-ai",
   "session_name": "Paid cloud AI",
   "parent_task": null,
-  "child_tasks": [],
+  "child_tasks": [
+    { "task_id": "shared-foundry", "task_slug": "shared-foundry", "state_path": ".copilot-tracking/rpi-sessions/2026-11-18/paid-cloud-ai/shared-foundry-state.json" }
+  ],
   "mode": "automatic",
   "active_phase": "Follow-up",
   "status": "completed",
@@ -25,6 +27,6 @@
     { "decision": "Research disposition", "status": "executed; Ready", "evidence": "Primary research evidence C1–C4/W1; operator-specific rollout evidence is deferred." }
   ],
   "blockers": [],
-  "next_action": { "phase": "Follow-up", "action": "Repository work complete. For live activation, approve the concrete Azure target and rates, upgrade the store for text, and preview the protected workflow." },
+  "next_action": { "phase": "Follow-up", "action": "Use the shared-foundry child for the superseding provisioning and rollout design." },
   "prioritized_follow_ups": []
 }

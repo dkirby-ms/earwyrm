@@ -44,27 +44,36 @@ param databasePasswordSecretUri string
 
 @description('Approved Speech settings, or null to leave disabled.')
 param speechSettings SpeechSettings?
-@description('Versionless Key Vault URI referencing the Speech key.')
-param speechKeySecretUri string?
 @description('Approved text generation settings, or null to leave disabled.')
 param lyricSettings LyricSettings?
-@description('Application managed identity client ID used for paid text requests.')
+@description('Shared Foundry account name.')
+param aiName string
+@description('Shared Foundry account region.')
+param aiLocation string
+@description('Shared Foundry account resource ID, if enabled.')
+param aiResourceId string?
+@description('Provisioned Foundry model deployment name.')
+param lyricDeploymentName string
+@description('Application managed identity client ID used for paid AI requests.')
 param webClientId string
 
 var hostname = '${name}.${environmentDomain}'
+var toolsEndpoint = 'https://${aiName}.cognitiveservices.azure.com'
 
 var speechEnv = speechSettings == null ? [] : [
-  { name: 'SPEECH_KEY', secretRef: 'speech-key' }
-  { name: 'SPEECH_REGION', value: speechSettings!.region }
+  { name: 'SPEECH_ENDPOINT', value: toolsEndpoint }
+  { name: 'SPEECH_MANAGED_IDENTITY_CLIENT_ID', value: webClientId }
+  { name: 'SPEECH_RESOURCE_ID', value: aiResourceId! }
+  { name: 'SPEECH_REGION', value: aiLocation }
   { name: 'SPEECH_EVIDENCE_PATH', value: '/mnt/earwyrm/speech-evidence.json' }
   { name: 'SPEECH_PER_RUN_CAP_USD', value: speechSettings!.perRunCapUsd }
   { name: 'SPEECH_TOTAL_BUDGET_USD', value: speechSettings!.totalBudgetUsd }
 ]
 
 var lyricEnv = lyricSettings == null ? [] : [
-  { name: 'LYRIC_FOUNDRY_ENDPOINT', value: lyricSettings!.foundryEndpoint }
-  { name: 'LYRIC_MODEL_DEPLOYMENT', value: lyricSettings!.modelDeployment }
-  { name: 'LYRIC_CONTENT_SAFETY_ENDPOINT', value: lyricSettings!.safetyEndpoint }
+  { name: 'LYRIC_FOUNDRY_ENDPOINT', value: 'https://${aiName}.openai.azure.com' }
+  { name: 'LYRIC_MODEL_DEPLOYMENT', value: lyricDeploymentName }
+  { name: 'LYRIC_CONTENT_SAFETY_ENDPOINT', value: toolsEndpoint }
   { name: 'LYRIC_MODEL_CALL_MAX_USD', value: lyricSettings!.modelCallMaxUsd }
   { name: 'LYRIC_SAFETY_CALL_MAX_USD', value: lyricSettings!.safetyCallMaxUsd }
   { name: 'LYRIC_PER_ACTION_CAP_USD', value: lyricSettings!.perActionCapUsd }
@@ -89,15 +98,13 @@ resource app 'Microsoft.App/containerApps@2026-07-01' = {
     environmentId: environmentId
     configuration: {
       activeRevisionsMode: 'Single'
-      secrets: concat([
+      secrets: [
         {
           name: 'postgres-admin-password'
           keyVaultUrl: databasePasswordSecretUri
           identity: pullIdentityId
         }
-      ], speechKeySecretUri == null ? [] : [
-        { name: 'speech-key', keyVaultUrl: speechKeySecretUri, identity: pullIdentityId }
-      ])
+      ]
       ingress: {
         external: true
         allowInsecure: false

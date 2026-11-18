@@ -16,6 +16,7 @@
     "entraAudience": { "value": "${ENTRA_AUDIENCE}" },
     "entraApiScopePrefix": { "value": "${ENTRA_API_SCOPE_PREFIX}" },
     "speechSettingsEncoded": { "value": "${EARWYRM_SPEECH_SETTINGS_ENCODED}" },
-    "lyricSettingsEncoded": { "value": "${EARWYRM_LYRIC_SETTINGS_ENCODED}" }
+    "lyricSettingsEncoded": { "value": "${EARWYRM_LYRIC_SETTINGS_ENCODED}" },
+    "aiLocation": { "value": "${EARWYRM_AI_LOCATION}" }
   }
 }

@@ -25,11 +25,11 @@ on:
         type: boolean
         default: false
       enable_paid_speech:
-        description: Use the approved existing Speech resource and spending limits
+        description: Provision Speech on the shared Foundry account and apply approved spending limits
         type: boolean
         default: false
       enable_paid_text:
-        description: Use the approved Foundry deployment, Content Safety, and text spending limits
+        description: Provision the approved model on the shared Foundry account and enable screened text
         type: boolean
         default: false
 
@@ -72,6 +72,7 @@ jobs:
       ENABLE_PAID_TEXT: ${{ inputs.enable_paid_text }}
       SPEECH_SETTINGS: ${{ vars.EARWYRM_SPEECH_SETTINGS }}
       LYRIC_SETTINGS: ${{ vars.EARWYRM_LYRIC_SETTINGS }}
+      EARWYRM_AI_LOCATION: ${{ vars.EARWYRM_AI_LOCATION }}
       EARWYRM_MAINTENANCE_APPROVED: "true"
       EARWYRM_OTHER_WRITERS_STOPPED: "true"
     steps:
@@ -122,6 +123,7 @@ jobs:
           fi
           azd env set EARWYRM_SPEECH_SETTINGS_ENCODED "$(printf '%s' "$speech_settings" | base64 -w0)"
           azd env set EARWYRM_LYRIC_SETTINGS_ENCODED "$(printf '%s' "$lyric_settings" | base64 -w0)"
+          azd env set EARWYRM_AI_LOCATION "${EARWYRM_AI_LOCATION:-$AZURE_LOCATION}"
       - name: Stop and verify existing writers
         run: npm run deployment-gate -- quiesce
       - name: Preview resources

@@ -1,12 +1,7 @@
 @export()
 @sealed()
-@description('Approved Speech settings, excluding the Speech key itself.')
+@description('Approved Speech spending limits.')
 type SpeechSettings = {
-  @minLength(1)
-  @maxLength(127)
-  keySecretName: string
-  @minLength(1)
-  region: string
   @minLength(1)
   perRunCapUsd: string
   @minLength(1)
@@ -15,14 +10,15 @@ type SpeechSettings = {
 
 @export()
 @sealed()
-@description('Approved shared Foundry and Content Safety settings.')
+@description('Approved metered Foundry model deployment and spending limits.')
 type LyricSettings = {
   @minLength(1)
-  foundryEndpoint: string
+  modelName: string
   @minLength(1)
-  modelDeployment: string
-  @minLength(1)
-  safetyEndpoint: string
+  modelVersion: string
+  modelSku: 'Standard' | 'GlobalStandard' | 'DataZoneStandard'
+  @minValue(1)
+  modelCapacity: int
   @minLength(1)
   modelCallMaxUsd: string
   @minLength(1)

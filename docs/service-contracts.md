@@ -53,7 +53,10 @@ Set `LYRIC_FOUNDRY_ENDPOINT`, `LYRIC_MODEL_DEPLOYMENT`, and
 `LYRIC_CONTENT_SAFETY_ENDPOINT` for paid generation. Both endpoints must be
 HTTPS resource roots. Use a model deployment supporting strict structured
 output and a `DefaultAzureCredential` identity with Cognitive Services OpenAI
-User and Cognitive Services User on the respective resources. Startup makes
+User and Cognitive Services User on the respective resources. The Azure web
+workflow provisions a shared Foundry account for these APIs and configures
+the app's managed identity. Chat and lyrics share one model deployment; Speech
+uses the speech synthesis API rather than the chat endpoint. Startup makes
 no paid calls; a configured tool invocation does. Do not retry around
 screening or send held lyrics to audio automatically.
 

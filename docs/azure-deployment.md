@@ -401,42 +401,52 @@ approval and reconciliation.
 ### Opt in to paid AI
 
 Use the protected deployment workflow and obtain separate approval for the
-live changes and any billable smoke test. These options use existing Azure
-resources; they do not create or select a model or Speech SKU. Leave an option
+live changes and any billable smoke test. With either option enabled,
+provisioning creates one Microsoft Foundry `AIServices` account (`S0`).
+With text enabled it also creates one model deployment shared by chat and
+lyrics. Speech and Content Safety use their own API routes on the same
+account. No separate Speech resource or key is required. Leave an option
 unchecked to keep or return that feature to off. Use the same values and
 checkboxes for preview and the approved deployment.
 
-| Dispatch option | Nonsecret `earwyrm-web` environment variable | JSON string fields |
+| Dispatch option | Nonsecret `earwyrm-web` environment variable | JSON fields |
 |---|---|---|
-| `enable_paid_speech` | `EARWYRM_SPEECH_SETTINGS` | `keySecretName`, `region`, `perRunCapUsd`, `totalBudgetUsd` |
-| `enable_paid_text` | `EARWYRM_LYRIC_SETTINGS` | `foundryEndpoint`, `modelDeployment`, `safetyEndpoint`, `modelCallMaxUsd`, `safetyCallMaxUsd`, `perActionCapUsd`, `totalBudgetUsd` |
+| `enable_paid_speech` | `EARWYRM_SPEECH_SETTINGS` | `perRunCapUsd`, `totalBudgetUsd` |
+| `enable_paid_text` | `EARWYRM_LYRIC_SETTINGS` | `modelName`, `modelVersion`, `modelSku`, `modelCapacity`, `modelCallMaxUsd`, `safetyCallMaxUsd`, `perActionCapUsd`, `totalBudgetUsd` |
 
-Set each variable to one JSON object. Use quoted strings for all values,
-including USD amounts. Never include a key or token. Before opting in:
+Set each settings variable to one JSON object. Use quoted strings for all
+values except `modelCapacity`, which is a positive integer in Azure's
+deployment capacity units. Use `Standard`, `GlobalStandard`, or
+`DataZoneStandard` only after confirming the SKU's pricing, data residency,
+and available quota for the chosen model and version. Set
+`EARWYRM_AI_LOCATION` to override the application region before the first
+provision. Never include a key or token.
 
-1. For Speech, put the key in the configured Key Vault and use its secret
-   **name**, not its value. Use a different secret from the database password.
-   The workflow adds a secret-scoped reader role and passes a Key Vault
-   reference to the container. Place the approved [Speech rate evidence](audio-poc/rendering.md#render-with-paid-speech)
+1. Verify the deployment identity can create Cognitive Services accounts,
+   model deployments, and the account-scoped role assignments for the app's
+   managed identity. Confirm that the chosen region supports the enabled
+   features. For text, apply the store upgrade below before deploying the
+   app and review the [text pricing and cap rules](service-contracts.md#browser-chat-and-exact-vocals).
+2. After provisioning and before deploying with Speech enabled, place the
+   approved [Speech rate evidence](audio-poc/rendering.md#render-with-paid-speech)
    at `speech-evidence.json` on the private media share, using the approved
    maintenance procedure. It is mounted at `/mnt/earwyrm/speech-evidence.json`.
-2. For text, use HTTPS resource roots and a shared Foundry deployment
-   supporting strict structured output. An authorized Azure owner must grant
-   `Cognitive Services OpenAI User` on that model's resource and
-   `Cognitive Services User` on the Content Safety resource to the app identity
-   (`AZURE_WEB_PRINCIPAL_ID`, not the workflow identity). Verify reachability
-   and protected-material detection in the chosen region. Apply the store
-   upgrade below and review the [text pricing and cap rules](service-contracts.md#browser-chat-and-exact-vocals).
+   Set `resource_reference` to the provisioned `AZURE_AI_RESOURCE_ID` and
+   `region` to the account's Azure region.
 3. Validate that the selected enabled user already has `paid_speech`.
-   It remains the entitlement for both features. After deployment, verify
-   availability and confirm only the separately approved paid smoke actions.
-   Compare metered usage with the approved rate evidence.
+   It remains the entitlement for both features. In an approved test
+   environment, verify managed identity and word timing for Speech, and
+   strict structured model output plus both Content Safety checks for text.
+   Verify these on the shared account before enabling either feature in
+   production. If a required route fails, leave that feature off rather than
+   bypassing the check. Compare metered usage with the approved rates.
 
 To disable either feature, run the approved deployment with that option
 unchecked. Preserve the PostgreSQL ledger; do not lower or reset spent
 reservations by changing stores. Disabling a feature removes runtime
-configuration, but Azure incremental deployment does not revoke existing role
-assignments. Review and remove unneeded grants separately with the owner.
+configuration, but Azure incremental deployment leaves previously provisioned
+accounts, model deployments, and role assignments in place. Review and remove
+unneeded resources and grants separately with the owner.
 
 ### Upgrade an existing PostgreSQL store
 

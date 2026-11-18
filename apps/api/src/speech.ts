@@ -1,8 +1,29 @@
 import * as sdk from "microsoft-cognitiveservices-speech-sdk";
+import { ManagedIdentityCredential } from "@azure/identity";
 import { DURATION, SAMPLE_RATE, ScoreDuration, musical_form, musical_plan, tone, vocal_pitch, type Audio, type MusicalForm, type Note, type Seed } from "./dsp.js";
 import { SyllableNote } from "./melody.js";
 
 export const VOICE = "en-US-JennyNeural";
+
+type SpeechSettings =
+  | { region: string; key: string }
+  | { region: string; endpoint: URL; clientId: string; resourceId: string };
+
+/** Validates the selected auth mode without calling Azure or falling back from partial identity settings. */
+export function speech_settings(source: Record<string, string | undefined> = process.env): SpeechSettings {
+  const region = source.SPEECH_REGION?.trim();
+  const endpoint = source.SPEECH_ENDPOINT?.trim(), clientId = source.SPEECH_MANAGED_IDENTITY_CLIENT_ID?.trim();
+  const resourceId = source.SPEECH_RESOURCE_ID?.trim();
+  const key = source.SPEECH_KEY?.trim();
+  if (region && (endpoint !== undefined || clientId !== undefined || resourceId !== undefined)) {
+    const account = resourceId?.match(/^\/subscriptions\/[^/]+\/resourceGroups\/[^/]+\/providers\/Microsoft\.CognitiveServices\/accounts\/([a-z0-9-]+)$/i)?.[1];
+    if (!key && account && resourceId && clientId && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(clientId) &&
+        endpoint?.replace(/\/$/, '').toLowerCase() === `https://${account.toLowerCase()}.cognitiveservices.azure.com`) {
+      return { region, endpoint: new URL(`wss://${account.toLowerCase()}.cognitiveservices.azure.com`), clientId, resourceId };
+    }
+  } else if (region && key) return { region, key };
+  throw new TypeError("Speech credentials are missing or invalid");
+}
 
 /** Source word interval in seconds and zero-based plain-text UTF-16 position. */
 export interface Word { text: string; offset: number; duration: number; text_offset: number }
@@ -28,13 +49,18 @@ export function hook_word_index(utterance: Utterance, text: string): number {
 
 /** Explicit stock Azure voice adapter, with no audio device or hidden retries. */
 export class AzureSpeech implements SpeechProvider {
-  constructor() {
-    if (!process.env.SPEECH_KEY || !process.env.SPEECH_REGION) throw new Error("Set SPEECH_KEY and SPEECH_REGION locally; never paste keys into chat");
+  private readonly credential;
+  constructor(private readonly settings = speech_settings()) {
+    this.credential = "clientId" in settings
+      ? new ManagedIdentityCredential({ clientId: settings.clientId, retryOptions: { maxRetries: 0 } })
+      : null;
   }
 
   /** Synthesize once, close the SDK instance on every outcome and reject after 60 seconds. */
   async synthesize(text: string): Promise<Utterance> {
-    const config = sdk.SpeechConfig.fromSubscription(process.env.SPEECH_KEY!, process.env.SPEECH_REGION!);
+    const config = "key" in this.settings
+      ? sdk.SpeechConfig.fromSubscription(this.settings.key, this.settings.region)
+      : sdk.SpeechConfig.fromEndpoint(this.settings.endpoint, this.credential!);
     config.speechSynthesisVoiceName = VOICE;
     config.speechSynthesisOutputFormat = sdk.SpeechSynthesisOutputFormat.Riff24Khz16BitMonoPcm;
     const synthesizer = new sdk.SpeechSynthesizer(config, null);

@@ -112,9 +112,11 @@ authorize the next paid action again.
   action; this is not an estimate of the actual bill. Only accepted drafts can
   be selected with **Use option**; human
   review is still required before distribution.
-* Voice: Set `SPEECH_ENABLED=true`, server-only `SPEECH_KEY` and
+* Voice: The Azure workflow sets `SPEECH_ENABLED=true` and configures the
+  app's managed identity for Speech on the shared Foundry account. For
+  local use, set `SPEECH_ENABLED=true`, server-only `SPEECH_KEY` and
   `SPEECH_REGION`, and positive `SPEECH_PER_RUN_CAP_USD` and
-  `SPEECH_TOTAL_BUDGET_USD` limits. Provide valid
+  `SPEECH_TOTAL_BUDGET_USD` limits. Both paths require valid
   [Speech rate evidence](rendering.md#render-with-paid-speech) using
   `SPEECH_EVIDENCE_PATH` if it is outside the default location. An enabled,
   entitled user selects **Estimate voice + music** for an accepted draft and

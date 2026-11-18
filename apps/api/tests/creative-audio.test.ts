@@ -6,7 +6,7 @@ import { FRAMES, SAMPLE_RATE, Seed, compose, instrument_palette, jingle_duration
 import { render_backing } from "../src/backing.js";
 import { CompositionRequest, arrange } from "../src/melody.js";
 import { KNOWN_TUNES, SimilarityError, screen, select_screened, similarity } from "../src/similarity.js";
-import { align, decode_pcm, place_spoken, validate_utterance, type Utterance } from "../src/speech.js";
+import { align, decode_pcm, place_spoken, speech_settings, validate_utterance, type Utterance } from "../src/speech.js";
 import { JingleTools } from "../src/jingle_tools.js";
 import { load_inputs, render_brief } from "../src/render.js";
 
@@ -26,6 +26,21 @@ function speech(): Utterance {
   for (const word of words) audio.set(tone(60, word.duration, { bright: false }).map(value => value * 0.2), Math.round(word.offset * SAMPLE_RATE));
   return { audio, words, result_id: "TEST-ONLY-NOT-AZURE" };
 }
+
+describe("Speech authentication settings", () => {
+  it("uses a secure WebSocket endpoint for the approved managed-identity account", () => {
+    const env = {
+      SPEECH_REGION: "test-region",
+      SPEECH_ENDPOINT: "https://earwyrm-test.cognitiveservices.azure.com",
+      SPEECH_MANAGED_IDENTITY_CLIENT_ID: "11111111-2222-3333-4444-555555555555",
+      SPEECH_RESOURCE_ID: "/subscriptions/test/resourceGroups/test/providers/Microsoft.CognitiveServices/accounts/earwyrm-test",
+    };
+    expect(speech_settings(env)).toMatchObject({ endpoint: new URL("wss://earwyrm-test.cognitiveservices.azure.com/") });
+    expect(() => speech_settings({ ...env, SPEECH_ENDPOINT: "https://other.cognitiveservices.azure.com" })).toThrow(TypeError);
+    expect(() => speech_settings({ SPEECH_REGION: env.SPEECH_REGION, SPEECH_KEY: "local", SPEECH_ENDPOINT: env.SPEECH_ENDPOINT })).toThrow(TypeError);
+    expect(speech_settings({ SPEECH_REGION: env.SPEECH_REGION, SPEECH_KEY: "local" })).toEqual({ region: "test-region", key: "local" });
+  });
+});
 
 describe("creative score contracts", () => {
   it("renders vocals over exact MCP bytes, MIDI and syllable notes without recomposition", async () => {
