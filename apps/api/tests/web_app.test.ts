@@ -11,10 +11,11 @@ import { create_app, EXPECTED_ANSWERS, type CreateAppOptions } from '../src/web_
 import { AuthSettings, TokenValidator, type Environment } from '../src/web_auth.js';
 import { STATIC_ROOT, WebStorage } from '../src/web_storage.js';
 import { acquire_writer_lock, prepare_databases } from '../src/cloud_web.js';
-import { write_wav } from '../src/dsp.js';
+import { SAMPLE_RATE, write_wav } from '../src/dsp.js';
 import { load_inputs, render_brief } from '../src/render.js';
 import { CloudFailure, type LyricBackend } from '../src/lyric_cloud.js';
-import { LyricRequest, LyricResult } from '../src/lyrics.js';
+import { LyricRequest, LyricResult, WORD } from '../src/lyrics.js';
+import { MelodyService } from '../src/melody_service.js';
 
 const issuer = 'https://tenant.example.test/tenant/v2.0';
 const authority = 'https://tenant.example.test/tenant';
@@ -102,6 +103,144 @@ describe('same-origin Express API', () => {
     tone: 'Friendly and practical', approved_claims: ['Bike tune ups are available'],
     cta: 'Call Bright Bike to plan your next ride',
   };
+
+  it('resumes lyric-free previews and fits screened rhymes to the exact selected custom arrangement', async () => {
+    const root = root_dir();
+    const hook = 'Bright Bike can help you plan a tune up right';
+    const second = 'Plan a tune up for your next ride tonight';
+    const cta = custom_details.cta;
+    const generate = vi.fn<LyricBackend['generate']>(async () => JSON.stringify({
+      hook, lyrics: `${hook}\n${second}\nA tune up for your bike may be your guide\n${cta}`,
+      syllables_per_line: [10, 10, 10, 8], rhyme_scheme: 'AABB', brand_count: 2, cta,
+    })).mockResolvedValueOnce(JSON.stringify({
+      hook, lyrics: `${hook}\n${second}\nA tune up for your bike may be your goal\n${cta}`,
+      syllables_per_line: [10, 10, 10, 8], rhyme_scheme: 'AABB', brand_count: 2, cta,
+    })).mockResolvedValueOnce(JSON.stringify({
+      hook, lyrics: `${hook}\n${second}\nA tune up for your bike may be your own guide\n${cta}`,
+      syllables_per_line: [10, 10, 11, 8], rhyme_scheme: 'AABB', brand_count: 2, cta,
+    }));
+    const lyric_backend: LyricBackend = {
+      preflight: async () => ({ english: true, artist_imitation: false, risky_claims: false }),
+      generate,
+      assess: async () => ({ english: true, grounded: true, risky_claims: false }),
+      screen: async () => ({ moderation_passed: true, protected_material_detected: false }),
+    };
+    const synthesize = vi.fn(async (text: string) => {
+      const words = [...text.matchAll(WORD)].map((match, index) => ({
+        text: match[0], text_offset: match.index, offset: index / 8, duration: 0.125,
+      }));
+      return { result_id: 'TEST', audio: new Float64Array(words.length * SAMPLE_RATE / 8).fill(0.1), words };
+    });
+    const renderer = vi.fn(render_brief);
+    const options = {
+      data_dir: root, environ: { ...speech_environment(root, { SPEECH_TOTAL_BUDGET_USD: '2' }), ...lyric_limits, LYRIC_ENABLED: 'true' },
+      lyric_backend, render: renderer, speech_factory: () => ({ synthesize }),
+    };
+    const { app, store, access_token } = await fixture(options);
+    const post = (path: string, value: object, bearer = access_token, server = app) =>
+      request(server).post(path).auth(bearer, { type: 'bearer' }).send(value);
+    const { source: _source, cta: saved_cta, ...brief } = (await post('/api/briefs/validate', custom_details)).body;
+    const selection = { brief_ids: [brief.brief_id], custom_briefs: [{ brief, cta: saved_cta }] };
+    const previews = await post('/api/arrangements', selection);
+    expect(previews.status, JSON.stringify(previews.body)).toBe(200);
+    const { arrangements } = previews.body;
+    expect(arrangements).toHaveLength(3);
+    expect(new Set(arrangements.map((item: { job_id: string }) => item.job_id)).size).toBe(3);
+    const { job_id, output } = arrangements[0];
+    expect(output).toMatchObject({ variant: 'instrumental', lyric_source: null, composition_source: { job_id } });
+    const audio = async (url: string, bearer = access_token) => request(app).get(url).auth(bearer, { type: 'bearer' });
+    const wavs = await Promise.all(arrangements.map((item: typeof arrangements[0]) => audio(item.output.audio_url)));
+    expect(wavs.every(wav => wav.status === 200 && Buffer.from(wav.body).subarray(0, 4).toString() === 'RIFF')).toBe(true);
+    expect(new Set(wavs.map(wav => createHash('sha256').update(wav.body).digest('hex'))).size).toBe(3);
+    expect((await audio(output.audio_url, await token('user-b'))).status).toBe(404);
+    expect(generate).not.toHaveBeenCalled();
+    expect(synthesize).not.toHaveBeenCalled();
+
+    await store.set_user(issuer, 'user-b', { enabled: true, admin: false, paid_speech: true });
+    const lyric_body = { ...selection, arrangement_job_id: job_id, confirm_paid_generation: true };
+    expect((await post('/api/lyrics/options', lyric_body, await token('user-b'))).status).toBe(404);
+    expect((await post('/api/lyrics/options', { ...lyric_body, brief_ids: ['brief-001'], custom_briefs: [] })).status).toBe(404);
+    expect(generate).not.toHaveBeenCalled();
+    const generated = await post('/api/lyrics/options', lyric_body);
+    expect(generated.status, JSON.stringify(generated.body)).toBe(200);
+    const [option] = generated.body.options;
+    expect(option).toMatchObject({ status: 'accepted', arrangement_job_id: job_id, attempts: 3, output: { rhyme_scheme: 'AABB' } });
+    expect(generate.mock.calls[1][1]).toEqual(['rhyme']);
+    expect(generate.mock.calls[2][1]).toEqual(['arrangement_meter']);
+    const resumed = await fixture(options, false);
+    expect((await post('/api/arrangements', selection, resumed.access_token, resumed.app)).body).toEqual(previews.body);
+    expect((await request(resumed.app).get('/api/lyrics/options').auth(resumed.access_token, { type: 'bearer' })).body.options).toContainEqual(option);
+
+    const body = { ...selection, lyric_selections: [{ brief_id: brief.brief_id, option_id: option.option_id }] };
+    const chosen = { ...body, composition_selections: [{ brief_id: brief.brief_id, job_id }] };
+    const estimate_path = '/api/renders/estimate';
+    expect((await post(estimate_path, body)).status).toBe(409);
+    expect((await post(estimate_path, { ...chosen, composition_selections: [{ brief_id: brief.brief_id, job_id: arrangements[1].job_id }] })).status).toBe(409);
+    const preview_run = (await store.get_run(job_id, 'user-a'))!;
+    const tampered = vi.spyOn(store, 'get_run').mockResolvedValueOnce({
+      ...preview_run, outputs: preview_run.outputs.map(item => ({ ...item, manifest: {
+        ...item.manifest, composition_source: { ...output.composition_source, timing_sha256: '0'.repeat(64) },
+      } })),
+    });
+    expect((await post(estimate_path, chosen)).status).toBe(409);
+    tampered.mockRestore();
+    const estimate = await post(estimate_path, chosen);
+    expect(estimate.status, JSON.stringify(estimate.body)).toBe(200);
+    expect(estimate.body.input_fingerprint).toMatch(/^[a-f0-9]{64}$/);
+    expect((await post('/api/renders', { ...chosen, mode: 'azure', confirmation: { ...estimate.body, input_fingerprint: '0'.repeat(64) } })).status).toBe(409);
+    expect(synthesize).not.toHaveBeenCalled();
+    const rendered = await post('/api/renders', { ...chosen, mode: 'azure', confirmation: estimate.body });
+    expect(rendered.status, JSON.stringify(rendered.body)).toBe(200);
+    expect(synthesize).toHaveBeenCalledExactlyOnceWith(option.output.lyrics);
+    const selected = renderer.mock.calls[0][6]?.composition;
+    expect(selected?.backing).toEqual(Buffer.from(wavs[0].body));
+    const preview = await new MelodyService(join(root, 'melody')).get_job(job_id);
+    expect(selected?.result.syllable_timing.map(event => ({ ...event, syllable: '' }))).toEqual(preview.syllable_timing);
+    expect(rendered.body.outputs.map((item: typeof output) => item.variant).sort()).toEqual(['spoken', 'vocoded']);
+  }, 20_000);
+
+  it('creates three offline arrangements for every fixture brief', async () => {
+    const { app, access_token, speech_factory } = await fixture();
+    for (const [brief] of load_inputs()) {
+      const result = await request(app).post('/api/arrangements').auth(access_token, { type: 'bearer' })
+        .send({ brief_ids: [brief.brief_id], custom_briefs: [] });
+      expect(result.status, `${brief.brief_id}: ${JSON.stringify(result.body)}`).toBe(200);
+      expect(result.body.arrangements).toHaveLength(3);
+    }
+    expect(speech_factory).not.toHaveBeenCalled();
+  }, 20_000);
+
+  it('keeps instrumental previews available when a custom pronunciation or final rhyme cannot be verified', async () => {
+    const generate = vi.fn<LyricBackend['generate']>();
+    const { app, store, access_token } = await fixture({
+      environ: { ...lyric_limits, LYRIC_ENABLED: 'true' },
+      lyric_backend: {
+        generate,
+        preflight: async () => ({ english: true, risky_claims: false, artist_imitation: false }),
+        assess: async () => ({ english: true, grounded: true, risky_claims: false }),
+        screen: async () => ({ moderation_passed: true, protected_material_detected: false }),
+      },
+    });
+    const reserve = vi.spyOn(store, 'reserve_lyric_action');
+    const post = (path: string, value: object) => request(app).post(path).auth(access_token, { type: 'bearer' }).send(value);
+    for (const [changes, reason] of [
+      [{ name: 'Qwzj Bike', cta: 'Call Qwzj Bike to plan your next ride' }, /pronunciation/],
+      [{ cta: 'Call Bright Bike and ask for orange' }, /No distinct English rhyme fits/],
+    ] as const) {
+      const { source: _source, cta, ...brief } = (await post('/api/briefs/validate', { ...custom_details, ...changes })).body;
+      const selection = { brief_ids: [brief.brief_id], custom_briefs: [{ brief, cta }] };
+      const preview = await post('/api/arrangements', selection);
+      expect(preview.status, JSON.stringify(preview.body)).toBe(200);
+      expect(preview.body.arrangements).toHaveLength(3);
+      const response = await post('/api/lyrics/options', {
+        ...selection, arrangement_job_id: preview.body.arrangements[0].job_id, confirm_paid_generation: true,
+      });
+      expect(response.status).toBe(422);
+      expect(response.body.detail).toMatch(reason);
+    }
+    expect(reserve).not.toHaveBeenCalled();
+    expect(generate).not.toHaveBeenCalled();
+  }, 20_000);
 
   it('uses real MCP chat, recovers one owned preview and binds paid vocals to its exact artifacts', async () => {
     const root = root_dir();

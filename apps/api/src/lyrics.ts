@@ -40,12 +40,18 @@ export const LyricRequest = z.strictObject({
   style: z.literal("retro-synth").default("retro-synth"),
   pronunciations: z.record(z.string(), z.array(z.string())).default({}),
   creative_direction: Text.optional(),
+  arrangement: z.strictObject({
+    job_id: z.uuid(),
+    timing_sha256: z.string().regex(/^[a-f0-9]{64}$/),
+    syllables_per_line: z.array(z.number().int().min(1).max(44)).length(4),
+  }).optional(),
 }).superRefine((request, ctx) => {
   const { brief } = request;
   const values = [brief.name, brief.offer, brief.location, brief.tone, brief.contact_details.email, brief.contact_details.phone, request.cta, ...brief.approved_claims];
   if (values.some(value => !value.trim() || !/^[\x20-\x7e]+$/.test(value))) ctx.addIssue({ code: "custom", message: "Brief and CTA must contain single-line printable ASCII text" });
   if (!words(brief.name).length) ctx.addIssue({ code: "custom", message: "Brand must contain English words" });
   if (!pronounceable(brief.name) || !pronounceable(request.cta)) ctx.addIssue({ code: "custom", message: "Brand and CTA must spell out numbers and symbols" });
+  if (request.arrangement && request.product_path !== "vocoded") ctx.addIssue({ code: "custom", message: "Guided lyrics require rhymed delivery" });
   if (Object.keys(request.pronunciations).length > 40) ctx.addIssue({ code: "custom", message: "Supply at most 40 pronunciation overrides" });
   for (const [word, phones] of Object.entries(request.pronunciations)) {
     if (!/^[a-z]+(?:'[a-z]+)?$/.test(word) || phones.length < 1 || phones.length > 40 || phones.some(phone => !PHONEMES.has(phone)) || !phones.some(phone => /[012]$/.test(phone))) ctx.addIssue({ code: "custom", message: "Pronunciations require lowercase words and valid stressed ARPABET" });
@@ -83,9 +89,19 @@ export function words(text: string): string[] {
 
 function pronunciation(word: string, overrides: Record<string, string[]>): string[] {
   if (Object.hasOwn(overrides, word)) return overrides[word];
-  const phones = dictionary[word];
+  const phones = Object.hasOwn(dictionary, word) ? dictionary[word] : undefined;
   if (!phones) throw new LyricRuleError("unknown_pronunciation");
   return phones.split(" ");
+}
+
+/** Count or divide words using the same pronunciations used in draft validation and speech alignment. */
+export function lyric_syllables(text: string, overrides: Record<string, string[]>): string[] {
+  return (text.match(WORD) ?? []).flatMap(word => {
+    const count = pronunciation(word.toLowerCase(), overrides).filter(phone => /[012]$/.test(phone)).length;
+    if (!count || count > word.length) throw new LyricRuleError("syllable_labels");
+    return Array.from({ length: count }, (_, i) =>
+      word.slice(Math.floor(i * word.length / count), Math.floor((i + 1) * word.length / count)));
+  });
 }
 
 function rhyme(phones: string[]): string {
@@ -93,6 +109,24 @@ function rhyme(phones: string[]): string {
     if (/[12]$/.test(phones[i])) return phones.slice(i).map(phone => phone.replace(/[012]/g, "")).join(" ");
   }
   throw new LyricRuleError("unstressed_rhyme");
+}
+
+/** Detect impossible final-line rhymes before reserving a guided generation budget. */
+export function has_cta_rhyme(cta: string, overrides: Record<string, string[]>, max_syllables: number): boolean {
+  const word = words(cta).at(-1);
+  if (!word) return false;
+  const tail = rhyme(pronunciation(word, overrides));
+  const matches = (phones: string[]): boolean =>
+    phones.some(phone => /[12]$/.test(phone)) &&
+    phones.filter(phone => /[012]$/.test(phone)).length <= max_syllables && rhyme(phones) === tail;
+  for (const [candidate, phones] of Object.entries(overrides)) {
+    if (candidate !== word && matches(phones)) return true;
+  }
+  for (const [candidate, phones] of Object.entries(dictionary)) {
+    if (candidate !== word && /^[a-z]+(?:'[a-z]+)?$/.test(candidate) && !Object.hasOwn(overrides, candidate) &&
+        matches(phones.split(" "))) return true;
+  }
+  return false;
 }
 
 /** Recompute meter, phonetic rhyme, brand occurrences and fixed CTA/hook placement.
@@ -107,7 +141,10 @@ export function validate_draft(request: LyricRequest, draft: LyricDraft): LyricD
   if (token_lines.some(tokens => !tokens.length) || !pronounceable(draft.lyrics)) throw new LyricRuleError("use_pronounceable_words");
   const phones = token_lines.map(tokens => tokens.map(word => pronunciation(word, request.pronunciations)));
   const counts = phones.map(row => row.flat().filter(phone => /[012]$/.test(phone)).length);
-  if (counts.some(count => count < policy.min_syllables || count > policy.max_syllables)) throw new LyricRuleError("meter");
+  if (request.arrangement) {
+    if (counts.some((count, index) => count !== request.arrangement!.syllables_per_line[index])) throw new LyricRuleError("arrangement_meter");
+    for (const line of lines) lyric_syllables(line, request.pronunciations);
+  } else if (counts.some(count => count < policy.min_syllables || count > policy.max_syllables)) throw new LyricRuleError("meter");
   if (JSON.stringify(counts) !== JSON.stringify(draft.syllables_per_line)) throw new LyricRuleError("syllable_metadata");
   if (draft.rhyme_scheme !== policy.rhyme_scheme) throw new LyricRuleError("rhyme_metadata");
   if (request.product_path === "vocoded") {

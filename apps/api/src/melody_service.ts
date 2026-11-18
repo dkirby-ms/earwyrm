@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { normalize, Seed, write_midi, write_wav } from "./dsp.js";
 import { render_backing } from "./backing.js";
-import { arrange, Chord, CompositionRequest, ProductPath, SyllableNote } from "./melody.js";
+import { arrange, arrange_preview, Chord, CompositionRequest, PreviewCompositionRequest, ProductPath, SyllableNote } from "./melody.js";
 import { is_storage_error, parse_seed_json, PostgresConnection, serialized, SqliteConnection, transaction, type Connection } from "./persistence.js";
 import { screen, select_screened, SimilarityReport } from "./similarity.js";
 import { prepare_database_file } from "./sqlite_files.js";
@@ -103,8 +103,8 @@ export class MelodyService {
     return history;
   }
   /** Retries return the original seed and identity; changed requests require a new logical ID. */
-  async submit(input: CompositionRequest): Promise<CompositionResult> {
-    const request = CompositionRequest.parse(input);
+  async submit(input: CompositionRequest | PreviewCompositionRequest): Promise<CompositionResult> {
+    const request = "syllables_per_line" in input ? PreviewCompositionRequest.parse(input) : CompositionRequest.parse(input);
     try {
       await this.initialized();
       return await serialized(this.database_path, async () => {
@@ -120,8 +120,11 @@ export class MelodyService {
               return stored_result(String(existing.result_json), existing.status);
             }
             const [seed, arrangement, melodies, report] = select_screened(seed => {
-              const arrangement = arrange(request, seed);
-              return [arrangement, { lead: arrangement.backing.filter(note => note.instrument === "lead").map(note => note.pitch), vocal: arrangement.vocal.map(note => note.pitch) }];
+              const guided = "syllables_per_line" in request;
+              const arrangement = guided ? arrange_preview(request, seed) : arrange(request, seed);
+              const melodies: Melodies = { vocal: arrangement.vocal.map(note => note.pitch) };
+              if (!guided) melodies.lead = arrangement.backing.filter(note => note.instrument === "lead").map(note => note.pitch);
+              return [arrangement, melodies];
             }, { seed: request.seed, history: await this.history(c) });
             const job_id = randomUUID();
             directory = join(this.artifact_dir, job_id);
@@ -130,7 +133,9 @@ export class MelodyService {
             const components = [
               Component.parse({ component: "melody_and_chords", origin: "Seeded phrase composer in src/dsp.ts and src/melody.ts", evidence: "score.json, score.mid, timing.json and recorded seed" }),
               Component.parse({ component: "instruments", origin: instrumentation.soundfont ? `FluidSynth backing with ${instrumentation.soundfont}` : "Harmonic oscillators, synthesized kick and seeded noise in src/dsp.ts", evidence: "backing.wav, score.mid and provenance.json" }),
-              Component.parse({ component: "lyrics", origin: "Caller-supplied lyric/timing contract", evidence: "Retained request; upstream moderation and rights review required" }),
+              ...("lyrics" in request ? [
+                Component.parse({ component: "lyrics", origin: "Caller-supplied lyric/timing contract", evidence: "Retained request; upstream moderation and rights review required" }),
+              ] : []),
             ];
             const notes = [...arrangement.backing, ...arrangement.vocal];
             write_midi(join(directory, "score.mid"), notes, request.duration_seconds, instrumentation.palette);

@@ -47,6 +47,16 @@ export const CompositionRequest = z.strictObject({
 });
 export type CompositionRequest = z.infer<typeof CompositionRequest>;
 
+/** A server-created preview commits four vocal phrases before any words are written. */
+export const PreviewCompositionRequest = z.strictObject({
+  ...CompositionRequest.shape,
+}).omit({ lyrics: true, lines: true }).extend({
+  syllables_per_line: z.array(z.number().int().min(1).max(44)).length(4),
+}).refine(value => value.syllables_per_line.every(count => count * 0.125 <= Math.min(22, value.duration_seconds - 4) / 4), {
+  message: "Preview syllables must fit their phrase",
+});
+export type PreviewCompositionRequest = z.infer<typeof PreviewCompositionRequest>;
+
 /** Zero-based lyric position mapped to an exact MIDI interval in seconds. */
 export const SyllableNote = z.strictObject({
   line_index: z.number().int().nonnegative(), syllable_index: z.number().int().nonnegative(), syllable: z.string(),
@@ -63,7 +73,35 @@ export interface Arrangement { seed: Seed; backing: Note[]; vocal: Note[]; chord
 
 /** Fit every syllable exactly into its validated window, without omission or overflow. */
 export function arrange(request: CompositionRequest, seed: Seed): Arrangement {
-  request = CompositionRequest.parse(request);
+  return arrange_lines(CompositionRequest.parse(request), seed);
+}
+
+/** Render an instrumental guide with the same pitches and onsets the later voice will use. */
+export function arrange_preview(request: PreviewCompositionRequest, seed: Seed): Arrangement {
+  const plan = musical_plan(seed), form = musical_form(request.duration_seconds), random = seeded_random(seed);
+  const width = Math.min(22, request.duration_seconds - 4) / 4;
+  const lines = request.syllables_per_line.map((count, index) => {
+    const start_seconds = 3 + index * width;
+    const duration = Math.min(width, count * 0.5);
+    return { syllables: Array<string>(count).fill(""), start_seconds, end_seconds: start_seconds + duration };
+  });
+  const arrangement = arrange_lines({ duration_seconds: request.duration_seconds, lines }, seed);
+  const degrees = [0, 1, 2, 4, 5, 7];
+  for (const [index, event] of arrangement.timing.entries()) {
+    const chord = chord_degree(plan, Math.floor(event.start_seconds / 2), form);
+    const degree = event.syllable_index === lines[event.line_index].syllables.length - 1
+      ? (event.line_index % 2 ? 0 : 2)
+      : degrees[Math.floor(random() * degrees.length)];
+    event.midi_note = plan.pitch(chord + degree + 5);
+    arrangement.vocal[index].pitch = event.midi_note;
+  }
+  // The committed guide, not the legacy hook, is the one audible lead during the vocal phrases.
+  arrangement.backing = arrangement.backing.filter(note => note.instrument !== "lead" || note.start >= 3 + lines.length * width);
+  arrangement.backing.push(...arrangement.vocal.map(note => ({ ...note, instrument: "lead" as const, gain: 0.045 })));
+  return arrangement;
+}
+
+function arrange_lines(request: { duration_seconds: number; lines: Omit<LyricLine, "text">[] }, seed: Seed): Arrangement {
   const random = seeded_random(seed), backing = compose(seed, request.duration_seconds), vocal: Note[] = [], timing: SyllableNote[] = [];
   let index = 0;
   request.lines.forEach((line, line_index) => {

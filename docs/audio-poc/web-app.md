@@ -59,12 +59,18 @@ can also use `npm run database -- --help`.
 ## Create and review a jingle
 
 1. Select a sample advertiser, or use **Enter or upload brief** to supply your
-   own. **View brief** shows the facts and call to action (CTA).
-2. In **Create**, select **Preview music only**. A lyric selection and paid
-   voice request are not required.
-3. In **Listen & review**, select **Listen to version**, **Review this
-   version**, or **Download WAV**. Use **Generation history** to find earlier
-   runs.
+   own. Check the brief and call to action (CTA), then select **Continue to music**.
+2. Select **Generate 3 arrangements**. Play the instrumental previews and
+   choose one before continuing. This step does not use paid lyric or voice services.
+   Generating arrangements again for the same brief reopens the saved set.
+3. Authorize **Generate 3 lyric drafts**. The writer fits the rhyming drafts to
+   the selected arrangement. Choose an eligible draft to continue. If you
+   change the music, only drafts fitted to the new selection are shown.
+   If pronunciation or rhyme cannot be verified for your brief, revise the
+   brand spelling or CTA as indicated, or keep the instrumental preview.
+4. Select **Estimate voice demo** and confirm the estimate to render the selected
+   lyrics over the same backing. In **Listen & review**, play, download, or review
+   the demo. Use **Generation history** to find earlier runs.
 
 For JSON upload, provide one object with `name`, `offer`, `location`,
 `contact_details` (`email` and `phone`), `tone`, `approved_claims`, and `cta`.
@@ -79,7 +85,8 @@ See [how to evaluate output](rendering.md#evaluate-output).
 
 ### Create together with MCP chat
 
-In **Create**, use **Make it together** to describe a mood, pace, or revision.
+From the Brief step, select **Open advanced lyric tools** to use the optional
+lyrics-first workflow. Use **Make it together** to describe a mood, pace, or revision.
 Authorize paid requests for each **Send message** or **Write a lyric draft**
 action. Review or edit the suggested **Creative direction**, choose a lyric
 style, and write a screened draft. Suggestions cannot change the approved facts
@@ -107,7 +114,7 @@ authorize the next paid action again.
 * Chat and lyrics: Set `LYRIC_ENABLED=true` and configure the server-side Foundry and
   Content Safety settings in [Services and contracts](../service-contracts.md#lyric-writer).
   An enabled user with paid Speech entitlement can authorize chat, one draft,
-  or **Generate 3 lyric options**. These actions incur separate charges. The
+  or a set of three drafts. These actions incur separate charges. The
   server reserves a worst-case amount against its text budget before each
   action; this is not an estimate of the actual bill. Only accepted drafts can
   be selected with **Use option**; human
@@ -119,8 +126,8 @@ authorize the next paid action again.
   `SPEECH_TOTAL_BUDGET_USD` limits. Both paths require valid
   [Speech rate evidence](rendering.md#render-with-paid-speech) using
   `SPEECH_EVIDENCE_PATH` if it is outside the default location. An enabled,
-  entitled user selects **Estimate voice + music** for an accepted draft and
-  confirms the estimate. Changing the draft requires a new estimate. In
+  entitled user selects **Estimate voice demo** for an accepted fitted draft and
+  confirms the estimate. Changing the music or draft requires a new estimate. In
   **Batch tools**, use **Include vocals** and **Estimate vocal render**.
 
 Paid voice stays blocked until prior attempts are reconciled with billing

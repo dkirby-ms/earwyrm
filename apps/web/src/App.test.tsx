@@ -228,6 +228,80 @@ afterEach(() => {
 })
 
 describe('React workspace', () => {
+  it.each(['sample', 'custom'])('guides a %s brief from instrumental playback to the exact paid demo', async source => {
+    const user = userEvent.setup()
+    installDialogMock()
+    const { fetchMock } = installMocks(false, { lyrics: true, vocals: true })
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: () => 'blob:preview' })
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() })
+    const respond = fetchMock.getMockImplementation()!
+    const briefId = source === 'sample' ? 'brief-001' : `custom-${'a'.repeat(32)}`
+    fetchMock.mockImplementation(async (input, init) => {
+      const path = new URL(String(input), window.location.origin).pathname
+      if (path === '/api/arrangements') return Response.json({
+        arrangements: ['Bright', 'Warm', 'Bold'].map((label, index) => ({
+          label, job_id: `job-${index}`, output: { ...output, brief_id: briefId, output_id: `preview-${index}`, audio_url: `/api/outputs/preview-${index}/audio` },
+        })),
+      })
+      if (path === '/api/outputs/preview-1/audio') return new Response(new Blob(['audio'], { type: 'audio/wav' }))
+      if (path === '/api/lyrics/options' && init?.method === 'POST') return Response.json({
+        options: [
+          { option_id: 'fitted', brief_id: briefId, arrangement_job_id: 'job-1', status: 'accepted', output: { hook: 'On your way', lyrics: 'On your way\nRide today' }, reasons: [] },
+          { option_id: 'held', brief_id: briefId, arrangement_job_id: 'job-1', status: 'human_review_required', output: null, reasons: [] },
+        ],
+      })
+      if (path === '/api/renders/estimate') {
+        return Response.json({ ...JSON.parse(String(init?.body)), estimated_cost_usd: '0.1', input_fingerprint: 'a'.repeat(64) })
+      }
+      return respond(input, init)
+    })
+    const posts = (path: string) => fetchMock.mock.calls
+      .filter(([input, init]) => String(input).endsWith(path) && init?.method === 'POST')
+      .map(([, init]) => JSON.parse(String(init?.body)))
+
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: 'Sign in with Entra External ID' }))
+    if (source === 'custom') {
+      await user.click(screen.getByRole('button', { name: 'Enter or upload brief' }))
+      await user.upload(screen.getByLabelText('Upload brief JSON'), new File(['{"name":"Bright Bike"}'], 'brief.json', { type: 'application/json' }))
+      expect(await screen.findByRole('heading', { name: 'Bright Bike' })).toBeVisible()
+    }
+    await user.click(screen.getByRole('button', { name: 'Continue to music' }))
+    expect(screen.queryByRole('button', { name: /Generate 3 lyric drafts/ })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Generate 3 arrangements' }))
+    expect(await screen.findAllByRole('radio')).toHaveLength(3)
+    expect(posts('/api/arrangements')).toMatchObject([{ brief_ids: [briefId], custom_briefs: source === 'sample' ? [] : [{ brief: { name: 'Bright Bike' } }] }])
+    expect(screen.getByRole('button', { name: 'Continue to lyrics' })).toBeDisabled()
+    await user.click(screen.getByRole('button', { name: 'Play Warm' }))
+    expect(HTMLMediaElement.prototype.play).toHaveBeenCalledOnce()
+    await user.click(screen.getByRole('radio', { name: 'Warm' }))
+    await user.click(screen.getByRole('button', { name: 'Continue to lyrics' }))
+    expect(screen.getByRole('button', { name: 'Generate 3 lyric drafts' })).toBeDisabled()
+    await user.click(screen.getByRole('checkbox', { name: /I authorize paid Foundry/ }))
+    await user.click(screen.getByRole('button', { name: 'Generate 3 lyric drafts' }))
+    expect(await screen.findByRole('radio', { name: 'Draft 2' })).toBeDisabled()
+    expect(posts('/api/lyrics/options')).toMatchObject([{ brief_ids: [briefId], arrangement_job_id: 'job-1', confirm_paid_generation: true }])
+    await user.click(screen.getByRole('radio', { name: 'Draft 1: On your way' }))
+    await user.click(screen.getByRole('button', { name: 'Back to music' }))
+    await user.click(screen.getByRole('radio', { name: 'Bold' }))
+    await user.click(screen.getByRole('button', { name: 'Continue to lyrics' }))
+    expect(screen.queryByRole('radio', { name: /Draft 1/ })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Back to music' }))
+    await user.click(screen.getByRole('radio', { name: 'Warm' }))
+    await user.click(screen.getByRole('button', { name: 'Continue to lyrics' }))
+    expect(screen.getByRole('radio', { name: 'Draft 1: On your way' })).not.toBeChecked()
+    await user.click(screen.getByRole('radio', { name: 'Draft 1: On your way' }))
+    await user.click(screen.getByRole('button', { name: 'Continue to voice demo' }))
+    await user.click(screen.getByRole('button', { name: 'Estimate voice demo' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(posts('/api/renders')).toHaveLength(0)
+    await user.click(within(dialog).getByRole('button', { name: 'Confirm and render' }))
+    expect(posts('/api/renders')).toMatchObject([{
+      brief_ids: [briefId], lyric_selections: [{ brief_id: briefId, option_id: 'fitted' }],
+      composition_selections: [{ brief_id: briefId, job_id: 'job-1' }],
+    }])
+  })
+
   it('preserves form state across navigation and clears permissions when the subject changes', async () => {
     const user = userEvent.setup()
     const { fetchMock } = installMocks()
@@ -319,7 +393,7 @@ describe('React workspace', () => {
     expect(screen.getByRole('checkbox', { name: 'Select Mosslight Garden Supply' })).not.toBeChecked()
     await user.click(screen.getByRole('button', { name: 'Render instrumental preview' }))
     expect(screen.getByRole('heading', { name: 'Mosslight Garden Supply' })).toBeVisible()
-    expect(screen.getByRole('heading', { name: 'Find your hook.' })).toBeVisible()
+    expect(screen.getByRole('heading', { name: 'Start with a brief' })).toBeVisible()
     await user.click(screen.getByText('Generation history', { selector: 'summary' }))
     await user.click(screen.getByRole('button', { name: /instrumental · completed/ }))
     expect(screen.getByRole('heading', { name: 'Cedar Loop Bike Repair' })).toBeVisible()
@@ -375,7 +449,7 @@ describe('React workspace', () => {
     const { fetchMock } = installMocks(false, { lyrics: true })
     render(<App />)
     await user.click(await screen.findByRole('button', { name: 'Sign in with Entra External ID' }))
-    await user.click(await screen.findByRole('button', { name: 'Create' }))
+    await user.click(await screen.findByRole('button', { name: 'Open advanced lyric tools' }))
     const generate = screen.getByRole('button', { name: 'Generate 3 lyric options' })
     expect(generate).toBeDisabled()
     await user.click(screen.getByRole('checkbox', { name: /I authorize paid Foundry/ }))
@@ -417,6 +491,8 @@ describe('React workspace', () => {
     })
     render(<App />)
     await user.click(await screen.findByRole('button', { name: 'Sign in with Entra External ID' }))
+    const openAdvanced = () => user.click(screen.getByRole('button', { name: 'Open advanced lyric tools' }))
+    await openAdvanced()
     const consent = () => screen.getByRole('checkbox', { name: /I authorize paid requests for the next chat/ })
     await user.type(screen.getByLabelText('Your message'), 'Make it warm')
     expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled()
@@ -426,9 +502,11 @@ describe('React workspace', () => {
     expect(consent()).not.toBeChecked()
     expect(screen.getByRole('button', { name: 'Write a lyric draft' })).toBeDisabled()
     await user.click(screen.getByRole('button', { name: /Mosslight Garden Supply/ }))
+    await openAdvanced()
     expect(screen.queryByText('Try a warm hook.')).not.toBeInTheDocument()
     expect(screen.getByLabelText('Creative direction')).toHaveValue('')
     await user.click(within(screen.getByRole('complementary', { name: 'Advertisers' })).getByRole('button', { name: /Cedar Loop Bike Repair/ }))
+    await openAdvanced()
     expect(screen.getByText('Try a warm hook.')).toBeVisible()
     await user.click(consent())
     await user.click(screen.getByRole('button', { name: 'Write a lyric draft' }))
@@ -448,6 +526,7 @@ describe('React workspace', () => {
     })
     await user.click(screen.getByRole('button', { name: 'Sign out' }))
     await user.click(await screen.findByRole('button', { name: 'Sign in with Entra External ID' }))
+    await openAdvanced()
     expect(screen.queryByText('Try a warm hook.')).not.toBeInTheDocument()
     expect(screen.getByLabelText('Creative direction')).toHaveValue('')
   })
@@ -461,6 +540,7 @@ describe('React workspace', () => {
       : respond(input, init))
     render(<App />)
     await user.click(await screen.findByRole('button', { name: 'Sign in with Entra External ID' }))
+    await user.click(screen.getByRole('button', { name: 'Open advanced lyric tools' }))
     await user.type(screen.getByLabelText('Your message'), 'A new direction')
     await user.click(screen.getByRole('checkbox', { name: /I authorize paid requests for the next chat/ }))
     await user.click(screen.getByRole('button', { name: 'Send message' }))
@@ -565,6 +645,7 @@ describe('React workspace', () => {
     await user.click(await screen.findByRole('button', { name: 'Sign in with Entra External ID' }))
     await user.click(screen.getByText('Batch tools', { selector: 'summary' }))
     await user.click(screen.getByRole('checkbox', { name: 'Select Mosslight Garden Supply' }))
+    await user.click(screen.getByRole('button', { name: 'Open advanced lyric tools' }))
     expect(screen.getByRole('button', { name: 'Estimate voice + music' })).toBeDisabled()
     await user.click(screen.getByRole('checkbox', { name: /I authorize paid Foundry/ }))
     await user.click(screen.getByRole('button', { name: 'Generate 3 lyric options' }))

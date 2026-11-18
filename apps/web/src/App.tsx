@@ -27,7 +27,20 @@ const apiScopes = {
 } as const
 
 type WorkspaceView = 'workspace-view' | 'admin-view'
-type BriefSection = 'brief' | 'lyrics' | 'variants'
+const creationSteps = [
+  ['brief', 'Brief'],
+  ['arrangements', 'Music'],
+  ['fitted-lyrics', 'Lyrics'],
+  ['finish', 'Voice'],
+] as const
+type CreationStep = typeof creationSteps[number][0]
+type BriefSection = CreationStep | 'lyrics' | 'variants'
+
+interface ArrangementPreview {
+  readonly job_id: string
+  readonly label: string
+  readonly output: Output
+}
 
 interface ChatMessage {
   readonly role: 'user' | 'assistant'
@@ -166,7 +179,7 @@ function App() {
     paid_speech: false,
   })
   const [view, setView] = useState<WorkspaceView>('workspace-view')
-  const [section, setSection] = useState<BriefSection>('lyrics')
+  const [section, setSection] = useState<BriefSection>('brief')
   const [activeBriefId, setActiveBriefId] = useState('')
   const [activeRunId, setActiveRunId] = useState('')
   const [activeOutputId, setActiveOutputId] = useState('')
@@ -178,6 +191,9 @@ function App() {
   const [chatSessions, setChatSessions] = useState<Readonly<Record<string, ChatSession>>>({})
   const [lyricOptions, setLyricOptions] = useState<Readonly<Record<string, readonly LyricOption[]>>>({})
   const [selectedLyricIds, setSelectedLyricIds] = useState<Readonly<Record<string, string>>>({})
+  const [arrangements, setArrangements] = useState<readonly ArrangementPreview[]>([])
+  const [arrangementId, setArrangementId] = useState('')
+  const [fittedLyricId, setFittedLyricId] = useState('')
   const [estimate, setEstimate] = useState<RenderEstimate | null>(null)
   const [evidence, setEvidence] = useState<Readonly<Record<string, string>>>({})
   const [audioRevision, setAudioRevision] = useState(0)
@@ -194,6 +210,7 @@ function App() {
   const estimateDialog = useRef<HTMLDialogElement>(null)
   const adminHeading = useRef<HTMLHeadingElement>(null)
   const comparisonHeading = useRef<HTMLHeadingElement>(null)
+  const stepHeading = useRef<HTMLHeadingElement>(null)
   const evaluationHeading = useRef<HTMLHeadingElement>(null)
   const audioElements = useRef(new Map<string, HTMLAudioElement>())
   const audioUrls = useRef(new Map<string, { url: string; timer: number }>())
@@ -357,6 +374,12 @@ function App() {
   const chatSession = chatSessions[activeBriefId] ?? emptyChat
   const selectedLyric = lyricOptions[activeBriefId]?.find(option =>
     option.option_id === selectedLyricIds[activeBriefId] && option.status === 'accepted' && option.output)
+  const selectedArrangement = arrangements.find(item => item.job_id === arrangementId)
+  const fittedLyrics = selectedArrangement
+    ? (lyricOptions[activeBriefId] ?? []).filter(option => option.arrangement_job_id === selectedArrangement.job_id)
+    : []
+  const fittedLyric = fittedLyrics.find(option => option.option_id === fittedLyricId && option.status === 'accepted' && option.output)
+  const currentStep = creationSteps.findIndex(([id]) => id === section)
   const activeStatus = rollup?.briefs.find(brief => brief.brief_id === activeBriefId)?.status ?? 'Pending'
   const visibleOutputs = outputs.filter(output => output.brief_id === activeBriefId && (!activeRunId || output.run_id === activeRunId))
   const inspectedOutput = visibleOutputs.find(output => output.output_id === activeOutputId) ?? visibleOutputs.at(-1)
@@ -452,7 +475,10 @@ function App() {
       setActiveBriefId('')
       setActiveRunId('')
       setActiveOutputId('')
-      setSection('lyrics')
+      setSection('brief')
+      setArrangements([])
+      setArrangementId('')
+      setFittedLyricId('')
       setEditingBrief(false)
       setIncludeVocals(false)
       setLyricAvailable(false)
@@ -511,7 +537,12 @@ function App() {
     setLyricConsent(false)
     setChatConsent(false)
     setEstimate(null)
-    setSection('lyrics')
+    if (briefId !== activeBriefId) {
+      setArrangements([])
+      setArrangementId('')
+      setFittedLyricId('')
+    }
+    goToStep('brief')
     for (const audio of audioElements.current.values()) audio.pause()
   }
 
@@ -521,30 +552,65 @@ function App() {
     const loaded = [...briefs.filter(brief => brief.brief_id !== added.brief_id), added]
     setBriefs(loaded)
     inspectBrief(added.brief_id)
-    setSection('lyrics')
     try {
       window.sessionStorage.setItem(briefSessionKey(identity), JSON.stringify(loaded.filter(brief => brief.source === 'custom')))
     } catch (error) {
       if (!(error instanceof DOMException)) throw error
       throw new Error('Brief loaded, but this browser could not save the session draft. Render it now or keep your JSON to upload again.')
     }
-    setAnnouncement('Brief loaded. Generate lyrics or listen to an instrumental preview.')
+    setAnnouncement('Brief loaded. Continue to music.')
   }
 
-  async function generateLyrics(): Promise<void> {
+  function goToStep(step: CreationStep): void {
+    for (const audio of audioElements.current.values()) audio.pause()
+    setLyricConsent(false)
+    setSection(step)
+    window.setTimeout(() => stepHeading.current?.focus(), 0)
+  }
+
+  async function generateArrangements(): Promise<void> {
+    if (!client || !config || !activeBrief) return
+    const brief = activeBrief
+    await runAction('Creating instrumental arrangements', async () => {
+      const result = await apiJson<{ arrangements: ArrangementPreview[] }>(client, config, '/api/arrangements', apiScopes.render, {
+        method: 'POST',
+        body: {
+          brief_ids: [brief.brief_id],
+          custom_briefs: brief.source === 'custom' ? [customPayload(brief)] : [],
+        },
+      })
+      setArrangements(result.arrangements)
+      setArrangementId('')
+      setFittedLyricId('')
+      setOutputs(current => [
+        ...current.filter(output => !result.arrangements.some(item => item.output.output_id === output.output_id)),
+        ...result.arrangements.map(item => item.output),
+      ])
+      setRuns(current => [
+        ...result.arrangements.filter(item => !current.some(run => run.run_id === item.job_id)).map(item => ({
+          run_id: item.job_id, mode: 'instrumental', brief_ids: [brief.brief_id], status: 'completed',
+        })),
+        ...current,
+      ])
+      setAnnouncement('Instrumental arrangements are ready to compare.')
+    })
+  }
+
+  async function generateLyrics(arrangementJobId?: string): Promise<void> {
     if (!client || !config || !activeBrief || !lyricConsent) return
     const brief = activeBrief
+    setLyricConsent(false)
     await runAction('Generating three screened lyric options', async () => {
       const result = await apiJson<{ brief_id: string; options: LyricOption[] }>(client, config, '/api/lyrics/options', apiScopes.render, {
         method: 'POST',
         body: {
           brief_ids: [brief.brief_id],
           custom_briefs: brief.source === 'custom' ? [customPayload(brief)] : [],
+          ...(arrangementJobId ? { arrangement_job_id: arrangementJobId } : {}),
           confirm_paid_generation: true,
         },
       })
       setLyricOptions(current => ({ ...current, [brief.brief_id]: [...(current[brief.brief_id] ?? []), ...result.options] }))
-      setLyricConsent(false)
       setAnnouncement('Lyric generation finished. Review each option’s status and any required human review.')
     })
   }
@@ -893,17 +959,17 @@ function App() {
     })
   }
 
-  async function listenToOutput(output: Output): Promise<void> {
+  async function listenToOutput(output: Output, preview = false): Promise<void> {
     if (!client || !config) return
     await runAction('Loading audio version', async () => {
       for (const audio of audioElements.current.values()) audio.pause()
       const blob = await apiBlob(client, config, output.audio_url, apiScopes.output)
       const url = storeAudioUrl(output.output_id, blob)
-      const audio = audioElements.current.get(output.output_id)
+      const audio = audioElements.current.get(preview ? `preview:${output.output_id}` : output.output_id)
       if (!audio) throw new Error('Audio controls are unavailable. Open Listen & review and try again.')
       audio.src = url
       await audio.play()
-      setActiveOutputId(output.output_id)
+      if (!preview) setActiveOutputId(output.output_id)
       setAnnouncement('Playing audio. This is an AI-generated demo, not broadcast-approved.')
     })
   }
@@ -1049,7 +1115,7 @@ function App() {
             <div className="studio-layout" hidden={view !== 'workspace-view'}>
               <aside className="panel collection-panel" aria-labelledby="brief-heading">
                 <h2 id="brief-heading">Advertisers</h2>
-                <p className="collection-intro">Every brief, hook, and version in one place.</p>
+                <p className="collection-intro">Choose a brief to start a jingle.</p>
                 <label className="mobile-advertiser">
                   Active advertiser
                   <select value={activeBriefId} disabled={busy} onChange={event => inspectBrief(event.currentTarget.value)}>
@@ -1057,28 +1123,6 @@ function App() {
                     {briefs.map(brief => <option value={brief.brief_id} key={brief.brief_id}>{brief.name || brief.brief_id}</option>)}
                   </select>
                 </label>
-                <div className="button-row">
-                  <button
-                    className="button button-secondary"
-                    type="button"
-                    disabled={busy || !briefs.some(brief => brief.source !== 'custom')}
-                    onClick={() => {
-                      const sample = briefs.find(brief => brief.source !== 'custom')
-                      if (sample) inspectBrief(sample.brief_id)
-                      setSection('lyrics')
-                    }}
-                  >
-                    Use sample brief
-                  </button>
-                  <button
-                    className="button button-secondary"
-                    type="button"
-                    disabled={busy}
-                    onClick={() => { setEditingBrief(true); setSection('brief'); setEstimate(null) }}
-                  >
-                    Enter or upload brief
-                  </button>
-                </div>
                   <div className="brief-collection" aria-label="Advertiser briefs">
                     {briefs.map(brief => (
                       <div className="collection-item" key={brief.brief_id} data-active={activeBriefId === brief.brief_id && !editingBrief}>
@@ -1103,28 +1147,51 @@ function App() {
               <section className="panel work-panel" aria-labelledby="active-brief-heading">
                 <div className="section-heading">
                   <div>
-                    <h1 id="active-brief-heading">{editingBrief ? 'Add your brief' : activeBrief?.name || 'Start with an advertiser'}</h1>
-                    {!editingBrief && activeBrief && <p className="advertiser-summary">{[activeBrief.offer || activeBrief.description, activeBrief.location].filter(Boolean).join(' · ')}</p>}
+                    <h1 id="active-brief-heading">{currentStep >= 0 ? 'Create a jingle' : activeBrief?.name || 'Jingle workspace'}</h1>
+                    {!editingBrief && activeBrief && section !== 'brief' && <p className="advertiser-summary">{currentStep >= 0 ? activeBrief.name : [activeBrief.offer || activeBrief.description, activeBrief.location].filter(Boolean).join(' · ')}</p>}
                   </div>
-                  {!editingBrief && activeBrief && (
-                    <button className="button button-secondary brief-toggle" type="button" disabled={busy} aria-expanded={section === 'brief'} onClick={() => setSection(section === 'brief' ? 'lyrics' : 'brief')}>View brief</button>
-                  )}
                 </div>
                 <nav className="workspace-nav detail-nav" aria-label="Active brief sections" hidden={editingBrief || !activeBrief}>
-                  {(['lyrics', 'variants'] as const).map(item => (
-                    <button
-                      className="workspace-nav-button"
-                      type="button"
-                      key={item}
-                      disabled={busy}
-                      aria-pressed={item === 'lyrics' ? section !== 'variants' : section === item}
-                      onClick={() => setSection(item)}
-                    >
-                      {item === 'lyrics' ? 'Create' : 'Listen & review'}
-                    </button>
-                  ))}
+                  <button className="workspace-nav-button" type="button" disabled={busy} aria-pressed={currentStep >= 0} onClick={() => goToStep('brief')}>Create</button>
+                  <button className="workspace-nav-button" type="button" disabled={busy} aria-pressed={section === 'variants'} onClick={() => { for (const audio of audioElements.current.values()) audio.pause(); setSection('variants') }}>Listen &amp; review</button>
                 </nav>
                 <div className="work-content">
+                  {currentStep >= 0 && (
+                    <ol className="creation-steps" aria-label="Jingle creation progress">
+                      {creationSteps.map(([id, label], index) => (
+                        <li key={id} aria-current={index === currentStep ? 'step' : undefined} data-complete={index < currentStep}>
+                          <span>{index + 1}</span> {label}
+                        </li>
+                      ))}
+                    </ol>
+                  )}
+                  {section === 'brief' && (
+                    <section className="guided-step" aria-labelledby="brief-step-heading">
+                      <h2 id="brief-step-heading" ref={stepHeading} tabIndex={-1}>{editingBrief ? 'Add your brief' : 'Start with a brief'}</h2>
+                      {!editingBrief && <>
+                        <p className="muted">Choose a sample advertiser or add your own brief. Both follow the same steps.</p>
+                        {activeBrief && <div className="brief-selection">
+                          <h3>{activeBrief.name || activeBrief.brief_id}</h3>
+                          <p>{[activeBrief.offer || activeBrief.description, activeBrief.location].filter(Boolean).join(' · ')}</p>
+                          {activeBrief.cta && <p><strong>Call to action:</strong> {activeBrief.cta}</p>}
+                          <details>
+                            <summary>View brief details</summary>
+                            <dl>
+                              <dt>Tone</dt><dd>{activeBrief.tone || 'Not recorded'}</dd>
+                              <dt>Contact email</dt><dd>{activeBrief.contact_details?.email || 'Not recorded'}</dd>
+                              <dt>Contact phone</dt><dd>{activeBrief.contact_details?.phone || 'Not recorded'}</dd>
+                              <dt>Approved claims</dt><dd>{activeBrief.approved_claims?.join('; ') || 'Not recorded'}</dd>
+                            </dl>
+                          </details>
+                        </div>}
+                        <div className="button-row">
+                          <button className="button button-primary" type="button" disabled={busy || !activeBrief} onClick={() => goToStep('arrangements')}>Continue to music</button>
+                          <button className="button button-secondary" type="button" disabled={busy} onClick={() => { setEditingBrief(true); setEstimate(null); goToStep('brief') }}>Enter or upload brief</button>
+                        </div>
+                      </>}
+                      {editingBrief && <button className="button button-secondary" type="button" disabled={busy} onClick={() => { setEditingBrief(false); goToStep('brief') }}>Cancel</button>}
+                    </section>
+                  )}
                   <div hidden={!editingBrief}>
                     <BriefEditor
                       disabled={busy}
@@ -1132,22 +1199,103 @@ function App() {
                       onUpload={file => runAction('Loading brief JSON', async () => addBriefDetails(await readBriefFile(file)))}
                     />
                   </div>
-                  <section hidden={editingBrief || section !== 'brief' || !activeBrief} aria-label="Brief details">
-                    <h3>Brief details</h3>
-                    <p className="notice">Input ready. This is not a claims assessment or broadcast approval.</p>
-                    <dl>
-                      <dt>Brand</dt><dd>{activeBrief?.name || activeBriefId}</dd>
-                      <dt>Offer</dt><dd>{activeBrief?.offer || activeBrief?.description || 'Not recorded'}</dd>
-                      <dt>Location</dt><dd>{activeBrief?.location || 'Not recorded'}</dd>
-                      <dt>Tone</dt><dd>{activeBrief?.tone || 'Not recorded'}</dd>
-                      <dt>Contact email</dt><dd>{activeBrief?.contact_details?.email || 'Not recorded'}</dd>
-                      <dt>Contact phone</dt><dd>{activeBrief?.contact_details?.phone || 'Not recorded'}</dd>
-                      <dt>Approved claims</dt><dd>{activeBrief?.approved_claims?.join('; ') || 'Not recorded'}</dd>
-                      {activeBrief?.cta && <><dt>Call to action</dt><dd>{activeBrief.cta}</dd></>}
-                    </dl>
-                    <p className="muted">To revise a loaded custom brief, enter a new one. Its original facts remain attached to existing audio.</p>
-                  </section>
-                  <section className="create-section" hidden={editingBrief || section === 'variants' || !activeBrief} aria-labelledby="lyrics-heading">
+                  {section === 'arrangements' && activeBrief && (
+                    <section className="guided-step" aria-labelledby="music-step-heading">
+                      <h2 id="music-step-heading" ref={stepHeading} tabIndex={-1}>Choose the music</h2>
+                      <p className="muted">Listen to three instrumental arrangements, then pick the one you want to write lyrics for.</p>
+                      {!arrangements.length ? (
+                        <button className="button button-primary" type="button" disabled={busy || !options?.instrumental_available} onClick={() => void generateArrangements()}>Generate 3 arrangements</button>
+                      ) : (
+                        <fieldset className="guided-choices">
+                          <legend className="visually-hidden">Instrumental arrangements</legend>
+                          {arrangements.map(item => (
+                            <div className="arrangement-choice" key={item.job_id} data-selected={arrangementId === item.job_id}>
+                              <label className="choice-label">
+                                <input name="arrangement" type="radio" checked={arrangementId === item.job_id} disabled={busy} onChange={() => { setArrangementId(item.job_id); setFittedLyricId('') }} />
+                                <strong>{item.label}</strong>
+                              </label>
+                              <p className="muted">{formatSeconds(item.output.duration_seconds)} · Instrumental</p>
+                              <div className="arrangement-playback">
+                                <button className="button button-secondary" type="button" disabled={busy} onClick={() => void listenToOutput(item.output, true)}>Play {item.label}</button>
+                                <audio controls preload="none" aria-label={`${item.label} playback`}
+                                  ref={node => {
+                                    const key = `preview:${item.output.output_id}`
+                                    if (node) {
+                                      audioElements.current.set(key, node)
+                                      const url = audioUrls.current.get(item.output.output_id)?.url
+                                      if (url && node.getAttribute('src') !== url) node.src = url
+                                      else if (!url && node.hasAttribute('src')) node.removeAttribute('src')
+                                    } else audioElements.current.delete(key)
+                                  }}
+                                  onPlay={event => { for (const audio of audioElements.current.values()) if (audio !== event.currentTarget) audio.pause() }}
+                                  onError={() => setErrorMessage('This preview could not play. Select Play to reload it.')}
+                                />
+                              </div>
+                            </div>
+                          ))}
+                        </fieldset>
+                      )}
+                      <div className="step-actions">
+                        <button className="button button-secondary" type="button" disabled={busy} onClick={() => goToStep('brief')}>Back to brief</button>
+                        {arrangements.length > 0 && <button className="button button-primary" type="button" disabled={busy || !selectedArrangement} onClick={() => goToStep('fitted-lyrics')}>Continue to lyrics</button>}
+                      </div>
+                    </section>
+                  )}
+                  {section === 'fitted-lyrics' && selectedArrangement && (
+                    <section className="guided-step" aria-labelledby="fitted-lyrics-heading">
+                      <h2 id="fitted-lyrics-heading" ref={stepHeading} tabIndex={-1}>Choose the lyrics</h2>
+                      <p className="muted">Compare rhyming drafts written to fit <strong>{selectedArrangement.label}</strong>.</p>
+                      {!lyricAvailable && <p className="notice">Lyric generation is unavailable for this account. You can still listen to instrumental previews.</p>}
+                      <label className="check-label">
+                        <input type="checkbox" checked={lyricConsent} disabled={busy || !lyricAvailable} onChange={event => setLyricConsent(event.currentTarget.checked)} />
+                        I authorize paid Foundry and Content Safety requests for three drafts, including retries. Cost is not estimated here.
+                      </label>
+                      <button className={`button ${fittedLyrics.length ? 'button-secondary' : 'button-primary'}`} type="button" disabled={busy || !lyricAvailable || !lyricConsent} onClick={() => void generateLyrics(selectedArrangement.job_id)}>
+                        {fittedLyrics.length ? 'Generate 3 more lyric drafts' : 'Generate 3 lyric drafts'}
+                      </button>
+                      {fittedLyrics.length > 0 && (
+                        <fieldset className="guided-choices">
+                          <legend className="visually-hidden">Lyric drafts for {selectedArrangement.label}</legend>
+                          {fittedLyrics.map((option, index) => (
+                            <div className="lyric-card" data-selected={fittedLyric?.option_id === option.option_id} key={option.option_id}>
+                              <label className="choice-label">
+                                <input name="fitted-lyric" type="radio" disabled={busy || option.status !== 'accepted' || !option.output} checked={fittedLyric?.option_id === option.option_id} onChange={() => setFittedLyricId(option.option_id)} />
+                                <strong>Draft {index + 1}{option.output ? `: ${option.output.hook}` : ''}</strong>
+                              </label>
+                              <p className="status-badge">{option.status === 'accepted' ? 'Ready to select' : option.status.replaceAll('_', ' ')}</p>
+                              {option.output && <p className="lyric-text">{option.output.lyrics}</p>}
+                              {option.reasons.length > 0 && <p className="muted">{option.reasons.map(reason => reason.replaceAll('_', ' ')).join('; ')}</p>}
+                            </div>
+                          ))}
+                        </fieldset>
+                      )}
+                      <div className="step-actions">
+                        <button className="button button-secondary" type="button" disabled={busy} onClick={() => goToStep('arrangements')}>Back to music</button>
+                        {fittedLyrics.length > 0 && <button className="button button-primary" type="button" disabled={busy || !fittedLyric} onClick={() => goToStep('finish')}>Continue to voice demo</button>}
+                      </div>
+                    </section>
+                  )}
+                  {section === 'finish' && activeBrief && selectedArrangement && fittedLyric?.output && (
+                    <section className="guided-step" aria-labelledby="voice-step-heading">
+                      <h2 id="voice-step-heading" ref={stepHeading} tabIndex={-1}>Create your voice demo</h2>
+                      <p className="muted">Add your selected lyrics to <strong>{selectedArrangement.label}</strong>. This is a demo, not broadcast approval.</p>
+                      <div className="estimate-lyric">
+                        <h3>{fittedLyric.output.hook}</h3>
+                        <p className="lyric-text">{fittedLyric.output.lyrics}</p>
+                      </div>
+                      <p className="muted">{renderOptionsMessage(options, unresolvedCount, paidStatusUncertain)}</p>
+                      <div className="step-actions">
+                        <button className="button button-secondary" type="button" disabled={busy} onClick={() => goToStep('fitted-lyrics')}>Back to lyrics</button>
+                        <button className="button button-primary" type="button" disabled={busy || !paidAvailable} onClick={() => void estimatePaidRender([activeBrief], fittedLyric, selectedArrangement.job_id)}>Estimate voice demo</button>
+                      </div>
+                    </section>
+                  )}
+                  {section === 'brief' && !editingBrief && activeBrief && (
+                    <div className="legacy-entry">
+                      <button className="workspace-nav-button" type="button" disabled={busy} onClick={() => setSection('lyrics')}>Open advanced lyric tools</button>
+                    </div>
+                  )}
+                  <section className="create-section" hidden={editingBrief || section !== 'lyrics' || !activeBrief} aria-labelledby="lyrics-heading">
                     <div className="section-heading">
                       <div><h2 id="lyrics-heading">Find your hook.</h2><p className="muted">Choose the words, then bring them to life.</p></div>
                       <button className="button button-secondary" type="button" disabled={busy || !activeBrief || !options?.instrumental_available} onClick={() => void renderOffline(activeBrief ? [activeBrief] : [])}>Preview music only</button>
@@ -1201,7 +1349,7 @@ function App() {
                     </button>
                     <div className="lyric-options">
                       {!lyricOptions[activeBriefId]?.length && <div className="empty-state"><h3>Your next hook starts here.</h3><p>Generate lyric options above, or preview the music before adding a voice.</p></div>}
-                      {lyricOptions[activeBriefId]?.map((option, index) => (
+                      {lyricOptions[activeBriefId]?.filter(option => !option.arrangement_job_id).map((option, index) => (
                         <article className="lyric-card" key={option.option_id} data-selected={selectedLyric?.option_id === option.option_id}>
                           <div className="section-heading"><h3>Option {index + 1}</h3>{selectedLyric?.option_id === option.option_id && <span className="selection-label">Selected for audio</span>}</div>
                           <p className="status-badge">{option.status.replaceAll('_', ' ')}</p>
@@ -1241,7 +1389,7 @@ function App() {
                     Your jingle versions
                   </h2>
                 </div>
-                <button className="button button-primary" type="button" disabled={busy} onClick={() => setSection('lyrics')}>Create another version</button>
+                <button className="button button-primary" type="button" disabled={busy} onClick={() => goToStep('brief')}>Create another version</button>
               </div>
               <p className="muted review-guidance">AI-generated demos. Human approval required before broadcast.</p>
               <details className="review-options">
@@ -1258,7 +1406,7 @@ function App() {
               <p className="muted">Listen first. Compare versions, then record your review. Evaluation status never blocks playback.</p>
               <p className="muted">Overall evaluation: {activeStatus}. AI-generated demos require human approval before broadcast.</p>
               </details>
-              {!visibleOutputs.length && <div className="empty-state"><h3>No audio in this view yet.</h3><p>Create a version, or choose another run above. Your brief and lyric options stay in Create.</p><button className="button button-secondary" type="button" onClick={() => setSection('lyrics')}>Go to Create</button></div>}
+              {!visibleOutputs.length && <div className="empty-state"><h3>No audio in this view yet.</h3><p>Create a version, or choose another run above.</p><button className="button button-secondary" type="button" onClick={() => goToStep('brief')}>Go to Create</button></div>}
               <div className="version-list" aria-label="Audio versions">
                 {visibleOutputs.map((output, index) => (
                   <article className="version-row" key={output.output_id} data-selected={inspectedOutput?.output_id === output.output_id}>
@@ -1283,8 +1431,8 @@ function App() {
                     <div className="version-description">
                       <h3>Version {index + 1} <span>{inspectedOutput?.output_id === output.output_id ? '/ Selected' : ''}</span></h3>
                       <p>{output.variant.replaceAll('_', ' ')} · {formatSeconds(output.duration_seconds)}</p>
-                      <p className="muted">{output.lyric_source ? `Lyrics: ${output.lyric_source.hook}` : 'Original brief script; no selected lyric draft'}</p>
-                      {output.composition_source && <p className="muted">Exact MCP arrangement · {output.composition_source.job_id}</p>}
+                      <p className="muted">{output.lyric_source ? `Lyrics: ${output.lyric_source.hook}` : output.composition_source?.label ? `${output.composition_source.label} · No vocals` : 'Original brief script; no selected lyric draft'}</p>
+                      {output.composition_source && <p className="muted">Arrangement · {output.composition_source.job_id}</p>}
                       <p className="review-state">Audio ready · {output.evaluation ? 'Human review recorded' : 'Human review not recorded'}</p>
                     </div>
                     <button className="button button-secondary" type="button" disabled={busy} onClick={() => { setActiveOutputId(output.output_id); window.setTimeout(() => evaluationHeading.current?.focus(), 0) }}>Review this version</button>
@@ -1520,7 +1668,7 @@ function App() {
                       disabled={busy}
                       aria-pressed={activeRunId === run.run_id}
                       onClick={() => {
-                        if (!run.brief_ids.includes(activeBriefId)) setActiveBriefId(run.brief_ids[0] ?? '')
+                        if (!run.brief_ids.includes(activeBriefId)) inspectBrief(run.brief_ids[0] ?? '')
                         setActiveRunId(run.run_id)
                         setActiveOutputId('')
                         setEditingBrief(false)
@@ -1735,7 +1883,7 @@ function App() {
               ? <div className="estimate-lyric" key={selection.option_id}><p><strong>Option {index + 1}: {draft.hook}</strong></p><p className="lyric-text">{draft.lyrics}</p></div>
               : <p className="notice" role="alert" key={selection.option_id}>This saved lyric draft could not be loaded. Cancel and reload the workspace to verify it before rendering.</p>
           })}
-          {Boolean(estimate?.composition_selections?.length) && <p className="notice">Vocals will use the selected MCP arrangement&apos;s exact backing and syllable timing, without recomposing the music. Sung demo quality is approximate.</p>}
+          {Boolean(estimate?.composition_selections?.length) && <p className="notice">Vocals will use the selected arrangement&apos;s exact backing and syllable timing, without recomposing the music. Sung demo quality is approximate.</p>}
           <p className="muted">
             Confirmation is bound to these exact briefs{estimate?.lyric_selections?.length ? ', the selected lyric draft,' : ''} and the server-computed estimate. The server will
             re-check the contents before starting.

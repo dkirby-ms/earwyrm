@@ -22,6 +22,8 @@ export interface Brief {
 
 /** Server-owned writer outcomes; only accepted options can be selected for audio. */
 export interface LyricOption {
+  /** Identifies the instrumental arrangement these lyrics were fitted to, if any. */
+  readonly arrangement_job_id?: string
   readonly option_id: string
   readonly brief_id: string
   readonly status: 'accepted' | 'human_review_required' | 'rejected' | 'retry_exhausted' | 'unavailable'
@@ -103,6 +105,7 @@ export interface Output {
   } | null
   readonly composition_source?: {
     readonly job_id: string
+    readonly label?: string
     readonly option_id?: string
     readonly backing_sha256: string
   } | null

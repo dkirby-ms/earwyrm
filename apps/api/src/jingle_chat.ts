@@ -1,7 +1,6 @@
 import { z } from 'zod';
-import { AdvertiserBrief, LyricRequest, validate_draft, WORD, type LyricDraft } from './lyrics.js';
+import { AdvertiserBrief, LyricRequest, lyric_syllables, validate_draft, type LyricDraft } from './lyrics.js';
 import { CompositionRequest } from './melody.js';
-import { dictionary } from 'cmu-pronouncing-dictionary';
 
 /** Untrusted conversational context, never tool instructions or advertiser facts. */
 export const ChatMessage = z.strictObject({
@@ -37,13 +36,7 @@ export function composition_request(
   return CompositionRequest.parse({
     logical_job_id, product_path: request.product_path, lyrics: draft.lyrics,
     lines: lines.map((text, index) => {
-      const syllables = (text.match(WORD) ?? []).flatMap(word => {
-        const phones = request.pronunciations[word.toLowerCase()] ?? dictionary[word.toLowerCase()]?.split(' ');
-        const count = phones?.filter(phone => /[012]$/.test(phone)).length ?? 0;
-        if (!count || count > word.length) throw new RangeError('Lyric pronunciation cannot be timed');
-        return Array.from({ length: count }, (_, i) =>
-          word.slice(Math.floor(i * word.length / count), Math.floor((i + 1) * word.length / count)));
-      });
+      const syllables = lyric_syllables(text, request.pronunciations);
       if (syllables.length !== draft.syllables_per_line[index]) throw new RangeError('Lyric timing does not match verified meter');
       const start_seconds = 3 + index * width;
       return { text, syllables, start_seconds, end_seconds: start_seconds + Math.min(width, syllables.length * 0.5) };
