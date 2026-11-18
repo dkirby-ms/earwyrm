@@ -598,7 +598,7 @@ describe('guarded paid text ledger', () => {
 });
 
 describe('guarded paid Speech ledger with fictional local provider', () => {
-  it('requires managed-identity Speech rate evidence for the configured Foundry account', async () => {
+  it.each(['file', 'deployment'])('requires %s Speech rate evidence to match the Foundry account', async (mode) => {
     const root = root_dir();
     const resourceId = '/subscriptions/test/resourceGroups/test/providers/Microsoft.CognitiveServices/accounts/earwyrm-test';
     const environ = speech_environment(root, {
@@ -607,13 +607,22 @@ describe('guarded paid Speech ledger with fictional local provider', () => {
       SPEECH_MANAGED_IDENTITY_CLIENT_ID: '11111111-2222-3333-4444-555555555555',
       SPEECH_RESOURCE_ID: resourceId,
     });
-    const { app, access_token, speech_factory } = await fixture({ data_dir: root, environ });
+    const evidence = JSON.parse(readFileSync(environ.SPEECH_EVIDENCE_PATH, 'utf8'));
+    const config: Record<string, string> = { ...environ };
+    if (mode === 'deployment') {
+      config.SPEECH_RATE_EVIDENCE = JSON.stringify(evidence);
+      config.SPEECH_EVIDENCE_PATH = join(root, 'absent-evidence.json');
+    }
+    const { app, access_token, speech_factory } = await fixture({ data_dir: root, environ: config });
     const estimate = () => request(app).post('/api/renders/estimate').auth(access_token, { type: 'bearer' }).send({ brief_ids: ['brief-001'] });
     expect((await estimate()).status).toBe(503);
-    const evidence = JSON.parse(readFileSync(environ.SPEECH_EVIDENCE_PATH, 'utf8'));
-    writeFileSync(environ.SPEECH_EVIDENCE_PATH, JSON.stringify({ ...evidence, resource_reference: resourceId }));
-    expect((await estimate()).status).toBe(200);
+    const matching = JSON.stringify({ ...evidence, resource_reference: resourceId });
+    if (mode === 'deployment') config.SPEECH_RATE_EVIDENCE = matching;
+    else writeFileSync(config.SPEECH_EVIDENCE_PATH, matching);
+    const ready = await fixture({ data_dir: root, environ: config }, false);
+    expect((await request(ready.app).post('/api/renders/estimate').auth(ready.access_token, { type: 'bearer' }).send({ brief_ids: ['brief-001'] })).status).toBe(200);
     expect(speech_factory).not.toHaveBeenCalled();
+    expect(ready.speech_factory).not.toHaveBeenCalled();
   });
 
   it.each([

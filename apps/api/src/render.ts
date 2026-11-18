@@ -64,7 +64,12 @@ export function load_inputs(): Array<[AdvertiserBrief, string]> {
 
 /** Reads positive dated S0 pricing evidence; no free-tier price or commercial approval is inferred. */
 export function load_evidence(path: string): SpeechEvidence {
-  const evidence = Evidence.parse(JSON.parse(readFileSync(path, 'utf8')) as unknown);
+  return parse_speech_evidence(readFileSync(path, 'utf8'));
+}
+
+/** Validates the same S0 pricing evidence for deployment configuration and local files. */
+export function parse_speech_evidence(json: string): SpeechEvidence {
+  const evidence = Evidence.parse(JSON.parse(json) as unknown);
   if (evidence.rate_checked_on > new Date().toISOString().slice(0, 10)) {
     throw new Error('Rate evidence cannot be dated in the future');
   }

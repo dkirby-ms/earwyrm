@@ -65,7 +65,17 @@ var speechEnv = speechSettings == null ? [] : [
   { name: 'SPEECH_MANAGED_IDENTITY_CLIENT_ID', value: webClientId }
   { name: 'SPEECH_RESOURCE_ID', value: aiResourceId! }
   { name: 'SPEECH_REGION', value: aiLocation }
-  { name: 'SPEECH_EVIDENCE_PATH', value: '/mnt/earwyrm/speech-evidence.json' }
+  {
+    name: 'SPEECH_RATE_EVIDENCE'
+    value: string({
+      tier: 'S0'
+      region: aiLocation
+      resource_reference: aiResourceId
+      usd_per_million_characters: speechSettings!.usdPerMillionCharacters
+      rate_source: speechSettings!.rateSource
+      rate_checked_on: speechSettings!.rateCheckedOn
+    })
+  }
   { name: 'SPEECH_PER_RUN_CAP_USD', value: speechSettings!.perRunCapUsd }
   { name: 'SPEECH_TOTAL_BUDGET_USD', value: speechSettings!.totalBudgetUsd }
 ]

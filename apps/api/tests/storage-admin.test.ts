@@ -6,6 +6,7 @@ import pg from "pg";
 import { Decimal } from "decimal.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { acquire_writer_lock, import_sqlite, initialize_fresh, main } from "../src/bootstrap_database.js";
+import { prepare_databases } from "../src/cloud_web.js";
 import { MelodyService } from "../src/melody_service.js";
 import { CompositionRequest } from "../src/melody.js";
 import { database_url_from_environment, parse_seed_json, PostgresConnection, postgres_connection_options, StoreNotInitialized, validate_postgres_store, type QueryResult, type Row } from "../src/persistence.js";
@@ -258,7 +259,7 @@ describe("operator transactions and read-only import", () => {
     db.prepare("INSERT INTO runs VALUES ('preserved-run', 'owner', 'instrumental', '[]', 'complete', 'old')").run();
     await expect(validate_postgres_store(local)).rejects.toThrow("explicit database upgrade");
     const env = { EARWYRM_DATA_DIR: root, EARWYRM_DATABASE_URL: local };
-    expect(await main(["upgrade"], env)).toBe(0);
+    await prepare_databases(root, { database_url: local, upgrade_postgres: true });
     expect(await store.has_lyric_budget()).toBe(true);
     await store.reserve_lyric_action("discuss", new Decimal(1), new Decimal(1), new Decimal(1));
     expect(await main(["upgrade"], env)).toBe(0);

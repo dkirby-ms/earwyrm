@@ -176,6 +176,10 @@ Set these non-secret GitHub environment variables:
 | `AZURE_POSTGRESQL_ADMIN_LOGIN` | PostgreSQL administrator login |
 | All six `ENTRA_*` settings above | Verbatim existing External ID values |
 
+Keep the GitHub environment `earwyrm-web` and its `AZURE_ENV_NAME` value
+`earwyrm-central` when deploying the existing PoC. The latter targets
+`rg-earwyrm-central`; changing it would select a different deployment.
+
 ### Bootstrap credential prerequisites
 
 Before the first deployment preview, dispatch
@@ -292,12 +296,11 @@ bootstrap image remains in ACR and requires separately approved retention or
 cleanup. The private network and managed-identity share mount still require
 validation in your Azure environment.
 
-After success, review a new deployment preview, then deploy with
-`postgres_store_initialized` confirmed. Re-running initialization on a populated
+After success, run the web deployment. Re-running initialization on a populated
 store intentionally fails. For existing SQLite data, use the approved import
 procedure from a privately connected administration host instead.
 
-### Preview and provision
+### Deploy the PoC
 
 The workflow logs both Azure CLI and azd in through GitHub OIDC. Its maintenance
 gate verifies the CLI
@@ -316,17 +319,17 @@ an interactive user. The parameter mapping is in
 [main.parameters.json](../infra/main.parameters.json). No password is stored in
 GitHub variables, azd configuration, Bicep outputs or command arguments.
 
-Dispatch `preview` first, approving downtime and confirming that all external
-share writers are stopped. The workflow stops the existing app and verifies
-zero replicas, then runs `azd provision --preview`. Review the proposed changes
-in that run. A preview leaves an existing app stopped; arrange an explicitly
-approved maintenance recovery if you decide not to proceed.
+For the existing PoC, configure [the shared AI settings](#shared-ai-configuration),
+then dispatch **Approved web deployment** with the default `deploy` action.
+Check `maintenance_approved` to authorize the run and confirm that all
+external share writers are stopped. The run stops the app, provisions Azure
+resources, verifies private PostgreSQL networking, publishes the web image,
+and resumes the app. At startup, the app verifies the initialized database
+and adds any missing paid-text tables without resetting existing data.
 
-After approving the preview, dispatch `provision`. This creates or updates the
-resources without deploying the application image, then stops and verifies the
-temporary bootstrap app. The app remains stopped. The workflow verifies the
-private endpoint, DNS linkage and disabled public database access. Verify vault
-permissions and the latest Key Vault secret version. For a fresh, empty store,
+`preview` is optional and still leaves an existing app stopped. Use
+`provision` only if you need infrastructure without deploying the app, such
+as when creating a fresh environment. It also leaves the app stopped. For a fresh, empty store,
 run the bootstrap workflow's
 [`initialize-database` action](#initialize-a-fresh-postgresql-store).
 Alternatively, from an approved VNet-connected administration host, initialize
@@ -337,14 +340,9 @@ address and establish a TLS-validated database connection. Do not enable public
 database access for an import. Keep all source files and backups until cutover
 is separately approved.
 
-Dispatch `deploy` only after the PostgreSQL initialization or import has been
-independently verified. Confirm `postgres_store_initialized` and the current
-preview. This run provisions again, quiesces any bootstrap revision, deploys the
-application image, and resumes the app. Startup refuses an absent or incomplete
-PostgreSQL initialization marker. Review again when code, configuration,
-secret version or target changes. Neither confirmation permits deletion,
-destructive migration or unrelated changes; stop and seek separate approval
-for those.
+After a fresh initialization or import, verify the store before deploying.
+Startup refuses an absent or incomplete PostgreSQL initialization marker.
+Normal deployment does not authorize deletion or destructive migration.
 
 The whole workflow is serialized with cancellation disabled. Do not run
 another workflow or direct ARM/CLI deployment against the same share
@@ -398,21 +396,20 @@ Keep the backups and SQLite source. After PostgreSQL accepts new writes, do
 not point the app at stale SQLite data; reverse migration requires separate
 approval and reconciliation.
 
-### Opt in to paid AI
+### Shared AI configuration
 
-Use the protected deployment workflow and obtain separate approval for the
-live changes and any billable smoke test. With either option enabled,
-provisioning creates one Microsoft Foundry `AIServices` account (`S0`).
-With text enabled it also creates one model deployment shared by chat and
-lyrics. Speech and Content Safety use their own API routes on the same
-account. No separate Speech resource or key is required. Leave an option
-unchecked to keep or return that feature to off. Use the same values and
-checkboxes for preview and the approved deployment.
+The normal workflow provisions one Microsoft Foundry `AIServices` account
+(`S0`) and a model deployment shared by chat and lyrics. Voice and text are
+enabled together; there are no per-feature approvals or dispatch switches.
+Speech and Content Safety use their own endpoints on the shared account.
 
-| Dispatch option | Nonsecret `earwyrm-web` environment variable | JSON fields |
-|---|---|---|
-| `enable_paid_speech` | `EARWYRM_SPEECH_SETTINGS` | `perRunCapUsd`, `totalBudgetUsd` |
-| `enable_paid_text` | `EARWYRM_LYRIC_SETTINGS` | `modelName`, `modelVersion`, `modelSku`, `modelCapacity`, `modelCallMaxUsd`, `safetyCallMaxUsd`, `perActionCapUsd`, `totalBudgetUsd` |
+Set these nonsecret variables once in the `earwyrm-web` GitHub environment,
+and update them when pricing, model configuration, or budget limits change:
+
+| Variable | JSON fields |
+|---|---|
+| `EARWYRM_SPEECH_SETTINGS` | `perRunCapUsd`, `totalBudgetUsd`, `usdPerMillionCharacters`, `rateSource`, `rateCheckedOn` |
+| `EARWYRM_LYRIC_SETTINGS` | `modelName`, `modelVersion`, `modelSku`, `modelCapacity`, `modelCallMaxUsd`, `safetyCallMaxUsd`, `perActionCapUsd`, `totalBudgetUsd` |
 
 Set each settings variable to one JSON object. Use quoted strings for all
 values except `modelCapacity`, which is a positive integer in Azure's
@@ -420,40 +417,24 @@ deployment capacity units. Use `Standard`, `GlobalStandard`, or
 `DataZoneStandard` only after confirming the SKU's pricing, data residency,
 and available quota for the chosen model and version. Set
 `EARWYRM_AI_LOCATION` to override the application region before the first
-provision. Never include a key or token.
+provision. Never include a key or token. Use the regional S0 neural Speech rate
+per million characters, a pricing URL or quote reference for `rateSource`, and
+the date you checked it (`YYYY-MM-DD`) for `rateCheckedOn`. The deployment
+attaches the new account ID and region automatically; no media-share file or
+Speech key is needed.
 
-1. Verify the deployment identity can create Cognitive Services accounts,
-   model deployments, and the account-scoped role assignments for the app's
-   managed identity. Confirm that the chosen region supports the enabled
-   features. For text, apply the store upgrade below before deploying the
-   app and review the [text pricing and cap rules](service-contracts.md#browser-chat-and-exact-vocals).
-2. After provisioning and before deploying with Speech enabled, place the
-   approved [Speech rate evidence](audio-poc/rendering.md#render-with-paid-speech)
-   at `speech-evidence.json` on the private media share, using the approved
-   maintenance procedure. It is mounted at `/mnt/earwyrm/speech-evidence.json`.
-   Set `resource_reference` to the provisioned `AZURE_AI_RESOURCE_ID` and
-   `region` to the account's Azure region.
-3. Validate that the selected enabled user already has `paid_speech`.
-   It remains the entitlement for both features. In an approved test
-   environment, verify managed identity and word timing for Speech, and
-   strict structured model output plus both Content Safety checks for text.
-   Verify these on the shared account before enabling either feature in
-   production. If a required route fails, leave that feature off rather than
-   bypassing the check. Compare metered usage with the approved rates.
-
-To disable either feature, run the approved deployment with that option
-unchecked. Preserve the PostgreSQL ledger; do not lower or reset spent
-reservations by changing stores. Disabling a feature removes runtime
-configuration, but Azure incremental deployment leaves previously provisioned
-accounts, model deployments, and role assignments in place. Review and remove
-unneeded resources and grants separately with the owner.
+The deployment identity needs permission to create Cognitive Services
+accounts, model deployments, and scoped role assignments. The existing
+`paid_speech` entitlement and [text and Speech caps](service-contracts.md#browser-chat-and-exact-vocals)
+still govern requests. Deployment does not make billable model or Speech calls
+to test the endpoints. After deployment, verify managed identity, Speech word
+timings, structured model output, and both Content Safety checks on the PoC.
 
 ### Upgrade an existing PostgreSQL store
 
-Use the approved stopped-writer and backup procedures. If the store predates
-lyric options or paid text reservations, run the current checkout's additive
-upgrade from an approved VNet-connected host with the private database's
-approved connection environment. Apply it before enabling paid text:
+The cloud app runs the additive upgrade automatically. To run it manually for
+repair, use the stopped-writer and backup procedures from a VNet-connected
+host with the private database's connection environment:
 
 ```bash
 npm run database -- upgrade --data-dir /absolute/path/to/private-data

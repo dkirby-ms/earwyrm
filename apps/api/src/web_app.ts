@@ -16,7 +16,7 @@ import { ChatMessage, ChatSelection, composition_request, type JingleAdvisor } f
 import { JingleToolError, JingleTools } from './jingle_tools.js';
 import { BriefDetails, CustomBrief, create_custom_brief, custom_script, input_fingerprint, validate_custom_brief } from './workspace_briefs.js';
 import {
-  FIXTURES, REPOSITORY_ROOT, cost_for, load_evidence, load_inputs, render_brief,
+  FIXTURES, REPOSITORY_ROOT, cost_for, load_evidence, load_inputs, parse_speech_evidence, render_brief,
   type SpeechEvidence,
 } from './render.js';
 import { database_url_from_environment, is_storage_error, StoreNotInitialized, validate_postgres_store } from './persistence.js';
@@ -122,7 +122,9 @@ function paid_settings(source: Environment, entitled: boolean): [SpeechEvidence,
   }
   let evidence: SpeechEvidence;
   try {
-    evidence = load_evidence(expand_path(source.SPEECH_EVIDENCE_PATH ?? 'renders/speech-evidence.json'));
+    evidence = 'resourceId' in settings && source.SPEECH_RATE_EVIDENCE !== undefined
+      ? parse_speech_evidence(source.SPEECH_RATE_EVIDENCE)
+      : load_evidence(expand_path(source.SPEECH_EVIDENCE_PATH ?? 'renders/speech-evidence.json'));
   } catch (error) {
     if (error instanceof Error && (error instanceof SyntaxError || error instanceof z.ZodError ||
         error.message.startsWith('[DecimalError]') || /Rate evidence|Supply a finite/.test(error.message) ||

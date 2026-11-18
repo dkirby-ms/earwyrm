@@ -125,8 +125,8 @@ authorize the next paid action again.
 
 Paid voice stays blocked until prior attempts are reconciled with billing
 evidence. After a disconnect, reload to check status rather than resubmitting.
-The [Azure runbook](../azure-deployment.md#opt-in-to-paid-ai) covers the
-default-off deployment and how to enable approved paid capabilities.
+The [Azure runbook](../azure-deployment.md#shared-ai-configuration) describes
+the shared configuration that enables both capabilities in the PoC deployment.
 
 ## Troubleshoot and find local files
 

@@ -4,32 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: Preview first, provision separately, and deploy only after migration
+        description: Deploy normally; preview or provision-only are optional maintenance tools
         type: choice
-        options: [preview, provision, deploy]
-        default: preview
+        options: [deploy, preview, provision]
+        default: deploy
       maintenance_approved:
-        description: Approve downtime and this run's cloud operations
-        type: boolean
-        default: false
-      other_writers_stopped:
-        description: All other clients writing to this isolated share are stopped
-        type: boolean
-        default: false
-      preview_reviewed:
-        description: The target's current preview was reviewed and approved
-        type: boolean
-        default: false
-      postgres_store_initialized:
-        description: PostgreSQL was initialized or imported and independently verified
-        type: boolean
-        default: false
-      enable_paid_speech:
-        description: Provision Speech on the shared Foundry account and apply approved spending limits
-        type: boolean
-        default: false
-      enable_paid_text:
-        description: Provision the approved model on the shared Foundry account and enable screened text
+        description: Approve this run and confirm all other writers to the PoC share are stopped
         type: boolean
         default: false
 
@@ -43,12 +23,7 @@ concurrency:
 
 jobs:
   deploy:
-    if: >-
-      inputs.maintenance_approved && inputs.other_writers_stopped &&
-      (inputs.action == 'preview' ||
-       (inputs.preview_reviewed &&
-        (inputs.action == 'provision' ||
-         (inputs.action == 'deploy' && inputs.postgres_store_initialized))))
+    if: inputs.maintenance_approved
     runs-on: ubuntu-latest
     environment: earwyrm-web
     env:
@@ -68,8 +43,6 @@ jobs:
       ENTRA_EXPECTED_ISSUER: ${{ vars.ENTRA_EXPECTED_ISSUER }}
       ENTRA_AUDIENCE: ${{ vars.ENTRA_AUDIENCE }}
       ENTRA_API_SCOPE_PREFIX: ${{ vars.ENTRA_API_SCOPE_PREFIX }}
-      ENABLE_PAID_SPEECH: ${{ inputs.enable_paid_speech }}
-      ENABLE_PAID_TEXT: ${{ inputs.enable_paid_text }}
       SPEECH_SETTINGS: ${{ vars.EARWYRM_SPEECH_SETTINGS }}
       LYRIC_SETTINGS: ${{ vars.EARWYRM_LYRIC_SETTINGS }}
       EARWYRM_AI_LOCATION: ${{ vars.EARWYRM_AI_LOCATION }}
@@ -98,6 +71,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          speech_settings=$(jq -ces 'if length == 1 and (.[0] | type == "object") then .[0] else error("Expected one JSON object") end' <<< "$SPEECH_SETTINGS") ||
+            { echo "::error::Set EARWYRM_SPEECH_SETTINGS in the earwyrm-web GitHub environment (see the Azure deployment runbook)."; exit 1; }
+          lyric_settings=$(jq -ces 'if length == 1 and (.[0] | type == "object") then .[0] else error("Expected one JSON object") end' <<< "$LYRIC_SETTINGS") ||
+            { echo "::error::Set EARWYRM_LYRIC_SETTINGS in the earwyrm-web GitHub environment (see the Azure deployment runbook)."; exit 1; }
+          jq -e 'def usd: type == "string" and test("^[0-9]+(\\.[0-9]+)?$") and (tonumber > 0);
+            (.perRunCapUsd | usd) and (.totalBudgetUsd | usd) and (.usdPerMillionCharacters | usd)
+            and (.rateSource | type == "string" and test("\\S"))
+            and (.rateCheckedOn | strings | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$") and . <= (now | strftime("%Y-%m-%d")))' <<< "$speech_settings" >/dev/null ||
+            { echo "::error::EARWYRM_SPEECH_SETTINGS needs positive USD amounts and dated Speech rate evidence."; exit 1; }
+          jq -e 'def usd: type == "string" and test("^[0-9]+(\\.[0-9]+)?$") and (tonumber > 0);
+            (.modelName | type == "string" and test("\\S")) and (.modelVersion | type == "string" and test("\\S"))
+            and (.modelSku | IN("Standard", "GlobalStandard", "DataZoneStandard"))
+            and (.modelCapacity | type == "number" and . > 0 and . == floor)
+            and (.modelCallMaxUsd | usd) and (.safetyCallMaxUsd | usd) and (.perActionCapUsd | usd) and (.totalBudgetUsd | usd)' <<< "$lyric_settings" >/dev/null ||
+            { echo "::error::EARWYRM_LYRIC_SETTINGS needs a model name, version, supported SKU, positive integer capacity, and positive USD limits."; exit 1; }
           az extension add --name containerapp --upgrade
           azd env new "$AZURE_ENV_NAME" --no-prompt
           azd env set AZURE_SUBSCRIPTION_ID "$AZURE_SUBSCRIPTION_ID"
@@ -113,14 +101,6 @@ jobs:
           azd env set ENTRA_EXPECTED_ISSUER "$ENTRA_EXPECTED_ISSUER"
           azd env set ENTRA_AUDIENCE "$ENTRA_AUDIENCE"
           azd env set ENTRA_API_SCOPE_PREFIX "$ENTRA_API_SCOPE_PREFIX"
-          speech_settings=null
-          lyric_settings=null
-          if [[ "$ENABLE_PAID_SPEECH" == true ]]; then
-            speech_settings=$(jq -ces 'if length == 1 and (.[0] | type == "object") then .[0] else error("Expected one Speech settings object") end' <<< "$SPEECH_SETTINGS")
-          fi
-          if [[ "$ENABLE_PAID_TEXT" == true ]]; then
-            lyric_settings=$(jq -ces 'if length == 1 and (.[0] | type == "object") then .[0] else error("Expected one text settings object") end' <<< "$LYRIC_SETTINGS")
-          fi
           azd env set EARWYRM_SPEECH_SETTINGS_ENCODED "$(printf '%s' "$speech_settings" | base64 -w0)"
           azd env set EARWYRM_LYRIC_SETTINGS_ENCODED "$(printf '%s' "$lyric_settings" | base64 -w0)"
           azd env set EARWYRM_AI_LOCATION "${EARWYRM_AI_LOCATION:-$AZURE_LOCATION}"

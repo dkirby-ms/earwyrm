@@ -7,6 +7,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { MelodyService } from './melody_service.js';
 import { WebStorage } from './web_storage.js';
+import { upgrade_postgres_store } from './bootstrap_database.js';
 import { database_url_from_environment, StoreNotInitialized, validate_postgres_store } from './persistence.js';
 
 const STARTUP_ERROR_CODES = new Set([
@@ -94,9 +95,15 @@ function path_exists(path: string): boolean {
   }
 }
 
-/** Initializes SQLite only on a fresh store; existing markers and rollback journals are checked before mutation. */
-export async function prepare_databases(data_dir: string, { database_url = null }: { database_url?: string | null } = {}): Promise<void> {
-  if (database_url !== null) { await validate_postgres_store(database_url); return; }
+/** Prepares SQLite or verifies PostgreSQL; an optional additive upgrade requires the caller to hold the writer lock. */
+export async function prepare_databases(data_dir: string, { database_url = null, upgrade_postgres = false }: {
+  database_url?: string | null; upgrade_postgres?: boolean;
+} = {}): Promise<void> {
+  if (database_url !== null) {
+    if (upgrade_postgres) await upgrade_postgres_store(database_url);
+    else await validate_postgres_store(database_url);
+    return;
+  }
   const root = resolve(data_dir);
   if (path_exists(root) && lstatSync(root).isSymbolicLink()) throw new Error('Data directory must not be a symlink');
   const marker = join(root, '.earwyrm-initialized');
@@ -142,7 +149,7 @@ export async function main(): Promise<void> {
       stage = 'database-configuration';
       const database_url = database_url_from_environment(process.env);
       stage = 'database-preparation';
-      await prepare_databases(directory, { database_url });
+      await prepare_databases(directory, { database_url, upgrade_postgres: process.env.LYRIC_ENABLED === 'true' });
       stage = 'worker';
       const entrypoint = fileURLToPath(new URL('./web_app.js', import.meta.url));
       const child = spawn(process.execPath, [entrypoint], {

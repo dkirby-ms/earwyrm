@@ -1,7 +1,13 @@
 @export()
 @sealed()
-@description('Approved Speech spending limits.')
+@description('Speech rate evidence and spending limits.')
 type SpeechSettings = {
+  @minLength(1)
+  usdPerMillionCharacters: string
+  @minLength(1)
+  rateSource: string
+  @minLength(1)
+  rateCheckedOn: string
   @minLength(1)
   perRunCapUsd: string
   @minLength(1)

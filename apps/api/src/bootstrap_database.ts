@@ -242,6 +242,20 @@ export async function import_sqlite(directory: string, database_url: string): Pr
   }
 }
 /** Parses the original operator commands without executing any database operation. */
+/** Adds paid-text tables to an initialized PostgreSQL store without resetting existing data. */
+export async function upgrade_postgres_store(database_url: string): Promise<void> {
+  await transaction(new PostgresConnection(database_url, 0x4557524d01), async c => {
+    const marker = (await c.execute("SELECT schema_version FROM earwyrm_store_metadata WHERE singleton = 1")).rows;
+    if (marker.length !== 1 || marker[0]!.schema_version !== 1) throw new TypeError("Upgrade requires an initialized version-one store");
+    for (const table of REQUIRED_TABLES.filter(name => name !== "lyric_options")) {
+      if (!(await c.execute("SELECT to_regclass(?) AS name", [table])).rows[0]?.name) throw new TypeError("Upgrade requires a complete existing store");
+    }
+    await WebStorage._create_lyric_schema(c);
+    await WebStorage._create_lyric_budget_schema(c);
+  });
+  await validate_postgres_store(database_url);
+}
+
 export function create_parser(args: string[] = process.argv.slice(2)): ReturnType<typeof parseArgs> {
   return parseArgs({ args, allowPositionals: true, strict: true, options: {
     help: { type: "boolean", short: "h" },
@@ -274,16 +288,7 @@ export async function main(args: string[] = process.argv.slice(2), environment: 
     const database_url = database_url_from_environment(environment);
     if (command === "upgrade") {
       if (!database_url) throw new TypeError("Explicit upgrade requires PostgreSQL; SQLite upgrades on initialization");
-      await transaction(new PostgresConnection(database_url, 0x4557524d01), async c => {
-        const marker = (await c.execute("SELECT schema_version FROM earwyrm_store_metadata WHERE singleton = 1")).rows;
-        if (marker.length !== 1 || marker[0]!.schema_version !== 1) throw new TypeError("Upgrade requires an initialized version-one store");
-        for (const table of REQUIRED_TABLES.filter(name => name !== "lyric_options")) {
-          if (!(await c.execute("SELECT to_regclass(?) AS name", [table])).rows[0]?.name) throw new TypeError("Upgrade requires a complete existing store");
-        }
-        await WebStorage._create_lyric_schema(c);
-        await WebStorage._create_lyric_budget_schema(c);
-      });
-      await validate_postgres_store(database_url);
+      await upgrade_postgres_store(database_url);
       console.log("PostgreSQL lyric option and budget storage upgraded without deleting records");
       return 0;
     }
