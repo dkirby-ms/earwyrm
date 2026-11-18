@@ -123,6 +123,8 @@ function installMocks(denyAccess = false, capabilities: { lyrics?: boolean; voca
       },
       '/api/renders/estimate': {
         brief_ids: ['brief-001'], estimated_cost_usd: '0.1',
+        ...(init?.body && JSON.parse(String(init.body)).composition_selections
+          ? { composition_selections: JSON.parse(String(init.body)).composition_selections } : {}),
         ...(init?.body && JSON.parse(String(init.body)).lyric_selections
           ? { lyric_selections: JSON.parse(String(init.body)).lyric_selections, input_fingerprint: 'a'.repeat(64) } : {}),
       },
@@ -390,6 +392,82 @@ describe('React workspace', () => {
     expect(JSON.parse(String(sent[0]?.[1]?.body))).toMatchObject({ brief_ids: ['brief-001'], confirm_paid_generation: true })
     expect(fetchMock.mock.calls.some(([input, init]) =>
       new URL(String(input), window.location.origin).pathname === '/api/renders' && init?.method === 'POST')).toBe(false)
+  })
+
+  it('collaborates per advertiser and confirms paid vocals on the exact MCP preview', async () => {
+    const user = userEvent.setup()
+    installDialogMock()
+    const { fetchMock } = installMocks(false, { lyrics: true, vocals: true })
+    const respond = fetchMock.getMockImplementation()!
+    const draft = { option_id: 'chat-option', brief_id: 'brief-001', status: 'accepted', output: { hook: 'A warm hook', lyrics: 'A warm hook\nCall today' }, reasons: [], ai_generated: true, broadcast_approval_required: true }
+    let written = false, built = false
+    const preview = { ...output, run_id: 'mcp-job', variant: 'instrumental', lyric_source: { ...draft.output, option_id: draft.option_id }, composition_source: { job_id: 'mcp-job', option_id: draft.option_id, backing_sha256: 'b'.repeat(64) } }
+    fetchMock.mockImplementation(async (input, init) => {
+      const path = new URL(String(input), window.location.origin).pathname
+      if (path === '/api/chat') {
+        const body = JSON.parse(String(init?.body))
+        if (body.action === 'discuss') return Response.json({ reply: 'Try a warm hook.', creative_direction: 'Warm and rhythmic' })
+        if (body.action === 'write') { written = true; return Response.json({ option: draft }) }
+        built = true
+        return Response.json({ job_id: 'mcp-job' })
+      }
+      if (path === '/api/lyrics/options' && init?.method !== 'POST') return Response.json({ available: true, options: written ? [draft] : [] })
+      if (path === '/api/outputs' && built) return Response.json({ outputs: [preview] })
+      return respond(input, init)
+    })
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: 'Sign in with Entra External ID' }))
+    const consent = () => screen.getByRole('checkbox', { name: /I authorize paid requests for the next chat/ })
+    await user.type(screen.getByLabelText('Your message'), 'Make it warm')
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled()
+    await user.click(consent())
+    await user.click(screen.getByRole('button', { name: 'Send message' }))
+    expect(await screen.findByText('Try a warm hook.')).toBeVisible()
+    expect(consent()).not.toBeChecked()
+    expect(screen.getByRole('button', { name: 'Write a lyric draft' })).toBeDisabled()
+    await user.click(screen.getByRole('button', { name: /Mosslight Garden Supply/ }))
+    expect(screen.queryByText('Try a warm hook.')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Creative direction')).toHaveValue('')
+    await user.click(within(screen.getByRole('complementary', { name: 'Advertisers' })).getByRole('button', { name: /Cedar Loop Bike Repair/ }))
+    expect(screen.getByText('Try a warm hook.')).toBeVisible()
+    await user.click(consent())
+    await user.click(screen.getByRole('button', { name: 'Write a lyric draft' }))
+    await user.click(await screen.findByRole('button', { name: 'Build MCP music preview' }))
+    expect(await screen.findByRole('heading', { name: 'Your jingle versions' })).toBeVisible()
+    expect(screen.queryByRole('heading', { name: 'Make it together.' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Estimate vocals on this arrangement' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog).toHaveTextContent('exact backing and syllable timing')
+    const renderCalls = () => fetchMock.mock.calls.filter(([input, init]) => String(input).endsWith('/api/renders') && init?.method === 'POST')
+    expect(renderCalls()).toHaveLength(0)
+    await user.click(within(dialog).getByRole('button', { name: 'Confirm and render' }))
+    expect(JSON.parse(String(renderCalls()[0]?.[1]?.body))).toMatchObject({
+      lyric_selections: [{ brief_id: 'brief-001', option_id: 'chat-option' }],
+      composition_selections: [{ brief_id: 'brief-001', job_id: 'mcp-job' }],
+      confirmation: { input_fingerprint: 'a'.repeat(64) },
+    })
+    await user.click(screen.getByRole('button', { name: 'Sign out' }))
+    await user.click(await screen.findByRole('button', { name: 'Sign in with Entra External ID' }))
+    expect(screen.queryByText('Try a warm hook.')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('Creative direction')).toHaveValue('')
+  })
+
+  it('reports a refused chat action, keeps the unsent message, and requires fresh consent', async () => {
+    const user = userEvent.setup()
+    const { fetchMock } = installMocks(false, { lyrics: true })
+    const respond = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation(async (input, init) => String(input).endsWith('/api/chat')
+      ? Response.json({ detail: 'The MCP tool refused this request. Revise your message.' }, { status: 503 })
+      : respond(input, init))
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: 'Sign in with Entra External ID' }))
+    await user.type(screen.getByLabelText('Your message'), 'A new direction')
+    await user.click(screen.getByRole('checkbox', { name: /I authorize paid requests for the next chat/ }))
+    await user.click(screen.getByRole('button', { name: 'Send message' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Revise your message')
+    expect(screen.getByLabelText('Your message')).toHaveValue('A new direction')
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled()
+    expect(screen.queryByText('Jingle advisor · MCP suggest_jingle')).not.toBeInTheDocument()
   })
 
   it('restores uploaded custom briefs within the identity session and clears them on sign-out', async () => {

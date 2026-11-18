@@ -14,8 +14,8 @@ ms.topic: how-to
 and delegated scopes itself. PostgreSQL stores web, authorization and melody
 records; the private Azure Files share stores audio and working files and can
 retain SQLite source data for migration and rollback. The deployment does not
-create registrations, APIM, an AI model, or a functioning MCP service. Paid
-Speech remains disabled.
+create registrations, APIM, an AI model deployment, or a public MCP service.
+Paid Speech and text are off by default.
 
 The Container Apps workload profiles environment uses a dedicated VNet subnet,
 while the web UI and API retain public HTTPS ingress. PostgreSQL public network
@@ -398,11 +398,52 @@ Keep the backups and SQLite source. After PostgreSQL accepts new writes, do
 not point the app at stale SQLite data; reverse migration requires separate
 approval and reconciliation.
 
+### Opt in to paid AI
+
+Use the protected deployment workflow and obtain separate approval for the
+live changes and any billable smoke test. These options use existing Azure
+resources; they do not create or select a model or Speech SKU. Leave an option
+unchecked to keep or return that feature to off. Use the same values and
+checkboxes for preview and the approved deployment.
+
+| Dispatch option | Nonsecret `earwyrm-web` environment variable | JSON string fields |
+|---|---|---|
+| `enable_paid_speech` | `EARWYRM_SPEECH_SETTINGS` | `keySecretName`, `region`, `perRunCapUsd`, `totalBudgetUsd` |
+| `enable_paid_text` | `EARWYRM_LYRIC_SETTINGS` | `foundryEndpoint`, `modelDeployment`, `safetyEndpoint`, `modelCallMaxUsd`, `safetyCallMaxUsd`, `perActionCapUsd`, `totalBudgetUsd` |
+
+Set each variable to one JSON object. Use quoted strings for all values,
+including USD amounts. Never include a key or token. Before opting in:
+
+1. For Speech, put the key in the configured Key Vault and use its secret
+   **name**, not its value. Use a different secret from the database password.
+   The workflow adds a secret-scoped reader role and passes a Key Vault
+   reference to the container. Place the approved [Speech rate evidence](audio-poc/rendering.md#render-with-paid-speech)
+   at `speech-evidence.json` on the private media share, using the approved
+   maintenance procedure. It is mounted at `/mnt/earwyrm/speech-evidence.json`.
+2. For text, use HTTPS resource roots and a shared Foundry deployment
+   supporting strict structured output. An authorized Azure owner must grant
+   `Cognitive Services OpenAI User` on that model's resource and
+   `Cognitive Services User` on the Content Safety resource to the app identity
+   (`AZURE_WEB_PRINCIPAL_ID`, not the workflow identity). Verify reachability
+   and protected-material detection in the chosen region. Apply the store
+   upgrade below and review the [text pricing and cap rules](service-contracts.md#browser-chat-and-exact-vocals).
+3. Validate that the selected enabled user already has `paid_speech`.
+   It remains the entitlement for both features. After deployment, verify
+   availability and confirm only the separately approved paid smoke actions.
+   Compare metered usage with the approved rate evidence.
+
+To disable either feature, run the approved deployment with that option
+unchecked. Preserve the PostgreSQL ledger; do not lower or reset spent
+reservations by changing stores. Disabling a feature removes runtime
+configuration, but Azure incremental deployment does not revoke existing role
+assignments. Review and remove unneeded grants separately with the owner.
+
 ### Upgrade an existing PostgreSQL store
 
-Use the approved stopped-writer and backup procedures. If the existing store
-predates lyric options, apply the additive upgrade with its approved database
-environment before starting the updated app:
+Use the approved stopped-writer and backup procedures. If the store predates
+lyric options or paid text reservations, run the current checkout's additive
+upgrade from an approved VNet-connected host with the private database's
+approved connection environment. Apply it before enabling paid text:
 
 ```bash
 npm run database -- upgrade --data-dir /absolute/path/to/private-data

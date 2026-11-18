@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { CredentialUnavailableError } from "@azure/identity";
 import { Assessment, AzureLyricBackend, CATEGORIES, CloudFailure, LyricCloudSettings, ModelRefusal, Preflight, Screening, type CloudTransport, type LyricBackend } from "../src/lyric_cloud.js";
+import { lyric_allowance, lyric_budget } from "../src/lyric_budget.js";
 import { LyricDraft, LyricRequest, LyricResult, validate_draft } from "../src/lyrics.js";
 import { LyricWriter } from "../src/lyric_service.js";
 
@@ -135,6 +136,18 @@ describe("four-attempt fail-closed writer", () => {
 });
 
 describe("Azure wire contracts without paid requests", () => {
+  it("blocks oversized requests and extra completions before transport", async () => {
+    const allowance = lyric_allowance("discuss", lyric_budget({
+      LYRIC_MODEL_CALL_MAX_USD: "0.001", LYRIC_SAFETY_CALL_MAX_USD: "0.002",
+      LYRIC_PER_ACTION_CAP_USD: "1", LYRIC_TOTAL_BUDGET_USD: "1",
+    }));
+    const client = vi.fn(async () => new Response(null, { status: 503 }));
+    const backend = new AzureLyricBackend(settings, credential, client, allowance.consume);
+    await expect(backend.screen("é".repeat(33000))).rejects.toThrow("lyric_request_too_large");
+    for (let i = 0; i < 2; i++) await expect(backend.generate(request_fixture(), [])).rejects.toThrow("cloud_temporarily_unavailable");
+    await expect(backend.generate(request_fixture(), [])).rejects.toThrow("lyric_call_limit");
+    expect(client).toHaveBeenCalledTimes(2);
+  });
   it("posts strict schemas, safe feedback, bearer auth and facts only", async () => {
     const client = transport(completion(JSON.stringify(draft_fixture())));
     await new AzureLyricBackend(settings, credential, client).generate(request_fixture(), ["meter"]);

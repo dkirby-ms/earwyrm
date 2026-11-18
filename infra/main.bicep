@@ -69,6 +69,12 @@ param entraApiScopePrefix string
 @description('Temporary image used until azd deploy publishes the web image.')
 param bootstrapImage string = 'docker.io/nginxinc/nginx-unprivileged:1.28-alpine'
 
+@description('Base64-encoded nonsecret Speech settings JSON; encoded null disables Speech.')
+param speechSettingsEncoded string = 'bnVsbA=='
+
+@description('Base64-encoded nonsecret Foundry and Content Safety settings JSON; encoded null disables text.')
+param lyricSettingsEncoded string = 'bnVsbA=='
+
 resource resourceGroup 'Microsoft.Resources/resourceGroups@2025-04-01' = {
   name: 'rg-${environmentName}'
   location: location
@@ -95,6 +101,8 @@ module platform './platform.bicep' = {
     entraAudience: entraAudience
     entraApiScopePrefix: entraApiScopePrefix
     bootstrapImage: bootstrapImage
+    speechSettings: base64ToJson(speechSettingsEncoded)
+    lyricSettings: base64ToJson(lyricSettingsEncoded)
   }
 }
 
@@ -112,6 +120,8 @@ output AZURE_FILE_SHARE_NAME string = platform.outputs.shareName
 output AZURE_CONTAINER_ENVIRONMENT_NAME string = platform.outputs.environmentName
 @description('Container app name.')
 output AZURE_CONTAINER_APP_NAME string = platform.outputs.appName
+@description('Application managed identity object ID for resource-scoped AI role assignments.')
+output AZURE_WEB_PRINCIPAL_ID string = platform.outputs.webPrincipalId
 @description('PostgreSQL Flexible Server hostname.')
 output AZURE_POSTGRESQL_HOST string = platform.outputs.postgresHostName
 @description('PostgreSQL database name.')

@@ -6,7 +6,9 @@ import { FRAMES, SAMPLE_RATE, Seed, compose, instrument_palette, jingle_duration
 import { render_backing } from "../src/backing.js";
 import { CompositionRequest, arrange } from "../src/melody.js";
 import { KNOWN_TUNES, SimilarityError, screen, select_screened, similarity } from "../src/similarity.js";
-import { align, place_spoken, validate_utterance, type Utterance } from "../src/speech.js";
+import { align, decode_pcm, place_spoken, validate_utterance, type Utterance } from "../src/speech.js";
+import { JingleTools } from "../src/jingle_tools.js";
+import { load_inputs, render_brief } from "../src/render.js";
 
 const paths: string[] = [];
 afterEach(() => {
@@ -26,6 +28,43 @@ function speech(): Utterance {
 }
 
 describe("creative score contracts", () => {
+  it("renders vocals over exact MCP bytes, MIDI and syllable notes without recomposition", async () => {
+    const directory = join(process.cwd(), `.creative-audio-${randomUUID()}`);
+    mkdirSync(directory); paths.push(directory);
+    const tools = new JingleTools(join(directory, 'melody'));
+    const input = CompositionRequest.parse(request_data());
+    const result = await tools.compose(input), committed = await tools.artifacts(result);
+    const matches = [...input.lyrics.matchAll(/[A-Za-z]+/g)];
+    const audio = new Float64Array(matches.length * 0.2 * SAMPLE_RATE);
+    const words = matches.map((match, index) => {
+      audio.set(tone(60, 0.15).map(value => value * 0.2), Math.round(index * 0.2 * SAMPLE_RATE));
+      return { text: match[0], offset: index * 0.2, duration: 0.15, text_offset: match.index };
+    });
+    const provider = { synthesize: async () => ({ audio, words, result_id: 'TEST-NOT-AZURE' }) };
+    vi.stubEnv('EARWYRM_SOUNDFONT', '/missing-bank-must-not-be-used.sf2');
+    const output_dir = join(directory, 'mix');
+    const rows = await render_brief(output_dir, load_inputs()[0]![0], input.lyrics, 0, provider, {
+      tier: 'S0', region: 'test', resource_reference: 'fictional', rate_source: 'test',
+      rate_checked_on: '2026-11-18', usd_per_million_characters: '1',
+    }, { composition: committed, history_dir: join(directory, 'melody') });
+    expect(rows.map(row => row.variant)).toEqual(['vocoded', 'spoken']);
+    expect(rows.every(row => row.duration_seconds === result.duration_seconds)).toBe(true);
+    expect(readFileSync(join(output_dir, 'score.mid'))).toEqual(committed.midi);
+    expect(JSON.parse(readFileSync(join(output_dir, 'score.json'), 'utf8'))).toEqual(committed.score);
+    const alignment = JSON.parse(readFileSync(join(output_dir, 'alignment.json'), 'utf8')) as Array<{ target_offset_seconds: number; target_duration_seconds: number; midi_note: number }>;
+    expect(alignment.map(row => [row.target_offset_seconds, row.target_duration_seconds, row.midi_note]))
+      .toEqual(result.syllable_timing.map(row => [row.start_seconds, row.duration_seconds, row.midi_note]));
+    expect(rows[0]?.composition_source).toMatchObject({ job_id: result.job_id, backing_sha256: result.artifacts['backing.wav']!.sha256 });
+    const aligned = decode_pcm(readFileSync(join(output_dir, 'aligned-speech.wav')));
+    const spoken = decode_pcm(readFileSync(join(output_dir, 'spoken.wav')));
+    const { mix } = await import('../src/dsp.js');
+    const expected = mix(decode_pcm(committed.backing), aligned);
+    expect(spoken.every((sample, index) => Math.abs(sample - expected[index]!) < 0.0002)).toBe(true);
+    const bad = result.syllable_timing.map(row => ({ ...row }));
+    bad[0]!.syllable = 'Wrong';
+    expect(() => align({ audio, words, result_id: 'TEST' }, input.lyrics, 60, { timing: bad })).toThrow();
+    expect((await tools.get(result.job_id)).job_id).toBe(result.job_id);
+  });
   it("fits every syllable exactly and shares chord voicings with backing", () => {
     const request = CompositionRequest.parse(request_data()), result = arrange(request, 42);
     expect(result).toEqual(arrange(request, 42));

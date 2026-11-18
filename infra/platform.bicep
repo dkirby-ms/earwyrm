@@ -7,6 +7,14 @@ param environmentName string
 param location string
 @description('Deployment principal object ID.')
 param principalId string
+import { SpeechSettings, LyricSettings } from './paid-ai-types.bicep'
+
+@description('Approved Speech settings, or null to leave disabled.')
+param speechSettings SpeechSettings?
+
+@description('Approved text generation settings, or null to leave disabled.')
+param lyricSettings LyricSettings?
+
 @description('Existing Key Vault name containing the PostgreSQL password.')
 param keyVaultName string
 @description('Resource group containing the existing Key Vault.')
@@ -126,6 +134,15 @@ module databasePasswordReader './keyvault-secret-reader.bicep' = {
   params: {
     vaultName: keyVaultName
     secretName: databasePasswordSecretName
+    principalId: pullIdentity.properties.principalId
+  }
+}
+
+module speechKeyReader './keyvault-secret-reader.bicep' = if (speechSettings != null) {
+  scope: resourceGroup(keyVaultResourceGroupName)
+  params: {
+    vaultName: keyVaultName
+    secretName: speechSettings!.keySecretName
     principalId: pullIdentity.properties.principalId
   }
 }
@@ -283,8 +300,12 @@ module web './service.bicep' = {
     databaseName: postgres.outputs.databaseName
     databaseAdminLogin: databaseAdminLogin
     databasePasswordSecretUri: databasePasswordSecretUri
+    speechSettings: speechSettings
+    speechKeySecretUri: speechSettings == null ? null : '${credentialVault.properties.vaultUri}secrets/${speechSettings!.keySecretName}'
+    lyricSettings: lyricSettings
+    webClientId: pullIdentity.properties.clientId
   }
-  dependsOn: [pullRole, databasePasswordReader, postgresDnsLink]
+  dependsOn: [pullRole, databasePasswordReader, speechKeyReader, postgresDnsLink]
 }
 
 @description('Registry hostname.')
@@ -299,6 +320,8 @@ output shareName string = share.name
 output environmentName string = containerEnvironment.name
 @description('Container app name.')
 output appName string = web.outputs.appName
+@description('Application managed identity object ID for AI provider roles.')
+output webPrincipalId string = pullIdentity.properties.principalId
 @description('PostgreSQL Flexible Server hostname.')
 output postgresHostName string = postgres.outputs.hostName
 @description('PostgreSQL database name.')

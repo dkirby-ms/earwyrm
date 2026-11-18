@@ -14,6 +14,8 @@
     "entraMetadataUrl": { "value": "${ENTRA_METADATA_URL}" },
     "entraExpectedIssuer": { "value": "${ENTRA_EXPECTED_ISSUER}" },
     "entraAudience": { "value": "${ENTRA_AUDIENCE}" },
-    "entraApiScopePrefix": { "value": "${ENTRA_API_SCOPE_PREFIX}" }
+    "entraApiScopePrefix": { "value": "${ENTRA_API_SCOPE_PREFIX}" },
+    "speechSettingsEncoded": { "value": "${EARWYRM_SPEECH_SETTINGS_ENCODED}" },
+    "lyricSettingsEncoded": { "value": "${EARWYRM_LYRIC_SETTINGS_ENCODED}" }
   }
 }

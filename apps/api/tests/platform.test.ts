@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -22,6 +22,8 @@ import { cost_for, gate, load_inputs, render_brief } from '../src/render.js';
 import { main as render_main } from '../src/cli.js';
 import type { LyricBackend } from '../src/lyric_cloud.js';
 import { SAMPLE_RATE, tone } from '../src/dsp.js';
+import { JingleTools } from '../src/jingle_tools.js';
+import { LyricRequest } from '../src/lyrics.js';
 
 const temporary: string[] = [];
 function directory(): string {
@@ -103,6 +105,75 @@ describe('platform contracts', () => {
 });
 
 describe('real MCP and scaffold surfaces', () => {
+  it('keeps a slow bounded MCP writer pending beyond four minutes and finishes all allowed stages', async () => {
+    vi.useFakeTimers();
+    const pause = () => new Promise<void>(resolve => setTimeout(resolve, 59000));
+    const hook = 'Bright Bike will help you ride each day', cta = 'Call Bright Bike to plan your next ride';
+    let assessments = 0, generations = 0, settled = false;
+    const backend: LyricBackend = {
+      preflight: async () => { await pause(); return { english: true, artist_imitation: false, risky_claims: false }; },
+      generate: async () => {
+        await pause(); generations++;
+        return JSON.stringify({ hook, lyrics: `${hook}\n${cta}`, syllables_per_line: [8, 8], rhyme_scheme: '--', brand_count: 2, cta });
+      },
+      assess: async () => {
+        await pause(); assessments++;
+        return { english: true, grounded: assessments === 4, risky_claims: false };
+      },
+      screen: async () => { await pause(); await pause(); return { moderation_passed: true, protected_material_detected: false }; },
+    };
+    try {
+      const tools = new JingleTools(directory(), { backend });
+      const completion = tools.write(LyricRequest.parse({
+        brief: { brief_id: 'brief-001', name: 'Bright Bike', offer: 'Bike tune ups', location: 'Lakeview',
+          contact_details: { email: 'shop@example.com', phone: 'Call the shop' }, tone: 'Friendly',
+          approved_claims: ['Bike tune ups are available'] }, product_path: 'spoken', cta,
+      })).then(value => { settled = true; return value; }, (error: unknown) => { settled = true; return error; });
+      await vi.advanceTimersByTimeAsync(241000);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(600000);
+      expect(await completion).toMatchObject({ status: 'accepted', attempts: 4 });
+      expect(generations).toBe(4);
+      expect(assessments).toBe(4);
+    } finally {
+      await vi.runAllTimersAsync();
+      vi.useRealTimers();
+    }
+  });
+
+  it('discusses through MCP with screening and rejects imitation before model advice', async () => {
+    let advice_calls = 0;
+    const screened_contexts: string[] = [];
+    let protected_material_detected = false;
+    const backend: LyricBackend = {
+      preflight: async (_request, context) => {
+        screened_contexts.push(context ?? '');
+        return { english: true, artist_imitation: false, risky_claims: false };
+      },
+      generate: async () => { throw new Error('Discussion must not generate lyrics'); },
+      assess: async () => { throw new Error('Discussion must not assess a lyric draft'); },
+      screen: async () => ({ moderation_passed: true, protected_material_detected }),
+    };
+    const client = await connected(lyric_server({ backend, advisor: { suggest: async () => {
+      advice_calls++;
+      return { reply: 'Try a warm, rhythmic hook. Which mood fits your advertiser?', creative_direction: 'Warm and rhythmic' };
+    } } }));
+    try {
+      const input = {
+        request: { brief: load_inputs()[0]![0], cta: 'Call the shop to plan your next ride', product_path: 'spoken' },
+        messages: [{ role: 'user', content: 'Suggest a warm direction' }],
+      };
+      expect((await client.callTool({ name: 'suggest_jingle', arguments: input })).structuredContent).toHaveProperty('creative_direction', 'Warm and rhythmic');
+      input.messages.push({ role: 'assistant', content: 'Warm and rhythmic' }, { role: 'user', content: 'Make it brighter.\nKeep it original.' });
+      expect((await client.callTool({ name: 'suggest_jingle', arguments: input })).structuredContent).toHaveProperty('creative_direction', 'Warm and rhythmic');
+      expect(screened_contexts[1]).toBe(input.messages.map(message => message.content).join('\n'));
+      protected_material_detected = true;
+      expect((await client.callTool({ name: 'suggest_jingle', arguments: input })).isError).toBe(true);
+      input.messages[0]!.content = 'In the style of a famous band';
+      expect((await client.callTool({ name: 'suggest_jingle', arguments: input })).isError).toBe(true);
+      expect(advice_calls).toBe(3);
+    } finally { await client.close(); }
+  });
   it('publishes health and schemas without claiming generation or queue readiness', async () => {
     const app = create_app('web');
     expect((await request(app).get('/healthz')).body).toEqual({

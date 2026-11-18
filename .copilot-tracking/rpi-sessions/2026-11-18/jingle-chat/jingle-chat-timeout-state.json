@@ -1,0 +1,45 @@
+{
+  "task_id": "jingle-chat-timeout",
+  "task_slug": "jingle-chat-timeout",
+  "session_name": "Jingle chat",
+  "parent_task": {
+    "task_id": "jingle-chat",
+    "task_slug": "jingle-chat",
+    "state_path": ".copilot-tracking/rpi-sessions/2026-11-18/jingle-chat/jingle-chat-state.json"
+  },
+  "child_tasks": [],
+  "mode": "automatic",
+  "active_phase": "Follow-up",
+  "status": "completed",
+  "session_status": "stopped",
+  "artifact_paths": {
+    "research": ".copilot-tracking/research/2026-11-18/jingle-chat-research.md",
+    "plan": ".copilot-tracking/plans/2026-11-18/jingle-chat-timeout-plan.md",
+    "critique": null,
+    "changes": ".copilot-tracking/changes/2026-11-18/jingle-chat-timeout-changes.md",
+    "review": null
+  },
+  "documents": {
+    "research": [".copilot-tracking/research/2026-11-18/jingle-chat-research.md"],
+    "plan": [".copilot-tracking/plans/2026-11-18/jingle-chat-timeout-plan.md"],
+    "critique": [],
+    "changes": [".copilot-tracking/changes/2026-11-18/jingle-chat-timeout-changes.md"],
+    "review": []
+  },
+  "confirmed_decisions": [
+    {"decision":"Automatic session scope","status":"current","evidence":"Inherit parent jingle-chat scope: local collaborative MCP chat and exact vocals, source/tests/docs only; preserve paid consent, no live paid calls, deployment, push or tracker writes."},
+    {"decision":"Automatic progression boundary","status":"through-review","evidence":"Inherited end-to-end authorization."},
+    {"decision":"Research decision participation","status":"agent-owned","evidence":"Inherited."},
+    {"decision":"Planning decision participation","status":"agent-owned","evidence":"Inherited."},
+    {"decision":"Review decision participation","status":"agent-owned","evidence":"Inherited RD-001 in parent Review."},
+    {"decision":"Follow-up decision participation","status":"agent-owned","evidence":"Inherited."},
+    {"decision":"Subagent use","status":"auto","evidence":"Inherited; direct bounded correction."},
+    {"decision":"Planning critique","status":"skip","evidence":"Child default; parent standard critique already completed."},
+    {"decision":"Review step","status":"skip","evidence":"Child default; parent single Review completed. Validate correction without claiming a second review."},
+    {"decision":"Research disposition","status":"reused","evidence":"Parent research C5/C7 plus Review RV-001 establish linked transport, four writer attempts, 11 maximum provider posts and per-post credential/HTTP bounds. Planning ready; no new investigation required."},
+    {"decision":"Canvas","status":"current","evidence":"Inherited session canvas rpi-jingle-chat; handle KRSV; extensionId plugin:hve-core:rpi-workflow."}
+  ],
+  "blockers": [],
+  "next_action": {"phase":"Follow-up","action":"Complete; no action required. RV-001 resolved against child implementation and validation, accepted in parent Review RD-007 through RD-009. Child changes validated but not reviewed; a new Review requires a user request."},
+  "prioritized_follow_ups": []
+}

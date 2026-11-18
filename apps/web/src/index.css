@@ -93,6 +93,20 @@ main > .alert, .loading-message, main > .panel { margin: 2rem; }
 .reconciliation-panel h2 { margin-top: 1.5rem; }
 .reconciliation-card { border-top: 1px solid var(--line); padding-block: 1.5rem; }
 .lyric-options { margin-top: 2rem; }
+.jingle-chat { margin: 1.5rem 0 2.5rem; padding-bottom: 2rem; border-bottom: 1px solid var(--line); }
+.jingle-chat > p, .chat-help { font-size: 0.9rem; }
+.chat-transcript { max-height: 25rem; overflow-y: auto; overscroll-behavior: contain; padding: 1rem 1.25rem; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); }
+.chat-prompt { color: var(--muted); margin: 0.25rem 0; }
+.chat-message { padding-block: 0.75rem; overflow-wrap: anywhere; }
+.chat-message + .chat-message { border-top: 1px solid var(--line); }
+.chat-message strong { font-size: 0.85rem; color: var(--accent-strong); }
+.chat-message[data-role="user"] strong { color: var(--ink); }
+.chat-message p { white-space: pre-wrap; margin: 0.35rem 0; }
+.jingle-chat form { margin-top: 1rem; gap: 0.5rem; }
+.jingle-chat form > label, .chat-direction > label { font-weight: 700; }
+.jingle-chat .check-label { font-weight: 400; }
+.chat-direction { display: grid; gap: 0.5rem; margin-top: 1.5rem; }
+.chat-direction select { margin-bottom: 0.5rem; }
 .lyric-card { padding: 1.5rem 0; border-top: 1px solid var(--line); }
 .lyric-card[data-selected="true"] { padding-inline: 1.25rem; background: var(--selected); outline: 1px solid #ad8d17; outline-offset: -1px; border-radius: 4px; }
 .lyric-card .section-heading { margin-bottom: 0.5rem; }

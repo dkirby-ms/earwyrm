@@ -1,5 +1,6 @@
 import * as sdk from "microsoft-cognitiveservices-speech-sdk";
 import { DURATION, SAMPLE_RATE, ScoreDuration, musical_form, musical_plan, tone, vocal_pitch, type Audio, type MusicalForm, type Note, type Seed } from "./dsp.js";
+import { SyllableNote } from "./melody.js";
 
 export const VOICE = "en-US-JennyNeural";
 
@@ -61,8 +62,8 @@ export class AzureSpeech implements SpeechProvider {
 }
 
 /** Parse RIFF chunks instead of assuming a fixed WAV header from the provider. */
-function decode_pcm(buffer: Buffer): Audio {
-  const invalid = (): never => { throw new RangeError("Azure returned an unexpected PCM format"); };
+export function decode_pcm(buffer: Buffer): Audio {
+  const invalid = (): never => { throw new RangeError("Unexpected mono PCM format"); };
   if (buffer.length < 12 || buffer.toString("ascii", 0, 4) !== "RIFF" || buffer.toString("ascii", 8, 12) !== "WAVE") return invalid();
   let valid_format = false, data: Buffer | undefined;
   for (let offset = 12; offset + 8 <= buffer.length;) {
@@ -81,6 +82,53 @@ function decode_pcm(buffer: Buffer): Audio {
 }
 
 const letters = (text: string): string => text.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+function fit_interval(audio: Audio, offset: number, duration: number, target_duration: number): Audio {
+  const source = audio.subarray(Math.round(offset * SAMPLE_RATE), Math.round((offset + duration) * SAMPLE_RATE));
+  if (source.length < 2) throw new RangeError("Source vocal interval is too short");
+  const count = Math.round(target_duration * SAMPLE_RATE), fitted = new Float64Array(count);
+  for (let i = 0; i < count; i++) {
+    const position = i * (source.length - 1) / (count - 1), left = Math.floor(position), fraction = position - left;
+    fitted[i] = source[left] * (1 - fraction) + source[Math.min(left + 1, source.length - 1)] * fraction;
+  }
+  const fade = Math.min(Math.round(0.005 * SAMPLE_RATE), Math.floor(count / 2));
+  for (let i = 0; i < fade; i++) { const weight = i / (fade - 1); fitted[i] *= weight; fitted[count - i - 1] *= weight; }
+  return fitted;
+}
+
+function align_committed(utterance: Utterance, timing: readonly SyllableNote[], duration_seconds: number): [Audio, Audio, Note[], WordAlignment[]] {
+  ScoreDuration.parse(duration_seconds);
+  const modulator = new Float64Array(duration_seconds * SAMPLE_RATE), carrier = new Float64Array(modulator.length);
+  const notes: Note[] = [], alignment: WordAlignment[] = [];
+  let index = 0, previous_end = 0;
+  for (const word of utterance.words) {
+    const expected = letters(word.text);
+    let covered = '';
+    while (covered.length < expected.length) {
+      const event = SyllableNote.parse(timing[index++]);
+      const label = letters(event.syllable);
+      if (!label || !expected.startsWith(covered + label) || event.start_seconds < previous_end ||
+          event.start_seconds + event.duration_seconds > Math.min(25, duration_seconds - 1)) {
+        throw new RangeError("Committed vocal timing does not cover the complete words in order");
+      }
+      const offset = word.offset + word.duration * covered.length / expected.length;
+      const source_duration = word.duration * label.length / expected.length;
+      const start = Math.round(event.start_seconds * SAMPLE_RATE);
+      modulator.set(fit_interval(utterance.audio, offset, source_duration, event.duration_seconds), start);
+      carrier.set(tone(event.midi_note, event.duration_seconds), start);
+      notes.push({ start: event.start_seconds, duration: event.duration_seconds, pitch: event.midi_note, instrument: 'vocal', gain: 0.25 });
+      alignment.push({
+        word: word.text, source_offset_seconds: offset, source_duration_seconds: source_duration,
+        text_offset: word.text_offset, target_offset_seconds: event.start_seconds,
+        target_duration_seconds: event.duration_seconds, midi_note: event.midi_note,
+      });
+      covered += label;
+      previous_end = event.start_seconds + event.duration_seconds;
+    }
+  }
+  if (index !== timing.length) throw new RangeError("Committed vocal timing has unmatched notes");
+  return [modulator, carrier, notes, alignment];
+}
 
 /** Reject missing, overlapping, nonfinite or mismatched word events without dropping text. */
 export function validate_utterance(utterance: Utterance, text: string): void {
@@ -104,8 +152,9 @@ export function validate_utterance(utterance: Utterance, text: string): void {
  * @remarks Without a form, retains the legacy seconds 3-25 window and 30-second buffers.
  * @returns Owned speech modulator, harmonic carrier, notes and source-to-target mapping.
  */
-export function align(utterance: Utterance, text: string, root: number, { melody_seed = null, form }: { melody_seed?: Seed | null; form?: MusicalForm } = {}): [Audio, Audio, Note[], WordAlignment[]] {
+export function align(utterance: Utterance, text: string, root: number, { melody_seed = null, form, timing }: { melody_seed?: Seed | null; form?: MusicalForm; timing?: readonly SyllableNote[] } = {}): [Audio, Audio, Note[], WordAlignment[]] {
   validate_utterance(utterance, text);
+  if (timing) return align_committed(utterance, timing, form?.duration_seconds ?? DURATION);
   if (utterance.words.length > 88) throw new RangeError("Script has too many words for the bounded vocal window");
   if (form) {
     const expected = musical_form(form.duration_seconds);
@@ -152,15 +201,7 @@ export function align(utterance: Utterance, text: string, root: number, { melody
   const seed = melody_seed ?? root, transpose = root - musical_plan(seed).root;
   utterance.words.forEach((word, index) => {
     const start = starts[index], duration = slots[index] * 0.25;
-    const source = utterance.audio.subarray(Math.round(word.offset * SAMPLE_RATE), Math.round((word.offset + word.duration) * SAMPLE_RATE));
-    if (source.length < 2) throw new RangeError("Source word interval is too short");
-    const count = Math.round(duration * SAMPLE_RATE), fitted = new Float64Array(count);
-    for (let i = 0; i < count; i++) {
-      const position = i * (source.length - 1) / (count - 1), left = Math.floor(position), fraction = position - left;
-      fitted[i] = source[left] * (1 - fraction) + source[Math.min(left + 1, source.length - 1)] * fraction;
-    }
-    const fade = Math.min(Math.round(0.005 * SAMPLE_RATE), Math.floor(count / 2));
-    for (let i = 0; i < fade; i++) { const weight = i / (fade - 1); fitted[i] *= weight; fitted[count - i - 1] *= weight; }
+    const fitted = fit_interval(utterance.audio, word.offset, word.duration, duration);
     const phrase_index = index >= split ? index - split : index;
     const pitch = (form && index === utterance.words.length - 1 ? musical_plan(seed).pitch(7) :
       vocal_pitch(seed, phrase_index, start, form?.duration_seconds)) + transpose;

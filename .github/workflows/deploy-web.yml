@@ -24,6 +24,14 @@ on:
         description: PostgreSQL was initialized or imported and independently verified
         type: boolean
         default: false
+      enable_paid_speech:
+        description: Use the approved existing Speech resource and spending limits
+        type: boolean
+        default: false
+      enable_paid_text:
+        description: Use the approved Foundry deployment, Content Safety, and text spending limits
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -60,6 +68,10 @@ jobs:
       ENTRA_EXPECTED_ISSUER: ${{ vars.ENTRA_EXPECTED_ISSUER }}
       ENTRA_AUDIENCE: ${{ vars.ENTRA_AUDIENCE }}
       ENTRA_API_SCOPE_PREFIX: ${{ vars.ENTRA_API_SCOPE_PREFIX }}
+      ENABLE_PAID_SPEECH: ${{ inputs.enable_paid_speech }}
+      ENABLE_PAID_TEXT: ${{ inputs.enable_paid_text }}
+      SPEECH_SETTINGS: ${{ vars.EARWYRM_SPEECH_SETTINGS }}
+      LYRIC_SETTINGS: ${{ vars.EARWYRM_LYRIC_SETTINGS }}
       EARWYRM_MAINTENANCE_APPROVED: "true"
       EARWYRM_OTHER_WRITERS_STOPPED: "true"
     steps:
@@ -100,6 +112,16 @@ jobs:
           azd env set ENTRA_EXPECTED_ISSUER "$ENTRA_EXPECTED_ISSUER"
           azd env set ENTRA_AUDIENCE "$ENTRA_AUDIENCE"
           azd env set ENTRA_API_SCOPE_PREFIX "$ENTRA_API_SCOPE_PREFIX"
+          speech_settings=null
+          lyric_settings=null
+          if [[ "$ENABLE_PAID_SPEECH" == true ]]; then
+            speech_settings=$(jq -ces 'if length == 1 and (.[0] | type == "object") then .[0] else error("Expected one Speech settings object") end' <<< "$SPEECH_SETTINGS")
+          fi
+          if [[ "$ENABLE_PAID_TEXT" == true ]]; then
+            lyric_settings=$(jq -ces 'if length == 1 and (.[0] | type == "object") then .[0] else error("Expected one text settings object") end' <<< "$LYRIC_SETTINGS")
+          fi
+          azd env set EARWYRM_SPEECH_SETTINGS_ENCODED "$(printf '%s' "$speech_settings" | base64 -w0)"
+          azd env set EARWYRM_LYRIC_SETTINGS_ENCODED "$(printf '%s' "$lyric_settings" | base64 -w0)"
       - name: Stop and verify existing writers
         run: npm run deployment-gate -- quiesce
       - name: Preview resources

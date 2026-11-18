@@ -1,5 +1,5 @@
 import express, { type ErrorRequestHandler, type Express, type RequestHandler, type Response } from 'express';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { mkdtemp, readFile, realpath, rm, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -7,10 +7,13 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Decimal } from 'decimal.js';
 import { z } from 'zod';
-import { DefaultAzureCredential } from '@azure/identity';
+import { DefaultAzureCredential, ManagedIdentityCredential } from '@azure/identity';
+import { lyric_allowance, lyric_budget, type PaidLyricAction } from './lyric_budget.js';
 import { AzureLyricBackend, CloudFailure, LyricCloudSettings, type LyricBackend } from './lyric_cloud.js';
 import { LyricWriter } from './lyric_service.js';
 import { LyricRequest, LyricResult, validate_draft } from './lyrics.js';
+import { ChatMessage, ChatSelection, composition_request, type JingleAdvisor } from './jingle_chat.js';
+import { JingleToolError, JingleTools } from './jingle_tools.js';
 import { BriefDetails, CustomBrief, create_custom_brief, custom_script, input_fingerprint, validate_custom_brief } from './workspace_briefs.js';
 import {
   FIXTURES, REPOSITORY_ROOT, cost_for, load_evidence, load_inputs, render_brief,
@@ -41,6 +44,7 @@ export const BriefSelection = z.object({
   brief_ids: z.array(z.string()).min(1).max(3),
   custom_briefs: z.array(CustomBrief).max(3).optional(),
   lyric_selections: z.array(z.strictObject({ brief_id: z.string(), option_id: z.uuid() })).max(3).optional(),
+  composition_selections: z.array(z.strictObject({ brief_id: z.string(), job_id: z.uuid() })).max(3).optional(),
 });
 export type BriefSelection = z.infer<typeof BriefSelection>;
 /** Must match canonical server ordering and the exact decimal estimate, not browser arithmetic. */
@@ -193,6 +197,7 @@ function public_output(output: OutputRecord) {
     numeric_gates: manifest.numeric_gates, components: manifest.components, azure_usage: manifest.azure_usage,
     evaluation: output.evaluation, status: output_status(output),
     lyric_source: manifest.lyric_source ?? null,
+    composition_source: manifest.composition_source ?? null,
     audio_url: `/api/outputs/${output.output_id}/audio`, evidence_url: `/api/outputs/${output.output_id}/evidence`,
   };
 }
@@ -220,7 +225,7 @@ export type WebAppStorage = Pick<WebStorage,
   'has_unreconciled_paid_attempt' | 'create_run' | 'reserve_paid_run' | 'mark_attempt_submitted' |
   'save_output' | 'set_run_status' | 'finish_attempt' | 'get_run' | 'list_runs' | 'list_outputs' |
   'get_output' | 'audio_path' | 'save_evaluation' | 'reconcile_attempt' |
-  'save_lyric_option' | 'list_lyric_options' | 'get_lyric_option'>;
+  'save_lyric_option' | 'list_lyric_options' | 'get_lyric_option' | 'has_lyric_budget' | 'reserve_lyric_action'>;
 /** All providers, persistence and identity fetchers remain lazy until a route needs them. */
 export interface CreateAppOptions {
   environ?: Environment;
@@ -235,6 +240,7 @@ export interface CreateAppOptions {
   render?: typeof render_brief;
   /** Test adapters retain the same writer gates; production configuration stays server-side. */
   lyric_backend?: LyricBackend;
+  chat_advisor?: JingleAdvisor;
 }
 
 /** Creates the same-origin API without listening, initializing databases, constructing Speech or making paid calls. */
@@ -266,6 +272,15 @@ export function create_app(options: CreateAppOptions = {}): Express {
   const speech_factory = options.speech_factory ?? options.speech_provider_factory ?? (() => new AzureSpeech());
   let lyrics_active = false;
 
+  async function jingle_tools(backend?: LyricBackend): Promise<JingleTools> {
+    const store = await storage();
+    return new JingleTools(join(store.root, 'melody'), {
+      database_url: store.database_url ?? undefined,
+      backend,
+      advisor: options.chat_advisor,
+    });
+  }
+
   function lyric_settings(): LyricCloudSettings | null {
     if ((source.LYRIC_ENABLED ?? 'false').trim().toLowerCase() !== 'true') return null;
     if (options.lyric_backend) return null;
@@ -273,10 +288,26 @@ export function create_app(options: CreateAppOptions = {}): Express {
   }
 
   async function lyric_available(response: Response): Promise<boolean> {
-    const user = await (await storage()).get_user(identity(response).issuer, identity(response).subject);
+    const store = await storage();
+    const user = await store.get_user(identity(response).issuer, identity(response).subject);
     if (!user?.paid_speech || (source.LYRIC_ENABLED ?? 'false').trim().toLowerCase() !== 'true') return false;
-    try { lyric_settings(); return true; }
+    try { lyric_settings(); lyric_budget(source); }
     catch (error) { if (error instanceof CloudFailure) return false; throw error; }
+    return store.has_lyric_budget();
+  }
+
+  async function paid_lyric_backend(action: PaidLyricAction): Promise<LyricBackend> {
+    const settings = lyric_settings();
+    const budget = lyric_budget(source);
+    const allowance = lyric_allowance(action, budget);
+    await (await storage()).reserve_lyric_action(action, allowance.cost, budget.per_action, budget.total);
+    if (options.lyric_backend) return options.lyric_backend;
+    const clientId = source.LYRIC_MANAGED_IDENTITY_CLIENT_ID;
+    const authOptions = { retryOptions: { maxRetries: 0 } };
+    const credential = clientId
+      ? new ManagedIdentityCredential({ ...authOptions, clientId })
+      : new DefaultAzureCredential(authOptions);
+    return new AzureLyricBackend(settings!, credential, undefined, allowance.consume);
   }
 
   async function storage(): Promise<WebAppStorage> {
@@ -293,13 +324,18 @@ export function create_app(options: CreateAppOptions = {}): Express {
   }
   async function render_inputs(payload: BriefSelection, owner: string) {
     const selections = payload.lyric_selections ?? [];
+    const compositions = payload.composition_selections ?? [];
+    if (new Set(compositions.map(value => value.brief_id)).size !== compositions.length ||
+        compositions.some(value => !selections.some(lyric => lyric.brief_id === value.brief_id))) {
+      throw new HttpError(422, 'Composition selections must be unique and have selected lyrics');
+    }
     if (new Set(selections.map(value => value.brief_id)).size !== selections.length ||
         selections.some(value => !payload.brief_ids.includes(value.brief_id))) {
       throw new HttpError(422, 'Lyric selections must be unique and belong to selected briefs');
     }
     return Promise.all(selected_inputs(payload.brief_ids, payload.custom_briefs).map(async selected => {
       const selection = selections.find(value => value.brief_id === selected.brief.brief_id);
-      if (!selection) return { ...selected, lyric_source: null };
+      if (!selection) return { ...selected, lyric_source: null, composition: null };
       const stored = await (await storage()).get_lyric_option(selection.option_id, owner);
       if (!stored || stored.brief_id !== selected.brief.brief_id) throw new HttpError(404, 'Lyric option was not found for this brief');
       const request = LyricRequest.parse(stored.request), result = LyricResult.parse(stored.result);
@@ -308,8 +344,22 @@ export function create_app(options: CreateAppOptions = {}): Express {
         throw new HttpError(409, 'Lyric option does not match the current brief');
       }
       const draft = validate_draft(request, result.output);
+      let composition = null;
+      const chosen = compositions.find(value => value.brief_id === selected.brief.brief_id);
+      if (chosen) {
+        const preview = await (await storage()).get_run(chosen.job_id, owner);
+        const metadata = preview?.outputs.find(output => output.brief_id === selected.brief.brief_id)?.manifest.composition_source;
+        const source = z.object({ job_id: z.literal(chosen.job_id), option_id: z.literal(stored.option_id), backing_sha256: z.string() }).safeParse(metadata);
+        if (!source.success) throw new HttpError(404, 'Composition preview was not found for these lyrics');
+        const tools = await jingle_tools();
+        const committed = await tools.get(chosen.job_id);
+        if (committed.artifacts['backing.wav']?.sha256 !== source.data.backing_sha256) {
+          throw new HttpError(409, 'Composition preview integrity does not match');
+        }
+        composition = await tools.artifacts(committed);
+      }
       return {
-        ...selected, text: draft.lyrics,
+        ...selected, text: draft.lyrics, composition,
         lyric_source: { option_id: stored.option_id, ...draft, status: 'accepted' as const, ai_generated: true, broadcast_approval_required: true },
       };
     }));
@@ -318,7 +368,12 @@ export function create_app(options: CreateAppOptions = {}): Express {
     const custom = selected.flatMap(value => value.custom ? [value.custom] : []);
     const lyrics = selected.flatMap(value => value.lyric_source
       ? [{ brief_id: value.brief.brief_id, option_id: value.lyric_source.option_id, lyrics: value.text }] : []);
-    return custom.length || lyrics.length ? input_fingerprint(custom, lyrics) : undefined;
+    const compositions = selected.flatMap(value => value.composition ? [{
+      brief_id: value.brief.brief_id, job_id: value.composition.result.job_id,
+      backing_sha256: value.composition.result.artifacts['backing.wav']!.sha256,
+    }] : []);
+    const fingerprint = custom.length || lyrics.length ? input_fingerprint(custom, lyrics) : undefined;
+    return compositions.length ? createHash('sha256').update(canonical_json({ fingerprint, compositions })).digest('hex') : fingerprint;
   }
   const authorized = (scope: string): RequestHandler[] => [require_scope(scope), async (_request, response, next) => {
     const { issuer, subject } = identity(response);
@@ -367,6 +422,7 @@ export function create_app(options: CreateAppOptions = {}): Express {
     [/^\/(?:healthz|api\/(?:config|identity|access|briefs|render-options|outputs|poc\/status))$/, ['GET']],
     [/^\/api\/briefs\/validate$/, ['POST']],
     [/^\/api\/lyrics\/options$/, ['GET', 'POST']],
+    [/^\/api\/chat$/, ['GET', 'POST']],
     [/^\/api\/admin\/users$/, ['GET', 'PUT']],
     [/^\/api\/renders$/, ['GET', 'POST']],
     [/^\/api\/renders\/estimate$/, ['POST']],
@@ -452,20 +508,105 @@ export function create_app(options: CreateAppOptions = {}): Express {
       options: stored.map(value => ({ option_id: value.option_id, brief_id: value.brief_id, ...value.result })),
     });
   });
+  app.get('/api/chat', ...authorized('renders.read'), async (_request, response) => {
+    response.json({ available: await lyric_available(response), transport: 'mcp-in-process', history_limit: 12 });
+  });
+  app.post('/api/chat', ...authorized('renders.write'), async (request, response) => {
+    const action = parse(z.discriminatedUnion('action', [
+      ChatSelection.extend({
+        action: z.literal('discuss'), messages: z.array(ChatMessage).min(1).max(12),
+        confirm_paid_generation: z.literal(true),
+      }),
+      ChatSelection.extend({
+        action: z.literal('write'), creative_direction: z.string().trim().min(1).max(400),
+        product_path: z.enum(['spoken', 'vocoded']), confirm_paid_generation: z.literal(true),
+      }),
+      ChatSelection.extend({ action: z.literal('compose'), option_id: z.uuid() }),
+    ]), request.body);
+    const [selected] = selected_inputs(action.brief_ids, action.custom_briefs);
+    if (!selected) throw new HttpError(422, 'Select one active brief');
+    const owner = identity(response).subject;
+    const store = await storage();
+    if (action.action !== 'compose') {
+      if (!await lyric_available(response)) throw new HttpError(409, 'Paid chat and lyric generation are disabled or unavailable for this account');
+      if (lyrics_active) throw new HttpError(409, 'Chat or lyric generation is already active');
+      lyrics_active = true;
+      try {
+        const lyric_request = parse(LyricRequest, {
+          brief: selected.brief, cta: brief_cta(selected),
+          product_path: action.action === 'write' ? action.product_path : 'spoken',
+          ...(action.action === 'write' ? { creative_direction: action.creative_direction } : {}),
+        });
+        if (action.action === 'discuss' && action.messages.at(-1)?.role !== 'user') throw new HttpError(422, 'The last chat message must be from the user');
+        const tools = await jingle_tools(await paid_lyric_backend(action.action));
+        if (action.action === 'discuss') {
+          response.json({ tool: 'suggest_jingle', ...await tools.discuss({ request: lyric_request, messages: action.messages }) });
+        } else {
+          const result = await tools.write(lyric_request);
+          const saved = await store.save_lyric_option(owner, lyric_request, result);
+          response.json({ tool: 'write_lyrics', option: { option_id: saved.option_id, brief_id: saved.brief_id, ...result } });
+        }
+      } catch (error) {
+        if (!(error instanceof JingleToolError || error instanceof CloudFailure)) throw error;
+        console.error('ERROR: Chat MCP operation failed');
+        throw new HttpError(503, 'The chat MCP tool is unavailable or refused this request. No successful result was accepted.');
+      } finally { lyrics_active = false; }
+      return;
+    }
+    const saved = await store.get_lyric_option(action.option_id, owner);
+    if (!saved || saved.brief_id !== selected.brief.brief_id) throw new HttpError(404, 'Lyric option was not found for this brief');
+    const lyric_request = LyricRequest.parse(saved.request), result = LyricResult.parse(saved.result);
+    if (result.status !== 'accepted' || !result.output) throw new HttpError(409, 'Only accepted lyric options can be composed');
+    if (canonical_json(lyric_request.brief) !== canonical_json(selected.brief) || lyric_request.cta !== brief_cta(selected)) {
+      throw new HttpError(409, 'Lyric option does not match the current brief');
+    }
+    if (render_active) throw new HttpError(409, 'A render or composition is already active');
+    render_active = true;
+    try {
+      const started = performance.now();
+      const logical_id = `chat-${createHash('sha256').update(canonical_json([identity(response).issuer, owner, saved.option_id])).digest('hex')}`;
+      const tools = await jingle_tools();
+      const committed = await tools.compose(composition_request(lyric_request, result.output, logical_id));
+      let preview = await store.get_run(committed.job_id, owner);
+      if (!preview) await store.create_run(committed.job_id, owner, 'instrumental', [selected.brief.brief_id]);
+      if (!preview?.outputs.length) {
+        const artifacts = await tools.artifacts(committed);
+        await store.save_output({
+          run_id: committed.job_id, owner, audio: artifacts.backing,
+          manifest: {
+            brief_id: selected.brief.brief_id, variant: 'instrumental',
+            duration_seconds: committed.duration_seconds, render_seconds: (performance.now() - started) / 1000,
+            numeric_gates: 'Pending', status: 'Pending', components: committed.components,
+            ai_generated: true, azure_usage: { submitted_characters: 0, request_cost_usd: '0' },
+            lyric_source: { option_id: saved.option_id, ...result.output, status: 'accepted', broadcast_approval_required: true },
+            composition_source: { job_id: committed.job_id, option_id: saved.option_id, backing_sha256: committed.artifacts['backing.wav']!.sha256 },
+            ...(selected.custom ? { workspace_brief: selected.custom } : {}),
+          },
+        });
+      }
+      await store.set_run_status(committed.job_id, 'completed');
+      preview = await store.get_run(committed.job_id, owner);
+      if (!preview) throw new HttpError(500, 'Composition preview is unavailable');
+      response.json({ tool: 'compose_arrangement', job_id: committed.job_id, run: public_run(preview) });
+    } catch (error) {
+      if (!(error instanceof JingleToolError)) throw error;
+      console.error('ERROR: Chat composition MCP failed');
+      throw new HttpError(503, 'Composition could not complete. Retry this same lyric option to recover the existing job.');
+    } finally { render_active = false; }
+  });
   app.post('/api/lyrics/options', ...authorized('renders.write'), async (request, response) => {
     const payload = parse(BriefSelection.extend({ confirm_paid_generation: z.literal(true) }), request.body);
     if (payload.brief_ids.length !== 1) throw new HttpError(422, 'Generate lyrics for one active brief at a time');
     if (payload.lyric_selections?.length) throw new HttpError(422, 'Lyric generation does not accept existing selections');
+    if (payload.composition_selections?.length) throw new HttpError(422, 'Lyric generation does not accept composition selections');
     const [selected] = selected_inputs(payload.brief_ids, payload.custom_briefs);
     if (!await lyric_available(response)) throw new HttpError(409, 'Paid lyric generation is disabled or unavailable for this account');
     if (lyrics_active) throw new HttpError(409, 'Lyric generation is already active');
     lyrics_active = true;
     try {
-      const settings = lyric_settings();
-      const backend = options.lyric_backend ?? new AzureLyricBackend(settings!, new DefaultAzureCredential({ retryOptions: { maxRetries: 0 } }));
-      const writer = new LyricWriter(backend);
       const cta = brief_cta(selected!);
       const lyric_request = parse(LyricRequest, { brief: selected!.brief, cta, product_path: 'spoken' });
+      const writer = new LyricWriter(await paid_lyric_backend('options'));
       const alternatives = [];
       const seen = new Set<string>();
       for (let index = 0; index < 3; index++) {
@@ -502,6 +643,7 @@ export function create_app(options: CreateAppOptions = {}): Express {
       ...(fingerprint ? { input_fingerprint: fingerprint } : {}),
       ...(payload.lyric_selections?.length ? { lyric_selections: selected.flatMap(value => value.lyric_source
         ? [{ brief_id: value.brief.brief_id, option_id: value.lyric_source.option_id }] : []) } : {}),
+      ...(payload.composition_selections?.length ? { composition_selections: payload.composition_selections } : {}),
     });
   });
   app.post('/api/renders', ...authorized('renders.write'), async (request, response) => {
@@ -552,10 +694,11 @@ export function create_app(options: CreateAppOptions = {}): Express {
         temporary = await mkdtemp(join(store.work_dir, 'render-'));
         let provider: SpeechProvider | null = null;
         if (attempt_id) { await store.mark_attempt_submitted(attempt_id); provider = await speech_factory(); }
-        for (const { index, brief, text, custom, lyric_source } of selected) {
+        for (const { index, brief, text, custom, lyric_source, composition } of selected) {
           const directory = join(temporary, brief.brief_id);
           const rows = await render(directory, brief, text, index, provider, evidence, {
             history_dir: join(store.root, 'melody'), database_url: store.database_url,
+            ...(composition ? { composition } : {}),
           });
           for (const row of rows) {
             if (custom) {

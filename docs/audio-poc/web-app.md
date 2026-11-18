@@ -77,13 +77,40 @@ the lyric selected in **Create**. Instrumental results stay **Pending** for
 evaluation, even after rendering completes; they do not prove vocal quality.
 See [how to evaluate output](rendering.md#evaluate-output).
 
+### Create together with MCP chat
+
+In **Create**, use **Make it together** to describe a mood, pace, or revision.
+Authorize paid requests for each **Send message** or **Write a lyric draft**
+action. Review or edit the suggested **Creative direction**, choose a lyric
+style, and write a screened draft. Suggestions cannot change the approved facts
+in the brief, and held drafts cannot build audio.
+
+Select an accepted option and choose **Build MCP music preview**. This makes
+no cloud requests. After a disconnect, retry that same option to recover the
+same arrangement rather than creating another. Use **Listen & review** to
+hear its protected instrumental preview.
+
+Choose **Estimate vocals on this arrangement** to add voices to the exact
+backing and syllable timing, then explicitly confirm the Speech estimate.
+The ordinary **Estimate voice + music** action still creates a separate
+arrangement; it does not reuse an MCP preview. Spoken and sung mixes over an MCP
+preview preserve its duration. Sung demos use approximate word slicing, not
+natural singing, and still need producer and advertiser approval.
+
+The latest twelve conversation messages stay in page memory for each
+advertiser. They clear on reload or sign-out. Accepted drafts and music
+previews are saved server-side. Errors keep your unsent message; revise it and
+authorize the next paid action again.
+
 ## Enable paid options only with approval
 
-* Lyrics: Set `LYRIC_ENABLED=true` and configure the server-side Foundry and
+* Chat and lyrics: Set `LYRIC_ENABLED=true` and configure the server-side Foundry and
   Content Safety settings in [Services and contracts](../service-contracts.md#lyric-writer).
-  An enabled user with paid Speech entitlement can authorize **Generate 3
-  lyric options**. This action incurs separate charges and has no upfront cost
-  estimate. Only accepted drafts can be selected with **Use option**; human
+  An enabled user with paid Speech entitlement can authorize chat, one draft,
+  or **Generate 3 lyric options**. These actions incur separate charges. The
+  server reserves a worst-case amount against its text budget before each
+  action; this is not an estimate of the actual bill. Only accepted drafts can
+  be selected with **Use option**; human
   review is still required before distribution.
 * Voice: Set `SPEECH_ENABLED=true`, server-only `SPEECH_KEY` and
   `SPEECH_REGION`, and positive `SPEECH_PER_RUN_CAP_USD` and
@@ -96,8 +123,8 @@ See [how to evaluate output](rendering.md#evaluate-output).
 
 Paid voice stays blocked until prior attempts are reconciled with billing
 evidence. After a disconnect, reload to check status rather than resubmitting.
-The [Azure runbook](../azure-deployment.md) covers the deployed POC, which
-keeps paid Speech disabled.
+The [Azure runbook](../azure-deployment.md#opt-in-to-paid-ai) covers the
+default-off deployment and how to enable approved paid capabilities.
 
 ## Troubleshoot and find local files
 

@@ -9,7 +9,7 @@ const TRACER = trace.getTracer("earwyrm.lyric_service");
 
 function brief_text(request: LyricRequest): string {
   const brief = request.brief;
-  return [brief.name, brief.offer, brief.location, brief.tone, ...brief.approved_claims, request.cta].join("\n");
+  return [brief.name, brief.offer, brief.location, brief.tone, ...brief.approved_claims, request.cta, request.creative_direction ?? ""].join("\n");
 }
 
 /** Fail-closed writer owning one initial generation attempt and exactly three retries. */

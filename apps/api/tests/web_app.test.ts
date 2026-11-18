@@ -13,7 +13,7 @@ import { STATIC_ROOT, WebStorage } from '../src/web_storage.js';
 import { acquire_writer_lock, prepare_databases } from '../src/cloud_web.js';
 import { write_wav } from '../src/dsp.js';
 import { load_inputs, render_brief } from '../src/render.js';
-import type { LyricBackend } from '../src/lyric_cloud.js';
+import { CloudFailure, type LyricBackend } from '../src/lyric_cloud.js';
 import { LyricRequest, LyricResult } from '../src/lyrics.js';
 
 const issuer = 'https://tenant.example.test/tenant/v2.0';
@@ -90,6 +90,10 @@ function speech_environment(root: string, overrides: Record<string, string> = {}
     SPEECH_EVIDENCE_PATH: evidence, SPEECH_PER_RUN_CAP_USD: '1', SPEECH_TOTAL_BUDGET_USD: '0.2', ...overrides,
   };
 }
+const lyric_limits = {
+  LYRIC_MODEL_CALL_MAX_USD: '0.01', LYRIC_SAFETY_CALL_MAX_USD: '0.001',
+  LYRIC_PER_ACTION_CAP_USD: '1', LYRIC_TOTAL_BUDGET_USD: '5',
+};
 
 describe('same-origin Express API', () => {
   const custom_details = {
@@ -98,6 +102,86 @@ describe('same-origin Express API', () => {
     tone: 'Friendly and practical', approved_claims: ['Bike tune ups are available'],
     cta: 'Call Bright Bike to plan your next ride',
   };
+
+  it('uses real MCP chat, recovers one owned preview and binds paid vocals to its exact artifacts', async () => {
+    const root = root_dir();
+    const cta = custom_details.cta, hook = 'Bright Bike, a tune up for your ride';
+    const backend: LyricBackend = {
+      preflight: async () => ({ english: true, artist_imitation: false, risky_claims: false }),
+      generate: async () => JSON.stringify({ hook, lyrics: `${hook}\n${cta}`, syllables_per_line: [8, 8], rhyme_scheme: '--', brand_count: 2, cta }),
+      assess: async () => ({ english: true, grounded: true, risky_claims: false }),
+      screen: async () => ({ moderation_passed: true, protected_material_detected: false }),
+    };
+    const suggest = vi.fn(async () => ({ reply: 'Try a warm hook. Shall we write a draft?', creative_direction: 'Warm, rhythmic and original' }));
+    const renderer = vi.fn(fake_render);
+    const synthesize = vi.fn(async () => ({ audio: new Float64Array(1), words: [], result_id: 'TEST' }));
+    const { app, store, access_token } = await fixture({
+      data_dir: root, environ: { ...speech_environment(root, { SPEECH_TOTAL_BUDGET_USD: '2' }), ...lyric_limits, LYRIC_ENABLED: 'true' },
+      lyric_backend: backend, chat_advisor: { suggest }, render: renderer, speech_factory: () => ({ synthesize }),
+    });
+    const post = (body: object, access = access_token) => request(app).post('/api/chat').auth(access, { type: 'bearer' }).send(body);
+    expect((await request(app).get('/api/chat')).status).toBe(401);
+    const added = (await request(app).post('/api/briefs/validate').auth(access_token, { type: 'bearer' }).send(custom_details)).body;
+    const { source: _source, cta: loaded_cta, ...brief } = added;
+    const selected = { brief_ids: [brief.brief_id], custom_briefs: [{ brief, cta: loaded_cta }] };
+    const discussion = { ...selected, action: 'discuss', messages: [{ role: 'user', content: 'Make it warm' }] };
+    expect((await post(discussion)).status).toBe(422);
+    expect(suggest).not.toHaveBeenCalled();
+    expect((await post({ ...discussion, confirm_paid_generation: true }, await token('user-b'))).status).toBe(409);
+    expect((await post({ ...discussion, confirm_paid_generation: true })).body).toMatchObject({ tool: 'suggest_jingle', creative_direction: 'Warm, rhythmic and original' });
+    const written = await post({ ...selected, action: 'write', creative_direction: 'Warm and rhythmic', product_path: 'spoken', confirm_paid_generation: true });
+    expect(written.status).toBe(200);
+    expect(written.body.option.status).toBe('accepted');
+    const option_id: string = written.body.option.option_id;
+    expect((await store.get_lyric_option(option_id, 'user-a'))?.request.creative_direction).toBe('Warm and rhythmic');
+    const build = { ...selected, action: 'compose', option_id };
+    expect((await post(build, await token('user-b'))).status).toBe(404);
+    const held = await store.save_lyric_option('user-a', LyricRequest.parse({ brief, cta, product_path: 'spoken' }),
+      LyricResult.parse({ status: 'human_review_required', attempts: 1, output: written.body.option.output, reasons: ['human_review'] }));
+    expect((await post({ ...build, option_id: held.option_id })).status).toBe(409);
+    const publish = vi.spyOn(store, 'save_output').mockRejectedValueOnce(new Error('Simulated interrupted preview publication'));
+    expect((await post(build)).status).toBe(500);
+    publish.mockRestore();
+    const preview = await post(build);
+    expect(preview.status).toBe(200);
+    const job_id: string = preview.body.job_id;
+    const output = preview.body.run.outputs[0];
+    expect(output.composition_source).toMatchObject({ job_id, option_id });
+    const audio = await request(app).get(output.audio_url).auth(access_token, { type: 'bearer' });
+    expect(audio.status).toBe(200);
+    expect(Buffer.from(audio.body).subarray(0, 4).toString()).toBe('RIFF');
+    expect((await request(app).get(output.audio_url).auth(await token('user-b'), { type: 'bearer' })).status).toBe(404);
+    await store.set_run_status(job_id, 'rendering');
+    const retry = await post(build);
+    expect(retry.body.job_id).toBe(job_id);
+    expect(retry.body.run).toMatchObject({ status: 'completed', outputs: [{ output_id: output.output_id }] });
+    const selection = { ...selected, lyric_selections: [{ brief_id: brief.brief_id, option_id }], composition_selections: [{ brief_id: brief.brief_id, job_id }] };
+    const estimate = await request(app).post('/api/renders/estimate').auth(access_token, { type: 'bearer' }).send(selection);
+    expect(estimate.status).toBe(200);
+    const { composition_selections: _compositions, ...without_composition } = selection;
+    expect((await request(app).post('/api/renders').auth(access_token, { type: 'bearer' })
+      .send({ ...without_composition, mode: 'azure', confirmation: estimate.body })).status).toBe(409);
+    expect(synthesize).not.toHaveBeenCalled();
+    const missing = vi.spyOn(store, 'get_run').mockResolvedValueOnce(null);
+    expect((await request(app).post('/api/renders').auth(access_token, { type: 'bearer' }).send({ ...selection, mode: 'azure', confirmation: estimate.body })).status).toBe(404);
+    missing.mockRestore();
+    expect(synthesize).not.toHaveBeenCalled();
+    const original_preview = (await store.get_run(job_id, 'user-a'))!;
+    const changed = vi.spyOn(store, 'get_run').mockResolvedValueOnce({
+      ...original_preview,
+      outputs: original_preview.outputs.map(row => ({ ...row, manifest: {
+        ...row.manifest, composition_source: { job_id, option_id, backing_sha256: '0'.repeat(64) },
+      } })),
+    });
+    expect((await request(app).post('/api/renders').auth(access_token, { type: 'bearer' }).send({ ...selection, mode: 'azure', confirmation: estimate.body })).status).toBe(409);
+    changed.mockRestore();
+    expect(synthesize).not.toHaveBeenCalled();
+    const rendered = await request(app).post('/api/renders').auth(access_token, { type: 'bearer' }).send({ ...selection, mode: 'azure', confirmation: estimate.body });
+    expect(rendered.status).toBe(200);
+    expect(renderer.mock.calls[0]?.[6]?.composition?.backing).toEqual(Buffer.from(audio.body));
+    expect(renderer.mock.calls[0]?.[6]?.composition?.result.job_id).toBe(job_id);
+    expect(synthesize).toHaveBeenCalledTimes(1);
+  });
 
   it('validates custom input and rejects changed identities, invalid text and fixture overrides', async () => {
     const render = vi.fn(fake_render);
@@ -175,7 +259,7 @@ describe('same-origin Express API', () => {
       assess: vi.fn(async () => ({ english: true, grounded: true, risky_claims: false })),
       screen: vi.fn(async () => ({ moderation_passed: true, protected_material_detected: false })),
     };
-    const { app, access_token } = await fixture({ environ: { ...auth_environment, LYRIC_ENABLED: 'true' }, lyric_backend: backend });
+    const { app, access_token } = await fixture({ environ: { ...auth_environment, ...lyric_limits, LYRIC_ENABLED: 'true' }, lyric_backend: backend });
     const loaded = (await request(app).post('/api/briefs/validate').auth(access_token, { type: 'bearer' }).send(custom_details)).body;
     const { source: _source, cta, ...brief } = loaded;
     const payload = { brief_ids: [brief.brief_id], custom_briefs: [{ brief, cta }], confirm_paid_generation: true };
@@ -221,9 +305,10 @@ describe('same-origin Express API', () => {
     const speech_factory = vi.fn(() => ({ synthesize }));
     const renderer = vi.fn(fake_render);
     const { app, store, access_token } = await fixture({
-      data_dir: root, environ: { ...speech_environment(root, { SPEECH_TOTAL_BUDGET_USD: '2' }), LYRIC_ENABLED: 'true' },
+      data_dir: root, environ: { ...speech_environment(root, { SPEECH_TOTAL_BUDGET_USD: '2' }), ...lyric_limits, LYRIC_ENABLED: 'true' },
       lyric_backend: backend, speech_factory, render: renderer,
     });
+
     const loaded = source === 'custom'
       ? (await request(app).post('/api/briefs/validate').auth(access_token, { type: 'bearer' }).send(custom_details)).body
       : { ...sample[0], source: 'sample', cta: selectedCta };
@@ -486,6 +571,29 @@ describe('same-origin Express API', () => {
       finally { unlinkSync(symlink); }
     }
     expect(() => new WebStorage(join(STATIC_ROOT, 'private'))).toThrow(/outside the frontend static root/);
+  });
+});
+
+describe('guarded paid text ledger', () => {
+  it('reserves atomically and keeps failed attempts charged across app instances', async () => {
+    const preflight = vi.fn(async () => { throw new CloudFailure('cloud_transport_failed'); });
+    const backend: LyricBackend = { preflight, generate: vi.fn(), assess: vi.fn(), screen: vi.fn() };
+    const environ = { ...auth_environment, ...lyric_limits, LYRIC_ENABLED: 'true', LYRIC_TOTAL_BUDGET_USD: '0.022', LYRIC_PER_ACTION_CAP_USD: '0.1' };
+    const chat_advisor = { suggest: vi.fn() };
+    const first = await fixture({ environ, lyric_backend: backend, chat_advisor });
+    const second = await fixture({ data_dir: first.root, environ, lyric_backend: backend, chat_advisor }, false);
+    const selection = { brief_ids: ['brief-001'], confirm_paid_generation: true };
+    const chat = { ...selection, action: 'discuss', messages: [{ role: 'user', content: 'Make it upbeat' }] };
+    const oversized = await request(first.app).post('/api/lyrics/options').auth(first.access_token, { type: 'bearer' }).send(selection);
+    expect(oversized.status).toBe(409);
+    expect(oversized.body.detail).toContain('per-action');
+    expect(preflight).not.toHaveBeenCalled();
+    const send = (target: typeof first) => request(target.app).post('/api/chat').auth(target.access_token, { type: 'bearer' }).send(chat);
+    const responses = await Promise.all([send(first), send(second)]);
+    expect(responses.map(res => res.status).sort()).toEqual([409, 503]);
+    expect(responses.find(res => res.status === 409)?.body.detail).toContain('budget is exhausted');
+    expect(preflight).toHaveBeenCalledTimes(1);
+    expect((await send(second)).status).toBe(409);
   });
 });
 

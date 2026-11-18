@@ -4,16 +4,17 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { Decimal } from 'decimal.js';
 import { z } from 'zod';
 import {
-  SAMPLE_RATE, ScoreDuration, compose, jingle_duration, mix, musical_form, musical_plan, normalize, vocode, write_midi, write_wav,
+  SAMPLE_RATE, ScoreDuration, compose, instrument_palette, jingle_duration, mix, musical_form, musical_plan, normalize, vocode, write_midi, write_wav,
   type Note,
 } from './dsp.js';
 import { MelodyService } from './melody_service.js';
 import { render_backing } from './backing.js';
 import { select_screened, screen } from './similarity.js';
-import { VOICE, align, hook_word_index, place_spoken, type SpeechProvider } from './speech.js';
+import { VOICE, align, decode_pcm, hook_word_index, place_spoken, type SpeechProvider } from './speech.js';
 import { AdvertiserBrief } from './lyrics.js';
 import type { CompositionRequest } from './melody.js';
 import { REPOSITORY_ROOT } from './paths.js';
+import type { CommittedComposition } from './jingle_tools.js';
 
 export { REPOSITORY_ROOT };
 export const FIXTURES = join(REPOSITORY_ROOT, 'docs', 'audio-poc');
@@ -130,27 +131,35 @@ export interface RenderOutput extends Record<string, unknown> {
 export async function render_brief(
   directory: string, brief: AdvertiserBrief, text: string, _index: number,
   provider: SpeechProvider | null, evidence: SpeechEvidence | null,
-  options: { composition_seed?: CompositionRequest['seed']; history_dir?: string | null; database_url?: string | null } = {},
+  options: { composition_seed?: CompositionRequest['seed']; history_dir?: string | null; database_url?: string | null; composition?: CommittedComposition } = {},
 ): Promise<RenderOutput[]> {
   const started = performance.now();
   mkdirSync(directory);
   const attempt_id = randomUUID();
   save_json(join(directory, 'brief.json'), brief);
   writeFileSync(join(directory, 'script.txt'), `${text}\n`, 'utf8');
-  const archive = options.history_dir
+  const committed = options.composition;
+  const archive = options.history_dir && !committed
     ? new MelodyService(resolve(options.history_dir), { database_url: options.database_url ?? undefined }) : null;
   const minimum_duration = 10 + (text.match(/[A-Za-z]+/g)?.length ?? 0) * 0.25;
   const candidate = (seed: NonNullable<CompositionRequest['seed']>): [{ notes: Note[]; duration_seconds: number }, Record<string, number[]>] => {
     const duration_seconds = jingle_duration(seed, minimum_duration), notes = compose(seed, duration_seconds);
     return [{ notes, duration_seconds }, { lead: notes.filter((note) => note.instrument === 'lead').map((note) => note.pitch) }];
   };
-  const [seed, selected, melodies] = select_screened(candidate, {
+  const [seed, selected, melodies]: [
+    NonNullable<CompositionRequest['seed']>, { notes: Note[]; duration_seconds: number }, Record<string, number[]>, ...unknown[],
+  ] = committed
+    ? [committed.result.seed, { notes: [...committed.score], duration_seconds: committed.result.duration_seconds }, {}]
+    : select_screened(candidate, {
     seed: options.composition_seed ?? null,
     history: archive ? await archive.history_snapshot() : undefined,
   });
   let { notes, duration_seconds } = selected;
   let form = musical_form(duration_seconds);
-  let { audio: bed, ...instrumentation } = await render_backing(notes, seed, duration_seconds);
+  let { audio: bed, ...instrumentation } = committed
+    ? { audio: decode_pcm(committed.backing), palette: instrument_palette(seed), renderer: 'mcp-committed', soundfont: null }
+    : await render_backing(notes, seed, duration_seconds);
+  if (bed.length !== duration_seconds * SAMPLE_RATE) throw new RangeError('Committed backing duration does not match the arrangement');
   let outputs: Record<string, Float64Array> = { instrumental: normalize(bed) };
   let attempt: Record<string, unknown> | null = null;
   let alignment: unknown[] = [];
@@ -175,30 +184,33 @@ export async function render_brief(
       cost_status: 'Calculated estimate; reconcile with Azure billing',
     });
     save_json(join(directory, 'attempt.json'), attempt);
-    const fitted_duration = jingle_duration(seed, Math.max(minimum_duration,
+    const fitted_duration = committed ? duration_seconds : jingle_duration(seed, Math.max(minimum_duration,
       utterance.audio.length / SAMPLE_RATE + 2, hook_word_index(utterance, text) * 0.25 + 10.75));
-    if (fitted_duration !== duration_seconds) {
+    if (!committed && fitted_duration !== duration_seconds) {
       duration_seconds = fitted_duration;
       form = musical_form(duration_seconds);
       notes = compose(seed, duration_seconds);
       melodies.lead = notes.filter(note => note.instrument === 'lead').map(note => note.pitch);
       ({ audio: bed, ...instrumentation } = await render_backing(notes, seed, duration_seconds));
     }
-    const [modulator, carrier, melody, map] = align(utterance, text, musical_plan(seed).root, { melody_seed: seed, form });
-    notes.push(...melody);
+    const [modulator, carrier, melody, map] = align(utterance, text, musical_plan(seed).root, {
+      melody_seed: seed, form, ...(committed ? { timing: committed.result.syllable_timing } : {}),
+    });
+    if (!committed) notes.push(...melody);
     melodies.vocal = melody.map((note) => note.pitch);
     alignment = map;
-    outputs = { vocoded: mix(bed, vocode(modulator, carrier)), spoken: mix(bed, place_spoken(utterance, duration_seconds)) };
+    outputs = { vocoded: mix(bed, vocode(modulator, carrier)), spoken: mix(bed, committed ? modulator : place_spoken(utterance, duration_seconds)) };
     write_wav(join(directory, 'source-speech.wav'), utterance.audio);
     write_wav(join(directory, 'aligned-speech.wav'), modulator);
   }
-  const report = archive ? await archive.record_local_output(attempt_id, melodies) : screen(melodies);
+  const report = committed?.result.similarity ?? (archive ? await archive.record_local_output(attempt_id, melodies) : screen(melodies));
   save_json(join(directory, 'composition.json'), {
     seed, generator_version: 'earwyrm-phrase-v2', form, similarity: report, instrumentation,
-    timing_granularity: provider ? 'word' : null,
+    timing_granularity: provider ? (committed ? 'committed-syllable' : 'word') : null,
   });
   save_json(join(directory, 'score.json'), notes);
-  write_midi(join(directory, 'score.mid'), notes, duration_seconds, instrumentation.palette);
+  if (committed) writeFileSync(join(directory, 'score.mid'), committed.midi);
+  else write_midi(join(directory, 'score.mid'), notes, duration_seconds, instrumentation.palette);
   save_json(join(directory, 'alignment.json'), alignment);
   const rows: RenderOutput[] = [];
   for (const [variant, audio] of Object.entries(outputs)) {
@@ -225,7 +237,12 @@ export async function render_brief(
         basis: attempt ? 'One shared request, 50/50 pair allocation' : 'No Azure request; instrumental-only',
         rate_evidence: evidence, billing_reconciled: false,
       },
-      components: component_ledger(evidence, instrumentation.soundfont), composition_seed: seed, melody_similarity: report,
+      components: committed ? [...committed.result.components, ...component_ledger(evidence).filter(value => value.component === 'stock_synthetic_voice')] : component_ledger(evidence, instrumentation.soundfont),
+      composition_seed: seed, melody_similarity: report,
+      ...(committed ? { composition_source: {
+        job_id: committed.result.job_id, backing_sha256: committed.result.artifacts['backing.wav']!.sha256,
+        timing: committed.result.syllable_timing, renderer: 'mcp-committed',
+      } } : {}),
       ai_generated: true,
       disclosure: 'Code-generated music and, in live mode, a stock synthetic Azure voice; review demo, not broadcast master.',
       evaluation: { brand_transcription: null, cta_transcription: null, self_rating: null,

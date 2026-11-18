@@ -7,11 +7,15 @@ description: Find the local tools, their runtime boundaries, and the canonical s
 
 ## Overview
 
-The [web app](audio-poc/web-app.md) and [CLI](audio-poc/rendering.md) render
-directly. The independent Model Context Protocol (MCP) tools expose lyric
-generation and queued composition separately. The
-[Azure web deployment](azure-deployment.md) does not deploy those MCP tools,
-and no integrated queue worker delivers final vocal mixes.
+The [web app](audio-poc/web-app.md) uses real Model Context Protocol (MCP)
+calls for collaborative chat, screened lyric writing and arrangement previews.
+The API connects MCP SDK clients to its lyric and melody servers over linked
+in-process transports, closes both ends after each operation, and independently
+checks resource digests. No public MCP endpoint or separate deployment is needed.
+The fifteen-minute MCP operation deadline covers the writer's existing bounded
+provider stages; individual credential/HTTP waits and retry counts are unchanged.
+Existing non-chat rendering and the [CLI](audio-poc/rendering.md) remain direct.
+There is no general queue worker.
 
 ## Run the MCP tools locally
 
@@ -23,7 +27,7 @@ on the protocol stream.
 
 | Service | Stdio argument | Tool names |
 |---|---|---|
-| Lyric and Hook Writer | `apps/api/dist/lyric_mcp.js` | `write_lyrics` |
+| Lyric and Hook Writer | `apps/api/dist/lyric_mcp.js` | `suggest_jingle`, `write_lyrics` |
 | Melody and Arrangement | `apps/api/dist/melody_mcp.js` | `compose_arrangement`, `get_render_job` |
 
 For Streamable HTTP, run `npm run lyric-mcp -- --transport streamable-http --port 8002`
@@ -32,6 +36,12 @@ to `/mcp` on `127.0.0.1` at that port. These loopback endpoints are
 unauthenticated; do not expose them publicly.
 
 ### Lyric writer
+
+`suggest_jingle` accepts a lyric `request` and one to twelve bounded `messages`
+ending with a user message. It screens conversation context and returns advice
+plus a creative direction, not approved lyrics or instructions to execute tools.
+It never invokes another tool automatically. The writer accepts an optional
+`creative_direction`, which is screened and cannot replace advertiser facts.
 
 `write_lyrics` takes a `request` object with a brief, spoken or vocoded product
 path, and English lyric constraints for a 30-second spot. See the
@@ -60,6 +70,58 @@ The tool returns the existing job; a changed payload under that ID conflicts.
 Use `get_render_job` for status rather than publishing a second job. A
 similarity pass covers only the [bounded references](../apps/api/src/similarity.ts)
 and history in the selected store, not copyright clearance.
+
+### Browser chat and exact vocals
+
+Authenticated `/api/chat` exposes explicit `discuss`, `write`, and `compose`
+actions. Discussion and writing require paid entitlement, `LYRIC_ENABLED=true`
+and literal per-action consent. They share the lyric model and Content Safety
+configuration above; their charges are separate from Speech estimates.
+
+The web API also requires `LYRIC_MODEL_CALL_MAX_USD`,
+`LYRIC_SAFETY_CALL_MAX_USD`, `LYRIC_PER_ACTION_CAP_USD`, and
+`LYRIC_TOTAL_BUDGET_USD`. Use positive USD decimals approved for the exact
+deployment and screening configuration. The first two amounts upper-bound one
+model and one Content Safety request, respectively. For the model, include the
+deployment's full input context at uncached pricing and up to 1,200 output
+tokens, including reasoning tokens if applicable. For Content Safety, cover
+the more expensive of moderation and protected-material detection and all
+billable units in that request. Use metered deployments with verifiable prices.
+
+| Action | Max model requests | Max safety requests |
+|---|---:|---:|
+| Discuss | 2 | 2 |
+| Write a draft | 9 | 2 |
+| Generate 3 lyric options | 27 | 6 |
+
+The API reserves the entire action cost before contacting either provider.
+Requests larger than 64 KiB after serialization are blocked by the web
+adapter. Failed and partial actions keep their reservation. The cumulative
+allowance is shared by all users of the database, persists across restarts,
+and does not automatically reset or credit unused calls. It is an app-side
+upper-bound ledger, not Azure invoice tracking or a subscription-wide cap.
+Standalone MCP does not use this web ledger.
+
+Composition accepts only an owner-scoped, accepted, immutable lyric option.
+Its stable logical ID recovers one private music preview after a lost response,
+including partially published runs. The web preview's completed status means
+its backing is available, not that the composition queue job delivered vocals.
+That queue row stays queued; this flow consumes committed artifacts synchronously.
+
+Paid vocal rendering selects the published job with `composition_selections`
+and its accepted option with `lyric_selections`. The existing estimate and
+confirmation bind the exact brief, lyric, job and backing digest. The renderer
+loads protected MCP WAV, MIDI and score resources; it does not recompose, resize,
+or compare the arrangement against its own history. Both spoken and vocoded
+mixes fit complete Speech word intervals to committed syllable notes and retain
+the original duration. Mixing ducks and normalizes the backing; the final mix
+is not byte-identical to the instrumental WAV.
+
+Syllables use dictionary counts and orthographic slices, not phoneme alignment.
+Sung output is an approximate demo, not natural singing. All results retain
+human broadcast review and paid usage reconciliation. Transcripts are bounded
+page memory per advertiser and clear on sign-out or reload; accepted options
+and protected previews persist in existing storage.
 
 ## Look up schemas
 

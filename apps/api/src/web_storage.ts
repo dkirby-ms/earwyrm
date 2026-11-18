@@ -7,6 +7,7 @@ import { PostgresConnection, SqliteConnection, serialized, transaction, type Con
 import { prepare_database_file } from "./sqlite_files.js";
 import { STATIC_ROOT } from "./paths.js";
 import type { LyricRequest, LyricResult } from "./lyrics.js";
+import type { PaidLyricAction } from "./lyric_budget.js";
 
 const Money = Decimal.clone({ precision: 28 });
 export { STATIC_ROOT };
@@ -157,6 +158,37 @@ export class WebStorage {
         PRIMARY KEY (issuer, subject));
     `);
     await WebStorage._create_lyric_schema(connection);
+    await WebStorage._create_lyric_budget_schema(connection);
+  }
+
+  /** Adds content-free, cumulative reservations without resetting existing spend. */
+  static async _create_lyric_budget_schema(connection: Connection): Promise<void> {
+    await connection.execute(`CREATE TABLE IF NOT EXISTS lyric_reservations (
+      reservation_id TEXT PRIMARY KEY, action TEXT NOT NULL CHECK (action IN ('discuss','write','options')),
+      reserved_usd TEXT NOT NULL, created_at TEXT NOT NULL)`);
+  }
+
+  /** Confirms the explicit PostgreSQL upgrade without running DDL from the web app. */
+  async has_lyric_budget(): Promise<boolean> {
+    if (this.database_url === null) return true;
+    return this.read(async c => Boolean((await c.execute("SELECT to_regclass('lyric_reservations') AS name")).rows[0]?.name));
+  }
+
+  /** Commits the full upper bound before provider calls; no attempt is automatically refunded. */
+  async reserve_lyric_action(action: PaidLyricAction, cost: Decimal, cap: Decimal, total: Decimal): Promise<void> {
+    if (cost.gt(cap)) throw new StorageConflict('This text action exceeds the per-action spending limit.');
+    await this.write(async c => {
+      let projected = new Money(cost);
+      for (const row of (await c.execute('SELECT reserved_usd FROM lyric_reservations')).rows) {
+        const amount = new Money(String(row.reserved_usd));
+        if (!amount.isFinite() || amount.lte(0)) throw new Error('Invalid text budget reservation');
+        projected = projected.plus(amount);
+        if (projected.gt(total)) break;
+      }
+      if (projected.gt(total)) throw new StorageConflict('The chat and lyrics spending budget is exhausted.');
+      await c.execute('INSERT INTO lyric_reservations VALUES (?, ?, ?, ?)',
+        [randomUUID(), action, cost.toFixed(), new Date().toISOString()]);
+    });
   }
   /** Additive schema used by SQLite initialization and the explicit PostgreSQL upgrade. */
   static async _create_lyric_schema(connection: Connection): Promise<void> {

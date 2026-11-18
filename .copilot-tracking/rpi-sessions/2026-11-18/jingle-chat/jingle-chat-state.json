@@ -1,0 +1,41 @@
+{
+  "task_id": "jingle-chat",
+  "task_slug": "jingle-chat",
+  "session_name": "Jingle chat",
+  "parent_task": null,
+  "child_tasks": [{"task_id":"jingle-chat-timeout","task_slug":"jingle-chat-timeout","state_path":".copilot-tracking/rpi-sessions/2026-11-18/jingle-chat/jingle-chat-timeout-state.json"}],
+  "mode": "automatic",
+  "active_phase": "Follow-up",
+  "status": "completed",
+  "session_status": "stopped",
+  "artifact_paths": {
+    "research": ".copilot-tracking/research/2026-11-18/jingle-chat-research.md",
+    "plan": ".copilot-tracking/plans/2026-11-18/jingle-chat-plan.md",
+    "critique": ".copilot-tracking/reviews/plans/2026-11-18/jingle-chat-plan-critique.md",
+    "changes": ".copilot-tracking/changes/2026-11-18/jingle-chat-changes.md",
+    "review": ".copilot-tracking/reviews/logs/2026-11-18/jingle-chat-review.md"
+  },
+  "documents": {
+    "research": [".copilot-tracking/research/2026-11-18/jingle-chat-research.md"],
+    "plan": [".copilot-tracking/plans/2026-11-18/jingle-chat-plan.md"],
+    "critique": [".copilot-tracking/reviews/plans/2026-11-18/jingle-chat-plan-critique.md"],
+    "changes": [".copilot-tracking/changes/2026-11-18/jingle-chat-changes.md"],
+    "review": [".copilot-tracking/reviews/logs/2026-11-18/jingle-chat-review.md"]
+  },
+  "confirmed_decisions": [
+    {"decision":"Automatic session scope","status":"current","evidence":"User requests chat in the existing app using MCP directly to suggest and build jingles with the user; selected end-to-end. Local research, plan, source, tests, and directly related documentation are authorized. Preserve existing workspace and paid-call consent. No deployment, push, paid calls, or tracker mutations."},
+    {"decision":"Automatic progression boundary","status":"through-review","evidence":"User selected end-to-end in RPI mode intake."},
+    {"decision":"Research decision participation","status":"agent-owned","evidence":"End-to-end intake."},
+    {"decision":"Planning decision participation","status":"agent-owned","evidence":"End-to-end intake."},
+    {"decision":"Review decision participation","status":"agent-owned","evidence":"End-to-end intake."},
+    {"decision":"Follow-up decision participation","status":"agent-owned","evidence":"End-to-end intake."},
+    {"decision":"Subagent use","status":"auto","evidence":"Use only when substantial separate context warrants it; otherwise direct."},
+    {"decision":"Planning critique","status":"standard","evidence":"First-task default."},
+    {"decision":"Review step","status":"run","evidence":"First-task default."},
+    {"decision":"Canvas","status":"current","evidence":"instance rpi-jingle-chat; handle KRSV; extensionId plugin:hve-core:rpi-workflow."},
+    {"decision":"Exact MCP vocals","status":"confirmed","evidence":"User selected exact-mcp-vocals; consume committed MCP backing and vocal map, not a separately recomposed voice version."}
+  ],
+  "blockers": [],
+  "next_action": {"phase":"Follow-up","action":"Complete; no action required for local implementation. Review RD-007 through RD-009 records session acceptance after RV-001 resolution. Child changes validated but not reviewed; live paid-provider and broadcast approval remain outside this session."},
+  "prioritized_follow_ups": []
+}

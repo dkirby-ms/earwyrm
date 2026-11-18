@@ -17,6 +17,7 @@ export const WEB_TABLE_COLUMNS: Record<string, readonly string[]> = {
   application_identity: ["singleton", "issuer"],
   application_users: ["issuer", "subject", "enabled", "admin", "paid_speech", "created_at"],
   lyric_options: ["option_id", "owner", "brief_id", "request_json", "result_json", "created_at"],
+  lyric_reservations: ["reservation_id", "action", "reserved_usd", "created_at"],
 };
 export const MELODY_TABLE_COLUMNS: Record<string, readonly string[]> = {
   render_jobs: ["job_id", "logical_job_id", "request_json", "result_json", "melodies_json", "status", "created_at"],
@@ -54,7 +55,7 @@ function require_root(root: string): string {
   return realpathSync(root);
 }
 const RESET_TABLES = [
-  "lyric_options", "application_users", "application_identity", "evaluations", "outputs", "paid_attempts",
+  "lyric_reservations", "lyric_options", "application_users", "application_identity", "evaluations", "outputs", "paid_attempts",
   "runs", "local_outputs", "render_jobs", "earwyrm_store_metadata",
 ] as const;
 const RESET_DATA_ENTRIES = ["audio", "work", "melody", "earwyrm.sqlite3", ".earwyrm-initialized"] as const;
@@ -105,10 +106,11 @@ export async function initialize_fresh(directory: string, database_url: string, 
       await WebStorage._create_schema(c);
       await WebStorage._bootstrap_owner(c, owner.issuer, owner.subject);
       await MelodyService._create_schema(c);
+      const tables = [...REQUIRED_TABLES, "lyric_reservations"];
       const count = (await c.execute(`SELECT count(*) AS table_count FROM pg_catalog.pg_class
         WHERE relnamespace = current_schema()::regnamespace AND relkind IN ('r', 'p')
-        AND relname IN (${REQUIRED_TABLES.map(() => "?").join(",")})`, REQUIRED_TABLES)).rows[0];
-      if (Number(count?.table_count) !== REQUIRED_TABLES.length) throw new Error("New PostgreSQL store schema is incomplete");
+        AND relname IN (${tables.map(() => "?").join(",")})`, tables)).rows[0];
+      if (Number(count?.table_count) !== tables.length) throw new Error("New PostgreSQL store schema is incomplete");
       await write_marker(c);
     });
     reset_application_data(root);
@@ -212,8 +214,9 @@ export async function import_sqlite(directory: string, database_url: string): Pr
     web = new SqliteConnection(webPath, true);
     melody = new SqliteConnection(melodyPath, true);
     const sourceColumns = { ...WEB_TABLE_COLUMNS };
-    const hasLyrics = (await web.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'lyric_options'")).rows.length > 0;
-    if (!hasLyrics) delete sourceColumns.lyric_options;
+    for (const table of ["lyric_options", "lyric_reservations"]) {
+      if (!(await web.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", [table])).rows.length) delete sourceColumns[table];
+    }
     const webTables = await validate_source(web, sourceColumns, new Set(["application_identity", "application_users"]));
     await validate_source(melody, MELODY_TABLE_COLUMNS);
     await validate_web(web, root, webTables);
@@ -252,7 +255,7 @@ export async function main(args: string[] = process.argv.slice(2), environment: 
     const parsed = create_parser(args);
     const command = parsed.positionals[0], values = parsed.values;
     if (values.help) {
-      console.log("Usage: database [--data-dir DATA_DIR] {initialize-fresh,import-sqlite,upgrade,bootstrap-owner,set-user,list-users}\nupgrade: adds lyric-option storage to an initialized PostgreSQL store without deleting records\ninitialize-fresh: requires EARWYRM_DATA_RESET_APPROVED=true and owner identity env vars matching ENTRA_EXPECTED_ISSUER\nbootstrap-owner: --issuer ISSUER --subject SUBJECT\nset-user: --issuer ISSUER --subject SUBJECT --enabled {yes,no} --admin {yes,no} --paid-speech {yes,no}");
+      console.log("Usage: database [--data-dir DATA_DIR] {initialize-fresh,import-sqlite,upgrade,bootstrap-owner,set-user,list-users}\nupgrade: adds lyric option and budget storage to an initialized PostgreSQL store without deleting records\ninitialize-fresh: requires EARWYRM_DATA_RESET_APPROVED=true and owner identity env vars matching ENTRA_EXPECTED_ISSUER\nbootstrap-owner: --issuer ISSUER --subject SUBJECT\nset-user: --issuer ISSUER --subject SUBJECT --enabled {yes,no} --admin {yes,no} --paid-speech {yes,no}");
       return 0;
     }
     if (parsed.positionals.length !== 1 || !["initialize-fresh", "import-sqlite", "upgrade", "bootstrap-owner", "set-user", "list-users"].includes(command ?? "")) throw new TypeError("A valid operator command is required");
@@ -278,9 +281,10 @@ export async function main(args: string[] = process.argv.slice(2), environment: 
           if (!(await c.execute("SELECT to_regclass(?) AS name", [table])).rows[0]?.name) throw new TypeError("Upgrade requires a complete existing store");
         }
         await WebStorage._create_lyric_schema(c);
+        await WebStorage._create_lyric_budget_schema(c);
       });
       await validate_postgres_store(database_url);
-      console.log("PostgreSQL lyric-option storage upgraded without deleting records");
+      console.log("PostgreSQL lyric option and budget storage upgraded without deleting records");
       return 0;
     }
     if (command === "initialize-fresh" || command === "import-sqlite") {

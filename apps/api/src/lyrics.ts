@@ -39,6 +39,7 @@ export const LyricRequest = z.strictObject({
   language: z.literal("en").default("en"), duration_seconds: z.literal(30).default(30),
   style: z.literal("retro-synth").default("retro-synth"),
   pronunciations: z.record(z.string(), z.array(z.string())).default({}),
+  creative_direction: Text.optional(),
 }).superRefine((request, ctx) => {
   const { brief } = request;
   const values = [brief.name, brief.offer, brief.location, brief.tone, brief.contact_details.email, brief.contact_details.phone, request.cta, ...brief.approved_claims];

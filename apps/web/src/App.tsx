@@ -29,6 +29,20 @@ const apiScopes = {
 type WorkspaceView = 'workspace-view' | 'admin-view'
 type BriefSection = 'brief' | 'lyrics' | 'variants'
 
+interface ChatMessage {
+  readonly role: 'user' | 'assistant'
+  readonly content: string
+}
+
+interface ChatSession {
+  readonly messages: readonly ChatMessage[]
+  readonly message: string
+  readonly direction: string
+  readonly productPath: 'spoken' | 'vocoded'
+}
+
+const emptyChat: ChatSession = { messages: [], message: '', direction: '', productPath: 'spoken' }
+
 interface Identity {
   readonly issuer: string
   readonly subject: string
@@ -160,6 +174,8 @@ function App() {
   const [includeVocals, setIncludeVocals] = useState(false)
   const [lyricAvailable, setLyricAvailable] = useState(false)
   const [lyricConsent, setLyricConsent] = useState(false)
+  const [chatConsent, setChatConsent] = useState(false)
+  const [chatSessions, setChatSessions] = useState<Readonly<Record<string, ChatSession>>>({})
   const [lyricOptions, setLyricOptions] = useState<Readonly<Record<string, readonly LyricOption[]>>>({})
   const [selectedLyricIds, setSelectedLyricIds] = useState<Readonly<Record<string, string>>>({})
   const [estimate, setEstimate] = useState<RenderEstimate | null>(null)
@@ -181,6 +197,8 @@ function App() {
   const evaluationHeading = useRef<HTMLHeadingElement>(null)
   const audioElements = useRef(new Map<string, HTMLAudioElement>())
   const audioUrls = useRef(new Map<string, { url: string; timer: number }>())
+  const chatContext = useRef(activeBriefId)
+  chatContext.current = activeBriefId
 
   async function loadWorkspaceData(
     authClient: IPublicClientApplication,
@@ -336,6 +354,7 @@ function App() {
   ).length
   const selectedBriefs = briefs.filter((brief) => selectedBriefIds.has(brief.brief_id))
   const activeBrief = briefs.find(brief => brief.brief_id === activeBriefId)
+  const chatSession = chatSessions[activeBriefId] ?? emptyChat
   const selectedLyric = lyricOptions[activeBriefId]?.find(option =>
     option.option_id === selectedLyricIds[activeBriefId] && option.status === 'accepted' && option.output)
   const activeStatus = rollup?.briefs.find(brief => brief.brief_id === activeBriefId)?.status ?? 'Pending'
@@ -438,6 +457,8 @@ function App() {
       setIncludeVocals(false)
       setLyricAvailable(false)
       setLyricConsent(false)
+      setChatConsent(false)
+      setChatSessions({})
       setLyricOptions({})
       setSelectedLyricIds({})
       setAnnouncement('Signed out.')
@@ -482,11 +503,13 @@ function App() {
   }
 
   function inspectBrief(briefId: string): void {
+    chatContext.current = briefId
     setActiveBriefId(briefId)
     setActiveOutputId('')
     setActiveRunId('')
     setEditingBrief(false)
     setLyricConsent(false)
+    setChatConsent(false)
     setEstimate(null)
     setSection('lyrics')
     for (const audio of audioElements.current.values()) audio.pause()
@@ -526,6 +549,57 @@ function App() {
     })
   }
 
+  function updateChat(patch: Partial<ChatSession>): void {
+    setChatSessions(current => ({ ...current, [activeBriefId]: { ...(current[activeBriefId] ?? emptyChat), ...patch } }))
+  }
+
+  async function chatAction(action: 'discuss' | 'write'): Promise<void> {
+    if (!client || !config || !activeBrief || !chatConsent) return
+    const brief = activeBrief
+    const messages: readonly ChatMessage[] = [...chatSession.messages.slice(-10), { role: 'user', content: chatSession.message.trim() }]
+    setChatConsent(false)
+    await runAction(action === 'discuss' ? 'Asking the jingle MCP advisor' : 'Writing a screened draft through MCP', async () => {
+      const body = {
+        action, brief_ids: [brief.brief_id],
+        custom_briefs: brief.source === 'custom' ? [customPayload(brief)] : [],
+        confirm_paid_generation: true,
+      }
+      if (action === 'discuss') {
+        const result = await apiJson<{ reply: string; creative_direction: string }>(client, config, '/api/chat', apiScopes.render, {
+          method: 'POST', body: { ...body, messages },
+        })
+        if (chatContext.current !== brief.brief_id) return
+        updateChat({ messages: [...messages, { role: 'assistant', content: result.reply }], message: '', direction: result.creative_direction })
+        setAnnouncement('MCP suggestion ready. Refine the direction or authorize a lyric draft.')
+      } else {
+        const result = await apiJson<{ option: LyricOption }>(client, config, '/api/chat', apiScopes.render, {
+          method: 'POST', body: { ...body, creative_direction: chatSession.direction.trim(), product_path: chatSession.productPath },
+        })
+        if (chatContext.current !== brief.brief_id) return
+        setLyricOptions(current => ({ ...current, [brief.brief_id]: [...(current[brief.brief_id] ?? []), result.option] }))
+        if (result.option.status === 'accepted') setSelectedLyricIds(current => ({ ...current, [brief.brief_id]: result.option.option_id }))
+        setAnnouncement(`MCP write_lyrics finished: ${result.option.status.replaceAll('_', ' ')}. Review the draft below.`)
+      }
+    })
+  }
+
+  async function buildMusicPreview(option: LyricOption): Promise<void> {
+    if (!client || !config || !activeBrief) return
+    const brief = activeBrief
+    await runAction('Building the exact MCP music preview', async () => {
+      const result = await apiJson<{ job_id: string }>(client, config, '/api/chat', apiScopes.render, {
+        method: 'POST', body: {
+          action: 'compose', brief_ids: [brief.brief_id], option_id: option.option_id,
+          custom_briefs: brief.source === 'custom' ? [customPayload(brief)] : [],
+        },
+      })
+      if (chatContext.current !== brief.brief_id) return
+      await loadWorkspaceData(client, config)
+      inspectCompletedRun(result.job_id, [brief.brief_id])
+      setAnnouncement('MCP arrangement ready. Listen, then estimate vocals on this exact arrangement. Retrying this lyric recovers the same preview.')
+    })
+  }
+
   /** Reveal completed work only when it belongs to the active brief and will not replace a draft. */
   function inspectCompletedRun(runId: string, briefIds: readonly string[]): void {
     if (editingBrief || (inspectedOutput && evaluationDrafts[inspectedOutput.output_id])) {
@@ -561,7 +635,11 @@ function App() {
     })
   }
 
-  async function estimatePaidRender(renderBriefs: readonly Brief[] = selectedBriefs, lyric?: LyricOption): Promise<void> {
+  async function estimatePaidRender(
+    renderBriefs: readonly Brief[] = selectedBriefs,
+    lyric?: Pick<LyricOption, 'brief_id' | 'option_id'>,
+    compositionJobId?: string,
+  ): Promise<void> {
     if (!client || !config || renderBriefs.length === 0 || !paidAvailable) return
     const briefIds = renderBriefs.map((brief) => brief.brief_id)
     await runAction('Calculating Azure voice estimate', async () => {
@@ -574,6 +652,7 @@ function App() {
           brief_ids: briefIds,
           custom_briefs: renderBriefs.filter(brief => brief.source === 'custom').map(customPayload),
           ...(lyric ? { lyric_selections: [{ brief_id: lyric.brief_id, option_id: lyric.option_id }] } : {}),
+          ...(lyric && compositionJobId ? { composition_selections: [{ brief_id: lyric.brief_id, job_id: compositionJobId }] } : {}),
         } },
       )
       setEstimate(result)
@@ -597,6 +676,7 @@ function App() {
               custom_briefs: briefs.filter(brief => confirmedEstimate.brief_ids.includes(brief.brief_id) && brief.source === 'custom').map(customPayload),
               mode: 'azure',
               ...(confirmedEstimate.lyric_selections ? { lyric_selections: confirmedEstimate.lyric_selections } : {}),
+              ...(confirmedEstimate.composition_selections ? { composition_selections: confirmedEstimate.composition_selections } : {}),
               confirmation: {
                 brief_ids: confirmedEstimate.brief_ids,
                 estimated_cost_usd: confirmedEstimate.estimated_cost_usd,
@@ -1072,6 +1152,35 @@ function App() {
                       <div><h2 id="lyrics-heading">Find your hook.</h2><p className="muted">Choose the words, then bring them to life.</p></div>
                       <button className="button button-secondary" type="button" disabled={busy || !activeBrief || !options?.instrumental_available} onClick={() => void renderOffline(activeBrief ? [activeBrief] : [])}>Preview music only</button>
                     </div>
+                    <section className="jingle-chat" aria-labelledby="chat-heading" aria-busy={busy}>
+                      <h3 id="chat-heading">Make it together.</h3>
+                      <p className="muted">Talk through a direction, write a screened draft, then build its music with MCP. Each paid action needs your consent.</p>
+                      {!lyricAvailable && <p className="notice">Chat is disabled or unavailable. Enable lyric generation and paid access on the server. Existing accepted lyrics can still build music.</p>}
+                      <div role="log" aria-label={`Conversation for ${activeBrief?.name || activeBriefId}`} className="chat-transcript">
+                        {!chatSession.messages.length && <p className="chat-prompt">What should listeners feel? Try a warm local welcome, a playful hook, or a more confident delivery.</p>}
+                        {chatSession.messages.map((message, index) => <div className="chat-message" data-role={message.role} key={index}><strong>{message.role === 'user' ? 'You' : 'Jingle advisor · MCP suggest_jingle'}</strong><p>{message.content}</p></div>)}
+                      </div>
+                      <p className="muted chat-help">The latest 12 messages stay in this page, separately for each advertiser. They clear on sign-out or reload. Suggestions are not approved lyrics.</p>
+                      <form onSubmit={event => { event.preventDefault(); void chatAction('discuss') }}>
+                        <label htmlFor="chat-message">Your message</label>
+                        <textarea id="chat-message" value={chatSession.message} maxLength={2000} disabled={busy || !lyricAvailable} onChange={event => updateChat({ message: event.currentTarget.value })} placeholder="Describe the mood, pace, or what you would change." />
+                        <label className="check-label">
+                          <input type="checkbox" checked={chatConsent} disabled={busy || !lyricAvailable} onChange={event => setChatConsent(event.currentTarget.checked)} />
+                          <span>I authorize paid requests for the next chat or lyric action. Foundry and Content Safety costs are not estimated here; lyric writing includes bounded retries.</span>
+                        </label>
+                        <div><button className="button button-primary" type="submit" disabled={busy || !lyricAvailable || !chatConsent || !chatSession.message.trim()}>Send message</button></div>
+                      </form>
+                      <div className="chat-direction">
+                        <label htmlFor="chat-direction">Creative direction</label>
+                        <textarea id="chat-direction" value={chatSession.direction} maxLength={400} disabled={busy || !lyricAvailable} onChange={event => updateChat({ direction: event.currentTarget.value })} placeholder="Use the advisor's suggestion, or write your own direction." />
+                        <label htmlFor="chat-product-path">Lyric style</label>
+                        <select id="chat-product-path" value={chatSession.productPath} disabled={busy || !lyricAvailable} onChange={event => updateChat({ productPath: event.currentTarget.value === 'vocoded' ? 'vocoded' : 'spoken' })}>
+                          <option value="spoken">Spoken · two lines</option><option value="vocoded">Sung demo · four rhyming lines</option>
+                        </select>
+                        <div><button className="button button-secondary" type="button" disabled={busy || !lyricAvailable || !chatConsent || !chatSession.direction.trim()} onClick={() => void chatAction('write')}>Write a lyric draft</button></div>
+                      </div>
+                    </section>
+                    <h3>Or start with three options.</h3>
                     <p className="muted">
                       Generate three screened lyric options for this advertiser. Select an accepted draft to use its exact words in a voice-and-music version.
                       Music-only previews do not include lyrics or prove vocal quality.
@@ -1105,6 +1214,7 @@ function App() {
                             onClick={() => { setSelectedLyricIds(current => ({ ...current, [activeBriefId]: option.option_id })); setEstimate(null); setAnnouncement(`Lyric option ${index + 1} selected for audio.`) }}
                           >{selectedLyric?.option_id === option.option_id ? 'Selected lyrics' : `Use option ${index + 1}`}</button>
                           {selectedLyric?.option_id === option.option_id && <button className="button button-primary" type="button" disabled={busy || !paidAvailable || !activeBrief} onClick={() => void estimatePaidRender(activeBrief ? [activeBrief] : [], selectedLyric)}>Estimate voice + music</button>}</div>
+                          {selectedLyric?.option_id === option.option_id && <div className="button-row"><button className="button button-secondary" type="button" disabled={busy} onClick={() => void buildMusicPreview(option)}>Build MCP music preview</button><p className="muted">No cloud requests. Builds once per draft; then add vocals to that exact arrangement in Listen &amp; review.</p></div>}
                           {selectedLyric?.option_id === option.option_id && <p className="muted">{renderOptionsMessage(options, unresolvedCount, paidStatusUncertain)}</p>}
                           {option.status === 'human_review_required' && <p className="muted">Held for human review. This draft cannot be rendered.</p>}
                         </article>
@@ -1174,6 +1284,7 @@ function App() {
                       <h3>Version {index + 1} <span>{inspectedOutput?.output_id === output.output_id ? '/ Selected' : ''}</span></h3>
                       <p>{output.variant.replaceAll('_', ' ')} · {formatSeconds(output.duration_seconds)}</p>
                       <p className="muted">{output.lyric_source ? `Lyrics: ${output.lyric_source.hook}` : 'Original brief script; no selected lyric draft'}</p>
+                      {output.composition_source && <p className="muted">Exact MCP arrangement · {output.composition_source.job_id}</p>}
                       <p className="review-state">Audio ready · {output.evaluation ? 'Human review recorded' : 'Human review not recorded'}</p>
                     </div>
                     <button className="button button-secondary" type="button" disabled={busy} onClick={() => { setActiveOutputId(output.output_id); window.setTimeout(() => evaluationHeading.current?.focus(), 0) }}>Review this version</button>
@@ -1185,6 +1296,9 @@ function App() {
                 {(inspectedOutput ? [inspectedOutput] : []).map((output) => {
                   const isInstrumental =
                     Number(output.azure_usage.submitted_characters ?? 0) === 0
+                  const committedSelection = output.composition_source?.option_id
+                    ? { brief_id: output.brief_id, option_id: output.composition_source.option_id, job_id: output.composition_source.job_id }
+                    : null
                   void audioRevision
                   const draft = evaluationDrafts[output.output_id] ?? {
                     brand_transcription: '',
@@ -1224,6 +1338,10 @@ function App() {
                         Evaluation: {output.status}
                       </p>
                       {output.lyric_source && <section className="lyric-source" key={output.lyric_source.option_id}><h4>Lyrics behind this version</h4><p className="lyric-text">{output.lyric_source.lyrics}</p><p className="muted">Server-screened draft · AI-generated · Broadcast approval still required</p></section>}
+                      {isInstrumental && committedSelection && <div>
+                        <p className="muted">Vocals will use this exact backing and syllable timing. Sung demos use approximate word slicing, not natural singing. Producer listening is required.</p>
+                        <button className="button button-primary" type="button" disabled={busy || !paidAvailable} onClick={() => void estimatePaidRender(activeBrief ? [activeBrief] : [], committedSelection, committedSelection.job_id)}>Estimate vocals on this arrangement</button>
+                      </div>}
                       <div className="button-row">
                         <button
                           className="button button-secondary"
@@ -1617,6 +1735,7 @@ function App() {
               ? <div className="estimate-lyric" key={selection.option_id}><p><strong>Option {index + 1}: {draft.hook}</strong></p><p className="lyric-text">{draft.lyrics}</p></div>
               : <p className="notice" role="alert" key={selection.option_id}>This saved lyric draft could not be loaded. Cancel and reload the workspace to verify it before rendering.</p>
           })}
+          {Boolean(estimate?.composition_selections?.length) && <p className="notice">Vocals will use the selected MCP arrangement&apos;s exact backing and syllable timing, without recomposing the music. Sung demo quality is approximate.</p>}
           <p className="muted">
             Confirmation is bound to these exact briefs{estimate?.lyric_selections?.length ? ', the selected lyric draft,' : ''} and the server-computed estimate. The server will
             re-check the contents before starting.

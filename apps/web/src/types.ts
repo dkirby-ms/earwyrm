@@ -101,6 +101,11 @@ export interface Output {
     readonly status: 'accepted'
     readonly broadcast_approval_required: true
   } | null
+  readonly composition_source?: {
+    readonly job_id: string
+    readonly option_id?: string
+    readonly backing_sha256: string
+  } | null
 }
 
 /** A paid attempt that may require usage reconciliation. */
@@ -135,6 +140,7 @@ export interface RenderEstimate {
   readonly estimated_cost_usd: string
   readonly input_fingerprint?: string
   readonly lyric_selections?: readonly { readonly brief_id: string; readonly option_id: string }[]
+  readonly composition_selections?: readonly { readonly brief_id: string; readonly job_id: string }[]
 }
 
 /** Draft values for an output evaluation form. */
