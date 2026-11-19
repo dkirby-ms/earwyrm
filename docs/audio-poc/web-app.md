@@ -35,15 +35,23 @@ permission and consent for the API's delegated scopes: `briefs.read`,
 `renders.read`, `renders.write`, `evaluations.write`, and `outputs.read`.
 Do not share access tokens.
 
-### Authorize an application user
+### Request or grant application access
 
-Sign-in alone does not grant application access. Use a protected API client
-with the `briefs.read` scope to get the caller's validated issuer and subject
-from `/api/identity`. Verify both with the operator through a trusted channel.
+Sign-in alone does not grant application access. If you are signed in but
+cannot open the workspace, select **Request access**. The API binds the request
+to your validated identity; you do not enter a subject or email address. The
+workspace shows when your request is pending or denied; you can submit another
+request after a denial. After approval, reload the workspace to continue.
+
+An enabled administrator can open **Manage access** to review pending requests
+and grant or deny them without entering the requester's subject. Granting gives
+baseline application access only. Administrator and paid Speech permissions
+remain off; use the existing permission editor to assign those separately.
+These changes do not modify External ID accounts.
 
 For local SQLite, start the API once to create the store. With the same
 `ENTRA_EXPECTED_ISSUER` and private data directory configured for the operator
-shell, enroll the first administrator:
+shell, bootstrap the first administrator:
 
 ```bash
 npm run database -- bootstrap-owner \
@@ -52,9 +60,10 @@ npm run database -- bootstrap-owner \
 ```
 
 Replace the example values with the verified identity. This one-time operation
-grants paid Speech entitlement but does not enable spending. Use **Manage
-access** as an enabled administrator to enroll or update other users; operators
-can also use `npm run database -- --help`.
+grants paid Speech entitlement but does not enable spending. After bootstrap,
+the administrator can manage pending access requests and edit existing
+application permissions. Operators can also use
+`npm run database -- --help`.
 
 ## Create and review a jingle
 
@@ -62,7 +71,9 @@ can also use `npm run database -- --help`.
    own. Check the brief and call to action (CTA), then select **Continue to music**.
 2. Select **Generate 3 arrangements**. Play the instrumental previews and
    choose one before continuing. This step does not use paid lyric or voice services.
-   New arrangements use a recurring hook and usually run 14 to 20 seconds.
+   New arrangements introduce a short hook in the first lyric phrase, bring it
+   back in the third, and resolve the call to action into an instrumental tag.
+   They usually run 14 to 20 seconds.
    Longer briefs can extend the music to fit the complete call to action.
    Generating again reopens the current set; older previews remain in history.
 3. Authorize **Generate 3 lyric drafts**. The writer fits the rhyming drafts to

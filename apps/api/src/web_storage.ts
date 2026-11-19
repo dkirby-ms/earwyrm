@@ -25,6 +25,15 @@ export interface UserPermissions { enabled: boolean; admin: boolean; paid_speech
 export interface UserRecord extends Row {
   issuer: string; subject: string; enabled: number; admin: number; paid_speech: number; created_at: string;
 }
+/** A single current access request; resubmission rotates its ID and refreshes its timestamps. */
+export interface AccessRequestRecord extends Row {
+  request_id: string; issuer: string; subject: string; status: "pending" | "approved" | "denied";
+  created_at: string; updated_at: string;
+}
+/** Request submission never grants permissions; enabled users are not queued. */
+export type AccessRequestSubmission =
+  | { status: "already_enabled" }
+  | { status: "pending"; request: AccessRequestRecord };
 /** Render evidence is preserved without imposing a new manifest schema. */
 export interface Manifest {
   brief_id: string; variant: string; output_id?: string; file?: string;
@@ -125,7 +134,7 @@ export class WebStorage {
   async _initialize(): Promise<void> {
     await serialized(this.database_path, async () => transaction(await this._connect(), WebStorage._create_schema));
   }
-  /** Creates the unchanged version-one web tables inside the caller's transaction. */
+  /** Creates base web tables and additive access/lyric tables inside the caller's transaction. */
   static async _create_schema(connection: Connection): Promise<void> {
     await connection.executescript(`
       CREATE TABLE IF NOT EXISTS runs (
@@ -157,8 +166,22 @@ export class WebStorage {
         paid_speech INTEGER NOT NULL CHECK (paid_speech IN (0, 1)), created_at TEXT NOT NULL,
         PRIMARY KEY (issuer, subject));
     `);
+    await WebStorage._create_access_request_schema(connection);
     await WebStorage._create_lyric_schema(connection);
     await WebStorage._create_lyric_budget_schema(connection);
+  }
+
+  /** Adds the current access-request record without changing existing permissions. */
+  static async _create_access_request_schema(connection: Connection): Promise<void> {
+    await connection.executescript(`
+      CREATE TABLE IF NOT EXISTS access_requests (
+        request_id TEXT PRIMARY KEY,
+        issuer TEXT NOT NULL REFERENCES application_identity(issuer), subject TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'denied')),
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        UNIQUE (issuer, subject));
+      CREATE INDEX IF NOT EXISTS access_requests_status_created ON access_requests(status, created_at, request_id);
+    `);
   }
 
   /** Adds content-free, cumulative reservations without resetting existing spend. */
@@ -274,6 +297,95 @@ export class WebStorage {
     return this.write(async c => {
       await this.require_admin(c, issuer, subject);
       return (await c.execute("SELECT * FROM application_users ORDER BY issuer, subject")).rows as UserRecord[];
+    });
+  }
+  /** Returns the current request status, or null when the identity has never requested access. */
+  async get_access_request(issuer: string, subject: string): Promise<AccessRequestRecord | null> {
+    WebStorage.validate_identity(issuer, subject);
+    return this.read(async c => (await c.execute(
+      "SELECT * FROM access_requests WHERE issuer = ? AND subject = ?", [issuer, subject],
+    )).rows[0] as AccessRequestRecord ?? null);
+  }
+  /**
+   * Queues an exact identity once, returning `already_enabled` without creating a request for enabled users.
+   *
+   * @returns The existing record for a pending request, or a new pending record after a decision.
+   */
+  async request_access(issuer: string, subject: string): Promise<AccessRequestSubmission> {
+    WebStorage.validate_identity(issuer, subject);
+    return this.write(async c => {
+      const user = (await c.execute(
+        "SELECT enabled FROM application_users WHERE issuer = ? AND subject = ?", [issuer, subject],
+      )).rows[0];
+      if (user?.enabled) return { status: "already_enabled" };
+
+      const existing = (await c.execute(
+        "SELECT * FROM access_requests WHERE issuer = ? AND subject = ?", [issuer, subject],
+      )).rows[0] as AccessRequestRecord | undefined;
+      if (existing?.status === "pending") return { status: "pending", request: existing };
+
+      const request_id = randomUUID(), now = new Date().toISOString();
+      if (existing) {
+        await c.execute(
+          "UPDATE access_requests SET request_id = ?, status = 'pending', created_at = ?, updated_at = ? WHERE issuer = ? AND subject = ?",
+          [request_id, now, now, issuer, subject],
+        );
+      } else {
+        await c.execute(
+          "INSERT INTO access_requests (request_id, issuer, subject, status, created_at, updated_at) VALUES (?, ?, ?, 'pending', ?, ?)",
+          [request_id, issuer, subject, now, now],
+        );
+      }
+      return {
+        status: "pending",
+        request: { request_id, issuer, subject, status: "pending", created_at: now, updated_at: now },
+      };
+    });
+  }
+  /**
+   * Lists pending requests in creation order after rechecking the actor's current admin permission.
+   *
+   * @returns Pending requests, or an empty array when the queue is empty.
+   */
+  async list_access_requests_as_admin(issuer: string, subject: string): Promise<AccessRequestRecord[]> {
+    WebStorage.validate_identity(issuer, subject);
+    return this.write(async c => {
+      await this.require_admin(c, issuer, subject);
+      return (await c.execute(
+        "SELECT * FROM access_requests WHERE status = 'pending' ORDER BY created_at, request_id",
+      )).rows as AccessRequestRecord[];
+    });
+  }
+  /**
+   * Atomically records a pending decision and grants baseline permissions only on approval.
+   *
+   * @throws `StorageNotFound` when `request_id` is unknown.
+   * @throws `StorageConflict` when the request is no longer pending.
+   * @throws `StorageAccessDenied` when the actor is not a current administrator.
+   */
+  async decide_access_request_as_admin(
+    actor_issuer: string, actor_subject: string, request_id: string, decision: "approved" | "denied",
+  ): Promise<AccessRequestRecord> {
+    WebStorage.validate_identity(actor_issuer, actor_subject);
+    if (!request_id || request_id !== request_id.trim()) throw new TypeError("Request ID must be a nonempty exact value");
+    return this.write(async c => {
+      await this.require_admin(c, actor_issuer, actor_subject);
+      const row = (await c.execute(
+        "SELECT * FROM access_requests WHERE request_id = ?", [request_id],
+      )).rows[0] as AccessRequestRecord | undefined;
+      if (!row) throw new StorageNotFound("Access request was not found");
+      if (row.status !== "pending") throw new StorageConflict("Access request is no longer pending");
+
+      const updated_at = new Date().toISOString();
+      const result = await c.execute(
+        "UPDATE access_requests SET status = ?, updated_at = ? WHERE request_id = ? AND status = 'pending'",
+        [decision, updated_at, request_id],
+      );
+      if (result.rowcount !== 1) throw new StorageConflict("Access request is no longer pending");
+      if (decision === "approved") {
+        await this.set_locked(c, row.issuer, row.subject, { enabled: true, admin: false, paid_speech: false });
+      }
+      return { ...row, status: decision, updated_at };
     });
   }
   private async set_locked(c: Connection, issuer: string, subject: string, options: UserPermissions): Promise<void> {

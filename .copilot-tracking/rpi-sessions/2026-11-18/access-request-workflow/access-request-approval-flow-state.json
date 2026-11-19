@@ -1,0 +1,123 @@
+{
+  "task_id": "access-request-approval-flow",
+  "task_slug": "access-request-approval-flow",
+  "session_name": "Access request workflow",
+  "parent_task": null,
+  "child_tasks": [],
+  "mode": "automatic",
+  "active_phase": "Follow-up",
+  "status": "completed",
+  "session_status": "stopped",
+  "artifact_paths": {
+    "research": ".copilot-tracking/research/2026-11-18/access-request-approval-flow-research.md",
+    "plan": ".copilot-tracking/plans/2026-11-18/access-request-approval-flow-plan.md",
+    "critique": ".copilot-tracking/reviews/plans/2026-11-18/access-request-approval-flow-plan-critique.md",
+    "changes": ".copilot-tracking/changes/2026-11-18/access-request-approval-flow-changes.md",
+    "review": ".copilot-tracking/reviews/logs/2026-11-18/access-request-approval-flow-review.md"
+  },
+  "documents": {
+    "research": [
+      ".copilot-tracking/research/2026-11-18/access-request-approval-flow-research.md"
+    ],
+    "plan": [
+      ".copilot-tracking/plans/2026-11-18/access-request-approval-flow-plan.md"
+    ],
+    "critique": [
+      ".copilot-tracking/reviews/plans/2026-11-18/access-request-approval-flow-plan-critique.md"
+    ],
+    "changes": [
+      ".copilot-tracking/changes/2026-11-18/access-request-approval-flow-changes.md"
+    ],
+    "review": [
+      ".copilot-tracking/reviews/logs/2026-11-18/access-request-approval-flow-review.md"
+    ]
+  },
+  "confirmed_decisions": [
+    {
+      "decision": "Automatic session scope",
+      "status": "current",
+      "evidence": "Originating request: the user asked for unauthenticated users to request access and for admins to grant or deny requests without manually entering the subject. Root task/state: access-request-approval-flow at .copilot-tracking/rpi-sessions/2026-11-18/access-request-workflow/access-request-approval-flow-state.json. Approved write boundary: the existing web access-request/auth/admin flow and directly required persistence, API, tests, and docs. Acceptance criteria: the unauthenticated UI avoids exposing identity-provider technical details; authenticated request identity is queued; admins can review and grant or deny queued requests without entering the subject; the existing authorization model is preserved. Exclusions: identity-provider reconfiguration and unrelated role or deployment redesign."
+    },
+    {
+      "decision": "Automatic progression boundary",
+      "status": "through-review",
+      "evidence": "The user selected \"Handle it end to end\" in this conversation, authorizing automatic progression through Review and required in-scope follow-ups."
+    },
+    {
+      "decision": "Research decision participation",
+      "status": "agent-owned",
+      "evidence": "Default for the user's selected end-to-end mode; resolve ordinary research decisions from repository evidence and stop on unsupported material choices."
+    },
+    {
+      "decision": "Planning decision participation",
+      "status": "agent-owned",
+      "evidence": "Default for the user's selected end-to-end mode; use research evidence and confirmed scope."
+    },
+    {
+      "decision": "Review decision participation",
+      "status": "agent-owned",
+      "evidence": "Default for the user's selected end-to-end mode."
+    },
+    {
+      "decision": "Follow-up decision participation",
+      "status": "agent-owned",
+      "evidence": "Default for the user's selected end-to-end mode."
+    },
+    {
+      "decision": "Subagent use",
+      "status": "auto",
+      "evidence": "No explicit restriction; use only when bounded delegation materially improves evidence quality. The flow is expected to be traceable directly."
+    },
+    {
+      "decision": "Research lane effort",
+      "status": "auto",
+      "evidence": "No user-set lane effort."
+    },
+    {
+      "decision": "Planning critique",
+      "status": "standard",
+      "evidence": "First task default; one plan critique unless the user changes this preference."
+    },
+    {
+      "decision": "Research disposition",
+      "status": "executed",
+      "evidence": "Completed the Wider, Deeper, and Contrarian cycle. Planning Readiness is Ready based on C5-C17 in .copilot-tracking/research/2026-11-18/access-request-approval-flow-research.md; the remaining schema lifecycle is bounded and actionable in Plan."
+    },
+    {
+      "decision": "Plan disposition",
+      "status": "revised-ready",
+      "evidence": "The standard critique is complete with verdict Revise; all findings PC-001 through PC-009 were resolved in the plan and recorded in its Critique Disposition section."
+    },
+    {
+      "decision": "Planning Readiness",
+      "status": "Ready",
+      "evidence": "The critique is complete and all nine planner-owned findings are resolved in .copilot-tracking/plans/2026-11-18/access-request-approval-flow-plan.md. The plan retains explicit residual risks and deployment verification limits."
+    },
+    {
+      "decision": "Planning D1-D3",
+      "status": "resolved",
+      "evidence": "Use verified token identity, a separate request lifecycle, and existing enabled-admin checks as recorded in the plan and research evidence C5-C9 and C16-C17."
+    },
+    {
+      "decision": "Planning D4-D6",
+      "status": "resolved",
+      "evidence": "Use idempotent pending submissions with denied resubmission, grant only baseline app access, and roll out schema independently of paid lyrics with legacy import compatibility."
+    },
+    {
+      "decision": "Review step",
+      "status": "run",
+      "evidence": "First task default; one post-implementation Review unless the user changes this preference."
+    },
+    {
+      "decision": "Canvas",
+      "status": "current",
+      "evidence": "Opened hve-core-rpi-workflow instance rpi-access-request-approval-flow, handle VNKK, using provider plugin:hve-core:rpi-workflow; reconnected with show_task to the current state and confirmed no pending feedback."
+    }
+  ],
+  "blockers": [],
+  "next_action": {
+    "phase": "Follow-up",
+    "action": "Automatic session complete; no user action required."
+  },
+  "prioritized_follow_ups": []
+}

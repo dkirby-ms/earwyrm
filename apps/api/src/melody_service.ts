@@ -142,7 +142,7 @@ export class MelodyService {
             writeFileSync(join(directory, "score.json"), canonical_json(notes), { mode: 0o600 });
             writeFileSync(join(directory, "timing.json"), canonical_json(arrangement.timing), { mode: 0o600 });
             write_wav(join(directory, "backing.wav"), normalize(audio));
-            writeFileSync(join(directory, "provenance.json"), canonical_json({ ai_generated: true, seed, generator_version: "earwyrm-phrase-v2", duration_seconds: request.duration_seconds, instrumentation, components, similarity: report }), { mode: 0o600 });
+            writeFileSync(join(directory, "provenance.json"), canonical_json({ ai_generated: true, seed, generator_version: "syllables_per_line" in request ? "earwyrm-guided-hook-v3" : "earwyrm-phrase-v2", duration_seconds: request.duration_seconds, instrumentation, components, similarity: report }), { mode: 0o600 });
             const artifacts: Record<string, Artifact> = {};
             for (const [name, media_type] of Object.entries(ARTIFACT_TYPES)) {
               chmodSync(join(directory, name), 0o600);

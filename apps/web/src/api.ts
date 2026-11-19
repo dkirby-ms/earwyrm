@@ -7,6 +7,17 @@ interface ApiRequestOptions {
   readonly body?: unknown
 }
 
+/** An HTTP error response, including the status needed to handle specific API outcomes. */
+export class ApiError extends Error {
+  readonly status: number
+
+  constructor(status: number, message: string) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }
@@ -60,7 +71,7 @@ async function requestApi(
     } catch (error) {
       if (!(error instanceof SyntaxError)) throw error
     }
-    throw new Error(detail)
+    throw new ApiError(response.status, detail)
   }
 
   return response

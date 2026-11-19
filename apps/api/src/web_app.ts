@@ -31,7 +31,7 @@ import {
 } from './web_auth.js';
 import {
   STATIC_ROOT, StorageAccessDenied, StorageConflict, StorageNotFound, WebStorage, canonical_json,
-  type OutputRecord, type RunRecord,
+  type AccessRequestRecord, type AccessRequestSubmission, type OutputRecord, type RunRecord,
 } from './web_storage.js';
 
 export { REPOSITORY_ROOT };
@@ -79,6 +79,8 @@ export const UserAccessSubmission = z.object({
   enabled: z.boolean(), admin: z.boolean(), paid_speech: z.boolean(),
 });
 export type UserAccessSubmission = z.infer<typeof UserAccessSubmission>;
+const AccessRequestBody = z.strictObject({});
+const AccessRequestDecisionBody = z.strictObject({ decision: z.enum(['approved', 'denied']) });
 
 /** Paid calls have not been explicitly enabled. */
 export class PaidRenderingDisabled extends Error {}
@@ -245,6 +247,7 @@ function normalize_answer(value: string): string { return value.trim().toLowerCa
 /** Async storage surface accepted by the HTTP layer; injected stores retain the same owner checks. */
 export type WebAppStorage = Pick<WebStorage,
   'root' | 'work_dir' | 'database_url' | 'get_user' | 'list_users_as_admin' | 'set_user_as_admin' |
+  'get_access_request' | 'request_access' | 'list_access_requests_as_admin' | 'decide_access_request_as_admin' |
   'has_unreconciled_paid_attempt' | 'create_run' | 'reserve_paid_run' | 'mark_attempt_submitted' |
   'save_output' | 'set_run_status' | 'finish_attempt' | 'get_run' | 'list_runs' | 'list_outputs' |
   'get_output' | 'audio_path' | 'save_evaluation' | 'reconcile_attempt' |
@@ -482,11 +485,14 @@ export function create_app(options: CreateAppOptions = {}): Express {
   app.use(express.json({ limit: '32kb' }));
   const methods: Array<[RegExp, string[]]> = [
     [/^\/(?:healthz|api\/(?:config|identity|access|briefs|render-options|outputs|poc\/status))$/, ['GET']],
+    [/^\/api\/access-requests$/, ['GET', 'POST']],
     [/^\/api\/briefs\/validate$/, ['POST']],
     [/^\/api\/arrangements$/, ['POST']],
     [/^\/api\/lyrics\/options$/, ['GET', 'POST']],
     [/^\/api\/chat$/, ['GET', 'POST']],
     [/^\/api\/admin\/users$/, ['GET', 'PUT']],
+    [/^\/api\/admin\/access-requests$/, ['GET']],
+    [/^\/api\/admin\/access-requests\/[^/]+\/decision$/, ['POST']],
     [/^\/api\/renders$/, ['GET', 'POST']],
     [/^\/api\/renders\/estimate$/, ['POST']],
     [/^\/api\/renders\/[^/]+$/, ['GET']],
@@ -528,6 +534,41 @@ export function create_app(options: CreateAppOptions = {}): Express {
     const user = await (await storage()).get_user(issuer, subject);
     if (!user?.enabled) throw new HttpError(403, 'Application access denied');
     response.json({ issuer: user.issuer, subject: user.subject, admin: Boolean(user.admin), paid_speech: Boolean(user.paid_speech) });
+  });
+  app.get('/api/access-requests', require_scope('briefs.read'), async (_request, response) => {
+    const { issuer, subject } = identity(response);
+    const access_request = await (await storage()).get_access_request(issuer, subject);
+    response.json({ status: access_request?.status ?? 'none' });
+  });
+  app.post('/api/access-requests', require_scope('briefs.read'), async (request, response) => {
+    parse(AccessRequestBody, request.body ?? {});
+    const { issuer, subject } = identity(response);
+    let result: AccessRequestSubmission;
+    try { result = await (await storage()).request_access(issuer, subject); }
+    catch (error) { if (error instanceof TypeError || error instanceof RangeError) throw new HttpError(422, error.message); throw error; }
+    response.json({ status: result.status });
+  });
+  app.get('/api/admin/access-requests', ...authorized('renders.read'), async (_request, response) => {
+    const { issuer, subject } = identity(response);
+    const requests = await (await storage()).list_access_requests_as_admin(issuer, subject);
+    response.json({ requests: requests.map(({ request_id, subject: requester, created_at }) => ({
+      request_id, subject: requester, created_at,
+    })) });
+  });
+  app.post('/api/admin/access-requests/:request_id/decision', ...authorized('renders.write'), async (request, response) => {
+    const { decision } = parse(AccessRequestDecisionBody, request.body);
+    const { issuer, subject } = identity(response);
+    const request_id = request.params.request_id;
+    if (typeof request_id !== 'string' || !request_id) throw new HttpError(404, 'Access request was not found');
+    try {
+      const result = await (await storage()).decide_access_request_as_admin(
+        issuer, subject, request_id, decision,
+      );
+      response.json({ status: result.status });
+    } catch (error) {
+      if (error instanceof StorageNotFound) throw new HttpError(404, 'Access request was not found');
+      throw error;
+    }
   });
   app.get('/api/admin/users', ...authorized('renders.read'), async (_request, response) => {
     const { issuer, subject } = identity(response);
@@ -584,7 +625,7 @@ export function create_app(options: CreateAppOptions = {}): Express {
         const key = digest([issuer, owner, brief_sha256, index]);
         const duration_seed = Number.parseInt(key.slice(0, 12), 16);
         const committed = await melody.submit(PreviewCompositionRequest.parse({
-          logical_job_id: `guided-v2-${key}`, product_path: 'vocoded',
+          logical_job_id: `guided-v3-${key}`, product_path: 'vocoded',
           duration_seconds: preview_duration(duration_seed, syllables_per_line),
           syllables_per_line,
         }));

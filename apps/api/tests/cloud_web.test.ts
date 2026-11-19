@@ -44,6 +44,7 @@ describe('secret-safe cloud startup diagnostics', () => {
     vi.mocked(lstatSync).mockReturnValue(info as ReturnType<typeof lstatSync>);
     vi.mocked(database_url_from_environment).mockReturnValue('private-database-url');
     vi.mocked(validate_postgres_store).mockResolvedValue();
+    vi.mocked(upgrade_postgres_store).mockResolvedValue();
     vi.mocked(spawn).mockImplementation(() => {
       const child = new ChildProcess();
       queueMicrotask(() => child.emit('exit', 0, null));
@@ -75,7 +76,7 @@ describe('secret-safe cloud startup diagnostics', () => {
     [Object.assign(new Error('do-not-log'), { code: 'do-not-log' }), 'unrecognized failure; raw error withheld'],
     [new Error('do-not-log', { cause: Object.assign(new Error('do-not-log'), { code: 'ECONNREFUSED' }) }), 'cause_code=ECONNREFUSED'],
   ])('reports database failures safely and releases the descriptor', async (error, detail) => {
-    vi.mocked(validate_postgres_store).mockRejectedValue(error);
+    vi.mocked(upgrade_postgres_store).mockRejectedValue(error);
     await expect(main()).rejects.toBe(error);
     expect(console.error).toHaveBeenCalledWith(expect.stringContaining(`stage=database-preparation; ${detail}`));
     expect(JSON.stringify(vi.mocked(console.error).mock.calls)).not.toContain('do-not-log');
@@ -89,19 +90,21 @@ describe('secret-safe cloud startup diagnostics', () => {
     expect(validate_postgres_store).not.toHaveBeenCalled();
     expect(closeSync).toHaveBeenCalledWith(3);
   });
-  it.each(['true', 'True', ' TRUE '])('upgrades PostgreSQL before starting the worker when LYRIC_ENABLED=%s', async enabled => {
+  it.each(['true', 'True', ' TRUE '])('upgrades PostgreSQL with lyrics before starting the worker when LYRIC_ENABLED=%s', async enabled => {
     vi.stubEnv('LYRIC_ENABLED', enabled);
     await expect(main()).resolves.toBeUndefined();
-    expect(upgrade_postgres_store).toHaveBeenCalledExactlyOnceWith('private-database-url');
+    expect(upgrade_postgres_store).toHaveBeenCalledExactlyOnceWith('private-database-url', { include_lyrics: true });
     expect(validate_postgres_store).not.toHaveBeenCalled();
     expect(vi.mocked(upgrade_postgres_store).mock.invocationCallOrder[0])
       .toBeLessThan(vi.mocked(spawn).mock.invocationCallOrder[0]!);
   });
-  it.each([undefined, 'false', 'False', ''])('does not upgrade PostgreSQL when LYRIC_ENABLED=%s', async enabled => {
+  it.each([undefined, 'false', 'False', ''])('upgrades access schema without lyrics when LYRIC_ENABLED=%s', async enabled => {
     vi.stubEnv('LYRIC_ENABLED', enabled);
     await expect(main()).resolves.toBeUndefined();
-    expect(upgrade_postgres_store).not.toHaveBeenCalled();
-    expect(validate_postgres_store).toHaveBeenCalledExactlyOnceWith('private-database-url');
+    expect(upgrade_postgres_store).toHaveBeenCalledExactlyOnceWith('private-database-url', { include_lyrics: false });
+    expect(validate_postgres_store).not.toHaveBeenCalled();
+    expect(vi.mocked(upgrade_postgres_store).mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(spawn).mock.invocationCallOrder[0]!);
   });
   it('reports a failed worker exit and removes signal handlers', async () => {
     const terms = process.listenerCount('SIGTERM'), ints = process.listenerCount('SIGINT');

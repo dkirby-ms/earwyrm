@@ -324,10 +324,13 @@ then dispatch **Approved web deployment** with the default `deploy` action.
 Check `maintenance_approved` to authorize the run and confirm that all
 external share writers are stopped. The run stops the app, provisions Azure
 resources, verifies private PostgreSQL networking, publishes the web image,
-and resumes the app. At startup, the app verifies the initialized database
-and adds any missing paid-text tables without resetting existing data.
-Startup accepts `LYRIC_ENABLED` case-insensitively, including Azure's `True`
-value, so the additive upgrade runs whenever the API considers lyrics enabled.
+and resumes the app. At startup, the app adds the access-request schema to an
+existing PostgreSQL store regardless of `LYRIC_ENABLED`, then validates the
+complete required schema before starting the worker. This additive upgrade
+does not reset existing data. Paid-text tables are added only when
+`LYRIC_ENABLED` is true; startup accepts the setting case-insensitively,
+including Azure's `True` value. A failed upgrade or validation prevents the
+worker from starting.
 If chat remains unavailable after deployment, also verify the account's
 `paid_speech` entitlement, text configuration, and lyric-budget table.
 
@@ -394,8 +397,10 @@ npm run database -- import-sqlite
 The import requires the existing `.earwyrm-initialized` marker and both SQLite
 databases. It validates records and referenced artifacts, writes the
 PostgreSQL initialization marker last, and rolls back PostgreSQL changes on
-failure. It does not delete SQLite or media, switch the app, or overwrite a
-nonempty target. Verify the PostgreSQL-backed app before approving cutover.
+failure. When the SQLite web database has an `access_requests` table, its
+current request records are imported; older SQLite sources without that table
+remain valid. It does not delete SQLite or media, switch the app, or overwrite
+a nonempty target. Verify the PostgreSQL-backed app before approving cutover.
 Keep the backups and SQLite source. After PostgreSQL accepts new writes, do
 not point the app at stale SQLite data; reverse migration requires separate
 approval and reconciliation.

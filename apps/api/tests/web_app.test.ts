@@ -554,6 +554,129 @@ describe('same-origin Express API', () => {
     expect((await request(app).get('/api/admin/users').auth(await token('user-a', { scp: 'briefs.read' }), { type: 'bearer' })).status).toBe(403);
   });
 
+  it('lets an unapproved signed-in identity check and submit its own request without a body', async () => {
+    const { app } = await fixture();
+    const bearer = await token('new-user');
+    expect((await request(app).get('/api/access-requests').auth(bearer, { type: 'bearer' })).body)
+      .toEqual({ status: 'none' });
+    expect((await request(app).post('/api/access-requests').auth(bearer, { type: 'bearer' })).body)
+      .toEqual({ status: 'pending' });
+    expect((await request(app).get('/api/access-requests').auth(bearer, { type: 'bearer' })).body)
+      .toEqual({ status: 'pending' });
+    await request(app).post('/api/access-requests').auth(await token('user-b'), { type: 'bearer' })
+      .expect(200, { status: 'already_enabled' });
+  });
+
+  it('keeps pending requests idempotent and allows a denied identity to submit again', async () => {
+    const { app, access_token } = await fixture();
+    const bearer = await token('applicant');
+    await request(app).post('/api/access-requests').auth(bearer, { type: 'bearer' }).expect(200, { status: 'pending' });
+    await request(app).post('/api/access-requests').auth(bearer, { type: 'bearer' }).expect(200, { status: 'pending' });
+    const queued = await request(app).get('/api/admin/access-requests').auth(access_token, { type: 'bearer' });
+    expect(queued.body.requests).toHaveLength(1);
+    const firstId = queued.body.requests[0].request_id as string;
+    await request(app).post(`/api/admin/access-requests/${firstId}/decision`).auth(access_token, { type: 'bearer' })
+      .send({ decision: 'denied' }).expect(200, { status: 'denied' });
+    await request(app).get('/api/access-requests').auth(bearer, { type: 'bearer' }).expect(200, { status: 'denied' });
+    await request(app).post('/api/access-requests').auth(bearer, { type: 'bearer' }).expect(200, { status: 'pending' });
+    const retried = await request(app).get('/api/admin/access-requests').auth(access_token, { type: 'bearer' });
+    expect(retried.body.requests).toHaveLength(1);
+    expect(retried.body.requests[0].request_id).not.toBe(firstId);
+  });
+
+  it('lists only pending requests to enabled admins with the admin read scope', async () => {
+    const { app } = await fixture();
+    await request(app).post('/api/access-requests').auth(await token('applicant'), { type: 'bearer' });
+    expect((await request(app).get('/api/admin/access-requests').auth(await token('user-b'), { type: 'bearer' })).status).toBe(403);
+    expect((await request(app).get('/api/admin/access-requests').auth(
+      await token('user-a', { scp: 'briefs.read' }), { type: 'bearer' },
+    )).status).toBe(403);
+    const adminList = await request(app).get('/api/admin/access-requests').auth(await token(), { type: 'bearer' });
+    expect(adminList.status).toBe(200);
+    expect(adminList.body.requests).toEqual([
+      expect.objectContaining({ subject: 'applicant', created_at: expect.any(String), request_id: expect.any(String) }),
+    ]);
+    expect(adminList.text).not.toContain(issuer);
+    const id = adminList.body.requests[0].request_id as string;
+    expect((await request(app).post(`/api/admin/access-requests/${id}/decision`).auth(
+      await token('user-a', { scp: 'renders.read' }), { type: 'bearer' },
+    ).send({ decision: 'denied' })).status).toBe(403);
+  });
+
+  it('grants baseline access to new and previously disabled identities', async () => {
+    const { app, store, access_token } = await fixture();
+    const newUser = await token('new-user');
+    await request(app).post('/api/access-requests').auth(newUser, { type: 'bearer' });
+    let queued = await request(app).get('/api/admin/access-requests').auth(access_token, { type: 'bearer' });
+    let id = queued.body.requests[0].request_id as string;
+    await request(app).post(`/api/admin/access-requests/${id}/decision`).auth(access_token, { type: 'bearer' })
+      .send({ decision: 'approved' }).expect(200, { status: 'approved' });
+    expect(await store.get_user(issuer, 'new-user')).toMatchObject({ enabled: 1, admin: 0, paid_speech: 0 });
+
+    await store.set_user(issuer, 'disabled', { enabled: false, admin: true, paid_speech: true });
+    await request(app).post('/api/access-requests').auth(await token('disabled'), { type: 'bearer' });
+    queued = await request(app).get('/api/admin/access-requests').auth(access_token, { type: 'bearer' });
+    id = queued.body.requests[0].request_id as string;
+    await request(app).post(`/api/admin/access-requests/${id}/decision`).auth(access_token, { type: 'bearer' })
+      .send({ decision: 'approved' }).expect(200, { status: 'approved' });
+    expect(await store.get_user(issuer, 'disabled')).toMatchObject({ enabled: 1, admin: 0, paid_speech: 0 });
+  });
+
+  it('denies a request without enabling or creating an application user', async () => {
+    const { app, store, access_token } = await fixture();
+    await request(app).post('/api/access-requests').auth(await token('applicant'), { type: 'bearer' });
+    const id = (await request(app).get('/api/admin/access-requests').auth(access_token, { type: 'bearer' })).body.requests[0].request_id as string;
+    await request(app).post(`/api/admin/access-requests/${id}/decision`).auth(access_token, { type: 'bearer' })
+      .send({ decision: 'denied' }).expect(200, { status: 'denied' });
+    expect(await store.get_user(issuer, 'applicant')).toBeNull();
+    expect((await store.get_access_request(issuer, 'applicant'))?.status).toBe('denied');
+  });
+
+  it('returns 404 for unknown IDs and 409 for decided requests without mutating user state', async () => {
+    const { app, store, access_token } = await fixture();
+    await request(app).post('/api/admin/access-requests/missing/decision').auth(access_token, { type: 'bearer' })
+      .send({ decision: 'approved' }).expect(404);
+    await request(app).post('/api/access-requests').auth(await token('applicant'), { type: 'bearer' });
+    const id = (await request(app).get('/api/admin/access-requests').auth(access_token, { type: 'bearer' })).body.requests[0].request_id as string;
+    await request(app).post(`/api/admin/access-requests/${id}/decision`).auth(access_token, { type: 'bearer' })
+      .send({ decision: 'denied' }).expect(200);
+    await request(app).post(`/api/admin/access-requests/${id}/decision`).auth(access_token, { type: 'bearer' })
+      .send({ decision: 'approved' }).expect(409);
+    expect(await store.get_user(issuer, 'applicant')).toBeNull();
+    expect((await store.get_access_request(issuer, 'applicant'))?.status).toBe('denied');
+  });
+
+  it('requires a valid bearer token and briefs.read for requester operations', async () => {
+    const { app, store } = await fixture();
+    expect((await request(app).get('/api/access-requests')).status).toBe(401);
+    expect((await request(app).post('/api/access-requests').auth(
+      await token('applicant', { scp: 'renders.read' }), { type: 'bearer' },
+    )).status).toBe(403);
+    expect(await store.get_access_request(issuer, 'applicant')).toBeNull();
+  });
+
+  it('rechecks admin authorization for queue decisions and leaves the request pending after revocation', async () => {
+    const { app, store } = await fixture();
+    await request(app).post('/api/access-requests').auth(await token('applicant'), { type: 'bearer' });
+    const id = (await request(app).get('/api/admin/access-requests').auth(await token(), { type: 'bearer' })).body.requests[0].request_id as string;
+    await store.set_user(issuer, 'user-a', { enabled: true, admin: false, paid_speech: true });
+    expect((await request(app).get('/api/admin/access-requests').auth(await token(), { type: 'bearer' })).status).toBe(403);
+    expect((await request(app).post(`/api/admin/access-requests/${id}/decision`).auth(await token(), { type: 'bearer' })
+      .send({ decision: 'approved' })).status).toBe(403);
+    expect((await store.get_access_request(issuer, 'applicant'))?.status).toBe('pending');
+    expect(await store.get_user(issuer, 'applicant')).toBeNull();
+  });
+
+  it('rejects caller-supplied requester identities and tokens from another issuer', async () => {
+    const { app, store } = await fixture();
+    expect((await request(app).post('/api/access-requests').auth(await token('applicant'), { type: 'bearer' })
+      .send({ issuer, subject: 'somebody-else' })).status).toBe(422);
+    expect((await request(app).post('/api/access-requests').auth(
+      await token('applicant', { iss: 'https://other.example.test/tenant/v2.0' }), { type: 'bearer' },
+    )).status).toBe(401);
+    expect(await store.get_access_request(issuer, 'applicant')).toBeNull();
+  });
+
   it('preserves canonical subset indexes, private audio and owner-scoped run/evidence/status routes', async () => {
     const renderer = vi.fn(fake_render);
     const { app, root, access_token, speech_factory } = await fixture({ render: renderer });

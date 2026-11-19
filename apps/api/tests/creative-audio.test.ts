@@ -202,8 +202,39 @@ describe("creative score contracts", () => {
     expect(duration_seconds).toBeGreaterThan(20);
     const final_phrase = preview.timing.filter(note => note.line_index === 3);
     expect(final_phrase).toHaveLength(44);
-    expect(final_phrase.at(-1)!.start_seconds + final_phrase.at(-1)!.duration_seconds).toBeLessThanOrEqual(cadence);
+    expect(final_phrase.at(-1)!.start_seconds + final_phrase.at(-1)!.duration_seconds).toBe(Math.min(25, cadence));
     expect(preview.backing.some(note => note.instrument === "lead" && note.start === cadence)).toBe(true);
+  });
+  it("recalls the opening hook across different phrase lengths and closes a short CTA against the tonic tag", () => {
+    const seed = 42, duration_seconds = 18, syllables_per_line = [10, 12, 9, 2];
+    const request = PreviewCompositionRequest.parse({
+      logical_job_id: "recurring-hook", product_path: "vocoded", duration_seconds, syllables_per_line,
+    });
+    const preview = arrange_preview(request, seed);
+    const phrase = (line: number) => preview.timing.filter(note => note.line_index === line);
+    const head = (line: number) => phrase(line).slice(0, 3).map(note => [
+      note.midi_note, note.start_seconds - phrase(line)[0].start_seconds, note.duration_seconds,
+    ]);
+    expect(arrange_preview(request, seed)).toEqual(preview);
+    expect(head(0)).toEqual(head(2));
+    expect(head(1)).not.toEqual(head(0));
+    const cadence = duration_seconds - 2, last = preview.timing.at(-1)!;
+    const lead = preview.backing.filter(note => note.instrument === "lead");
+    expect(last.start_seconds + last.duration_seconds).toBe(cadence);
+    expect(lead.find(note => note.start === cadence)!.pitch).toBe(last.midi_note - 7);
+    expect(lead.filter(note => note.start >= 3 && note.start < cadence).map(({ start, duration, pitch }) => [start, duration, pitch]))
+      .toEqual(preview.timing.map(note => [note.start_seconds, note.duration_seconds, note.midi_note]));
+  });
+  it.each([[12, 14, 10], [30, 44, 25]])("retains every slot in a %i-second score with full phrase windows", (duration_seconds, count, end) => {
+    const request = PreviewCompositionRequest.parse({
+      logical_job_id: "full-windows", product_path: "vocoded", duration_seconds, syllables_per_line: Array(4).fill(count),
+    });
+    const { timing } = arrange_preview(request, 42);
+    expect(timing).toHaveLength(count * 4);
+    expect(timing.every(note => note.duration_seconds === 0.125)).toBe(true);
+    expect(timing.every((note, index) => !index ||
+      note.start_seconds >= timing[index - 1].start_seconds + timing[index - 1].duration_seconds)).toBe(true);
+    expect(timing.at(-1)!.start_seconds + timing.at(-1)!.duration_seconds).toBe(end);
   });
   it("rejects unfit durations and lyric windows without truncating events", () => {
     const data = request_data();

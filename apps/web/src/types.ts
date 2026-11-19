@@ -41,6 +41,16 @@ export interface Access {
   readonly paid_speech: boolean
 }
 
+/** Current access-request state for the signed-in identity. */
+export type AccessRequestStatus = 'none' | 'pending' | 'approved' | 'denied'
+
+/** A pending request shown to an enabled administrator. */
+export interface AdminAccessRequest {
+  readonly request_id: string
+  readonly subject: string
+  readonly created_at: string
+}
+
 /** An identity and its application-scoped permissions. */
 export interface UserAccess {
   readonly issuer: string

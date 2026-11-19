@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { MelodyService } from './melody_service.js';
 import { WebStorage } from './web_storage.js';
 import { upgrade_postgres_store } from './bootstrap_database.js';
-import { database_url_from_environment, StoreNotInitialized, validate_postgres_store } from './persistence.js';
+import { database_url_from_environment, StoreNotInitialized } from './persistence.js';
 
 const STARTUP_ERROR_CODES = new Set([
   'EARWYRM_DATA_NOT_MOUNTED',
@@ -95,13 +95,12 @@ function path_exists(path: string): boolean {
   }
 }
 
-/** Prepares SQLite or verifies PostgreSQL; an optional additive upgrade requires the caller to hold the writer lock. */
+/** Prepares SQLite or upgrades PostgreSQL access storage, optionally adding paid-text tables. */
 export async function prepare_databases(data_dir: string, { database_url = null, upgrade_postgres = false }: {
   database_url?: string | null; upgrade_postgres?: boolean;
 } = {}): Promise<void> {
   if (database_url !== null) {
-    if (upgrade_postgres) await upgrade_postgres_store(database_url);
-    else await validate_postgres_store(database_url);
+    await upgrade_postgres_store(database_url, { include_lyrics: upgrade_postgres });
     return;
   }
   const root = resolve(data_dir);

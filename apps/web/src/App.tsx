@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import type { IPublicClientApplication } from '@azure/msal-browser'
-import { apiBlob, apiJson } from './api'
+import { ApiError, apiBlob, apiJson } from './api'
 import { initializeAuth } from './auth'
 import BriefEditor from './BriefEditor'
 import type {
   Access,
+  AccessRequestStatus,
+  AdminAccessRequest,
   Brief,
   EvaluationDraft,
   LyricOption,
@@ -72,6 +74,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function errorText(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback
+}
+
+function accessRequestAnnouncement(status: AccessRequestStatus): string {
+  switch (status) {
+    case 'none': return 'No access request has been submitted. You can request access.'
+    case 'pending': return 'Your access request is pending administrator review.'
+    case 'approved': return 'Your access request was approved. Reload the workspace to continue.'
+    case 'denied': return 'Your access request was denied. You can submit a new request.'
+  }
 }
 
 function evidenceValue(value: unknown): string {
@@ -159,12 +170,14 @@ function App() {
   const [accountName, setAccountName] = useState('')
   const [identity, setIdentity] = useState<Identity | null>(null)
   const [access, setAccess] = useState<Access | null>(null)
+  const [accessRequestStatus, setAccessRequestStatus] = useState<AccessRequestStatus | null>(null)
   const [briefs, setBriefs] = useState<readonly Brief[]>([])
   const [options, setOptions] = useState<RenderOptions | null>(null)
   const [runs, setRuns] = useState<readonly RenderRun[]>([])
   const [outputs, setOutputs] = useState<readonly Output[]>([])
   const [rollup, setRollup] = useState<StatusRollup | null>(null)
   const [adminUsers, setAdminUsers] = useState<readonly UserAccess[]>([])
+  const [adminAccessRequests, setAdminAccessRequests] = useState<readonly AdminAccessRequest[]>([])
   const [selectedBriefIds, setSelectedBriefIds] = useState<ReadonlySet<string>>(
     () => new Set(),
   )
@@ -220,7 +233,7 @@ function App() {
   async function loadWorkspaceData(
     authClient: IPublicClientApplication,
     publicConfig: PublicConfig,
-  ): Promise<void> {
+  ): Promise<'ready' | 'access-denied'> {
     setWorkspaceReady(false)
     setWorkspaceLoading(true)
     try {
@@ -232,13 +245,27 @@ function App() {
       )
       setIdentity(currentIdentity)
 
-      const currentAccess = await apiJson<Access>(
-        authClient,
-        publicConfig,
-        '/api/access',
-        apiScopes.briefs,
-      )
+      let currentAccess: Access
+      try {
+        currentAccess = await apiJson<Access>(
+          authClient,
+          publicConfig,
+          '/api/access',
+          apiScopes.briefs,
+        )
+      } catch (error) {
+        if (!(error instanceof ApiError) || error.status !== 403 || error.message !== 'Application access denied') throw error
+        const requestStatus = await apiJson<{ status: AccessRequestStatus }>(
+          authClient, publicConfig, '/api/access-requests', apiScopes.briefs,
+        )
+        setAccess(null)
+        setAccessRequestStatus(requestStatus.status)
+        setErrorMessage('')
+        setAnnouncement(accessRequestAnnouncement(requestStatus.status))
+        return 'access-denied'
+      }
       setAccess(currentAccess)
+      setAccessRequestStatus(null)
       setUserDraft((current) => ({ ...current, issuer: currentIdentity.issuer }))
 
       const currentBriefs = await apiJson<Brief[]>(
@@ -304,6 +331,7 @@ function App() {
       setRollup(currentRollup)
       setPaidStatusUncertain(false)
       setWorkspaceReady(true)
+      return 'ready'
     } finally {
       setWorkspaceLoading(false)
     }
@@ -332,8 +360,10 @@ function App() {
         if (!auth.account) return
 
         setAccountName(auth.account.username || 'Signed-in account')
-        await loadWorkspaceData(auth.client, publicConfig)
-        setAnnouncement('Signed-in workspace loaded.')
+        const result = await loadWorkspaceData(auth.client, publicConfig)
+        setAnnouncement(result === 'ready'
+          ? 'Signed-in workspace loaded.'
+          : 'Signed in. Request access to continue.')
       } catch (error) {
         setErrorMessage(errorText(error, 'The application could not start.'))
       } finally {
@@ -417,8 +447,10 @@ function App() {
       })
       client.setActiveAccount(result.account)
       setAccountName(result.account.username || 'Signed-in account')
-      await loadWorkspaceData(client, config)
-      setAnnouncement('Signed in. Briefs and run status are ready.')
+      const workspaceResult = await loadWorkspaceData(client, config)
+      setAnnouncement(workspaceResult === 'ready'
+        ? 'Signed in. Briefs and run status are ready.'
+        : 'Signed in. Request access to continue.')
     } catch (error) {
       setErrorMessage(errorText(error, 'Sign-in failed.'))
       setAnnouncement('Sign-in failed.')
@@ -426,6 +458,34 @@ function App() {
       busyRef.current = false
       setBusy(false)
     }
+  }
+
+  async function requestApplicationAccess(): Promise<void> {
+    if (!client || !config) return
+    await runAction('Sending access request', async () => {
+      const result = await apiJson<{ status: 'pending' | 'already_enabled' }>(
+        client, config, '/api/access-requests', apiScopes.briefs, { method: 'POST' },
+      )
+      if (result.status === 'already_enabled') {
+        const loadResult = await loadWorkspaceData(client, config)
+        setAnnouncement(loadResult === 'ready'
+          ? 'Application access is ready. Your workspace has loaded.'
+          : 'Application access is enabled. Reload the workspace to continue.')
+        return
+      }
+      setAccessRequestStatus('pending')
+      setAnnouncement('Access request submitted. An administrator will review it.')
+    })
+  }
+
+  async function reloadApprovedAccess(): Promise<void> {
+    if (!client || !config) return
+    await runAction('Refreshing application access', async () => {
+      const result = await loadWorkspaceData(client, config)
+      setAnnouncement(result === 'ready'
+        ? 'Application access is ready. Your workspace has loaded.'
+        : 'Access has not been enabled yet. You can return and reload later.')
+    })
   }
 
   async function signOut(): Promise<void> {
@@ -453,12 +513,14 @@ function App() {
       setAccountName('')
       setIdentity(null)
       setAccess(null)
+      setAccessRequestStatus(null)
       setBriefs([])
       setOptions(null)
       setRuns([])
       setOutputs([])
       setRollup(null)
       setAdminUsers([])
+      setAdminAccessRequests([])
       setSelectedBriefIds(new Set())
       setEvaluationDrafts({})
       setEvidence({})
@@ -507,14 +569,66 @@ function App() {
     setAdminUsers(result.users)
   }
 
+  async function loadAdminAccessRequests(): Promise<void> {
+    if (!client || !config) return
+    const result = await apiJson<{ requests: AdminAccessRequest[] }>(
+      client,
+      config,
+      '/api/admin/access-requests',
+      apiScopes.reads,
+    )
+    setAdminAccessRequests(result.requests)
+  }
+
   function handleViewChange(nextView: WorkspaceView): void {
     setView(nextView)
     if (nextView !== 'admin-view' || !access?.admin) return
 
     window.setTimeout(() => adminHeading.current?.focus(), 0)
-    void runAction('Loading application users', async () => {
-      await loadAdminUsers()
-      setAnnouncement('Application users loaded.')
+    void runAction('Loading application access', async () => {
+      await Promise.all([loadAdminUsers(), loadAdminAccessRequests()])
+      setAnnouncement('Application access loaded.')
+    })
+  }
+
+  async function decideAccessRequest(
+    request: AdminAccessRequest,
+    decision: 'approved' | 'denied',
+  ): Promise<void> {
+    if (!client || !config) return
+    const action = decision === 'approved' ? 'Granting access' : 'Denying access'
+    await runAction(`${action} for ${request.subject}`, async () => {
+      try {
+        await apiJson<{ status: string }>(
+          client,
+          config,
+          `/api/admin/access-requests/${encodeURIComponent(request.request_id)}/decision`,
+          apiScopes.render,
+          { method: 'POST', body: { decision } },
+        )
+      } catch (decisionError) {
+        try {
+          await loadAdminAccessRequests()
+        } catch (refreshError) {
+          throw new Error(
+            `The decision failed: ${errorText(decisionError, 'The request could not be decided.')}. ` +
+            `The pending request list could not be refreshed: ${errorText(refreshError, 'Refresh failed.')}`,
+          )
+        }
+        throw decisionError
+      }
+
+      try {
+        await Promise.all([loadAdminUsers(), loadAdminAccessRequests()])
+      } catch (refreshError) {
+        throw new Error(
+          `The decision was saved, but application access could not be refreshed: ${errorText(refreshError, 'Refresh failed.')}`,
+        )
+      }
+
+      setAnnouncement(decision === 'approved'
+        ? `Access granted to ${request.subject}. Baseline application access is enabled. Administrator and paid Speech permissions remain off.`
+        : `Access request for ${request.subject} denied.`)
     })
   }
 
@@ -1048,11 +1162,31 @@ function App() {
           )}
 
           {identity && !access && !workspaceLoading && (
-            <section className="panel" aria-labelledby="identity-heading">
-              <h2 id="identity-heading">Application access required</h2>
-              <p>Ask an administrator to verify and enroll this identity. Do not share your access token.</p>
-              <p>Issuer: <code>{identity.issuer}</code></p>
-              <p>Subject: <code>{identity.subject}</code></p>
+            <section className="panel sign-in-panel" aria-labelledby="access-heading">
+              <h2 id="access-heading">Request access</h2>
+              <p>You’re signed in, but this account hasn’t been enabled for Earwyrm. Request access and an administrator will review it.</p>
+              {accessRequestStatus === 'pending' && (
+                <p className="notice" role="status">Your request is pending review. You can return later.</p>
+              )}
+              {accessRequestStatus === 'denied' && (
+                <p className="alert" role="status">Your request was denied. You can submit a new request if you still need access.</p>
+              )}
+              {accessRequestStatus === 'approved' && (
+                <p className="notice" role="status">Your request was approved. Reload the workspace to continue.</p>
+              )}
+              {accessRequestStatus === null && (
+                <p className="muted" role="status">We couldn’t check your request status. Reload the page to try again.</p>
+              )}
+              {(accessRequestStatus === 'none' || accessRequestStatus === 'denied') && (
+                <button className="button button-primary" type="button" disabled={busy} onClick={() => void requestApplicationAccess()}>
+                  {accessRequestStatus === 'denied' ? 'Request access again' : 'Request access'}
+                </button>
+              )}
+              {accessRequestStatus === 'approved' && (
+                <button className="button button-primary" type="button" disabled={busy} onClick={() => void reloadApprovedAccess()}>
+                  Reload workspace
+                </button>
+              )}
             </section>
           )}
 
@@ -1732,7 +1866,44 @@ function App() {
               <h2 id="admin-heading" ref={adminHeading} tabIndex={-1}>
                 Manage application access
               </h2>
-              <p>Enroll only an issuer and subject verified with the user. Changes do not modify External ID accounts.</p>
+              <p>Review requests below. Granting enables baseline access only; use the permission editor to assign administrator or paid Speech access separately.</p>
+              <section aria-labelledby="access-requests-heading">
+                <h3 id="access-requests-heading">Pending access requests</h3>
+                {adminAccessRequests.length > 0 ? (
+                  <ul className="stack">
+                    {adminAccessRequests.map((request) => (
+                      <li key={request.request_id}>
+                        <p><code>{request.subject}</code></p>
+                        <p className="muted">
+                          Requested <time dateTime={request.created_at}>{new Date(request.created_at).toLocaleString()}</time>
+                        </p>
+                        <div className="button-row">
+                          <button
+                            className="button button-primary"
+                            type="button"
+                            disabled={busy}
+                            aria-label={`Grant access to ${request.subject}`}
+                            onClick={() => void decideAccessRequest(request, 'approved')}
+                          >
+                            Grant
+                          </button>
+                          <button
+                            className="button button-secondary"
+                            type="button"
+                            disabled={busy}
+                            aria-label={`Deny request from ${request.subject}`}
+                            onClick={() => void decideAccessRequest(request, 'denied')}
+                          >
+                            Deny
+                          </button>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="muted" role="status">No pending access requests.</p>
+                )}
+              </section>
               <h3>Current users</h3>
               <ul className="stack">
                 {adminUsers.map((user) => (

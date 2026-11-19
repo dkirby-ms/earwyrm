@@ -16,6 +16,7 @@ export const WEB_TABLE_COLUMNS: Record<string, readonly string[]> = {
   evaluations: ["output_id", "owner", "brand_transcription", "cta_transcription", "self_rating", "brand_match", "cta_match", "created_at"],
   application_identity: ["singleton", "issuer"],
   application_users: ["issuer", "subject", "enabled", "admin", "paid_speech", "created_at"],
+  access_requests: ["request_id", "issuer", "subject", "status", "created_at", "updated_at"],
   lyric_options: ["option_id", "owner", "brief_id", "request_json", "result_json", "created_at"],
   lyric_reservations: ["reservation_id", "action", "reserved_usd", "created_at"],
 };
@@ -55,7 +56,7 @@ function require_root(root: string): string {
   return realpathSync(root);
 }
 const RESET_TABLES = [
-  "lyric_reservations", "lyric_options", "application_users", "application_identity", "evaluations", "outputs", "paid_attempts",
+  "lyric_reservations", "lyric_options", "access_requests", "application_users", "application_identity", "evaluations", "outputs", "paid_attempts",
   "runs", "local_outputs", "render_jobs", "earwyrm_store_metadata",
 ] as const;
 const RESET_DATA_ENTRIES = ["audio", "work", "melody", "earwyrm.sqlite3", ".earwyrm-initialized"] as const;
@@ -125,8 +126,10 @@ async function validate_source(c: Connection, columns: Record<string, readonly s
   if (!["delete", "truncate", "persist"].includes(String(journal && Object.values(journal)[0]))) throw new TypeError("SQLite source uses an unsupported journal mode");
   const names = new Set((await c.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")).rows.map(r => String(r.name)));
   if (Object.keys(columns).some(name => !optional.has(name) && !names.has(name))) throw new TypeError("SQLite source is missing a required table");
-  const optionalCount = [...optional].filter(name => names.has(name)).length;
-  if (optionalCount && optionalCount !== optional.size) throw new TypeError("SQLite source has an incomplete authorization schema");
+  if (optional.has("application_identity") && optional.has("application_users")) {
+    const hasIdentity = names.has("application_identity"), hasUsers = names.has("application_users");
+    if (hasIdentity !== hasUsers) throw new TypeError("SQLite source has an incomplete authorization schema");
+  }
   if ([...names].some(name => !Object.hasOwn(columns, name))) throw new TypeError("SQLite source contains unsupported tables");
   for (const table of names) {
     const actual = (await c.execute(`PRAGMA table_info(${table})`)).rows.map(r => r.name);
@@ -214,10 +217,10 @@ export async function import_sqlite(directory: string, database_url: string): Pr
     web = new SqliteConnection(webPath, true);
     melody = new SqliteConnection(melodyPath, true);
     const sourceColumns = { ...WEB_TABLE_COLUMNS };
-    for (const table of ["lyric_options", "lyric_reservations"]) {
+    for (const table of ["access_requests", "lyric_options", "lyric_reservations"]) {
       if (!(await web.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", [table])).rows.length) delete sourceColumns[table];
     }
-    const webTables = await validate_source(web, sourceColumns, new Set(["application_identity", "application_users"]));
+    const webTables = await validate_source(web, sourceColumns, new Set(["application_identity", "application_users", "access_requests"]));
     await validate_source(melody, MELODY_TABLE_COLUMNS);
     await validate_web(web, root, webTables);
     await validate_melody(melody, root);
@@ -242,16 +245,21 @@ export async function import_sqlite(directory: string, database_url: string): Pr
   }
 }
 /** Parses the original operator commands without executing any database operation. */
-/** Adds paid-text tables to an initialized PostgreSQL store without resetting existing data. */
-export async function upgrade_postgres_store(database_url: string): Promise<void> {
+/** Adds access-request storage and, when selected, paid-text tables without resetting PostgreSQL data. */
+export async function upgrade_postgres_store(
+  database_url: string, { include_lyrics = true }: { include_lyrics?: boolean } = {},
+): Promise<void> {
   await transaction(new PostgresConnection(database_url, 0x4557524d01), async c => {
     const marker = (await c.execute("SELECT schema_version FROM earwyrm_store_metadata WHERE singleton = 1")).rows;
     if (marker.length !== 1 || marker[0]!.schema_version !== 1) throw new TypeError("Upgrade requires an initialized version-one store");
-    for (const table of REQUIRED_TABLES.filter(name => name !== "lyric_options")) {
+    for (const table of REQUIRED_TABLES.filter(name => name !== "access_requests" && name !== "lyric_options")) {
       if (!(await c.execute("SELECT to_regclass(?) AS name", [table])).rows[0]?.name) throw new TypeError("Upgrade requires a complete existing store");
     }
-    await WebStorage._create_lyric_schema(c);
-    await WebStorage._create_lyric_budget_schema(c);
+    await WebStorage._create_access_request_schema(c);
+    if (include_lyrics) {
+      await WebStorage._create_lyric_schema(c);
+      await WebStorage._create_lyric_budget_schema(c);
+    }
   });
   await validate_postgres_store(database_url);
 }
@@ -269,7 +277,7 @@ export async function main(args: string[] = process.argv.slice(2), environment: 
     const parsed = create_parser(args);
     const command = parsed.positionals[0], values = parsed.values;
     if (values.help) {
-      console.log("Usage: database [--data-dir DATA_DIR] {initialize-fresh,import-sqlite,upgrade,bootstrap-owner,set-user,list-users}\nupgrade: adds lyric option and budget storage to an initialized PostgreSQL store without deleting records\ninitialize-fresh: requires EARWYRM_DATA_RESET_APPROVED=true and owner identity env vars matching ENTRA_EXPECTED_ISSUER\nbootstrap-owner: --issuer ISSUER --subject SUBJECT\nset-user: --issuer ISSUER --subject SUBJECT --enabled {yes,no} --admin {yes,no} --paid-speech {yes,no}");
+      console.log("Usage: database [--data-dir DATA_DIR] {initialize-fresh,import-sqlite,upgrade,bootstrap-owner,set-user,list-users}\nupgrade: adds access-request and paid-text storage to an initialized PostgreSQL store without deleting records\ninitialize-fresh: requires EARWYRM_DATA_RESET_APPROVED=true and owner identity env vars matching ENTRA_EXPECTED_ISSUER\nbootstrap-owner: --issuer ISSUER --subject SUBJECT\nset-user: --issuer ISSUER --subject SUBJECT --enabled {yes,no} --admin {yes,no} --paid-speech {yes,no}");
       return 0;
     }
     if (parsed.positionals.length !== 1 || !["initialize-fresh", "import-sqlite", "upgrade", "bootstrap-owner", "set-user", "list-users"].includes(command ?? "")) throw new TypeError("A valid operator command is required");
@@ -289,7 +297,7 @@ export async function main(args: string[] = process.argv.slice(2), environment: 
     if (command === "upgrade") {
       if (!database_url) throw new TypeError("Explicit upgrade requires PostgreSQL; SQLite upgrades on initialization");
       await upgrade_postgres_store(database_url);
-      console.log("PostgreSQL lyric option and budget storage upgraded without deleting records");
+      console.log("PostgreSQL access-request and paid-text storage upgraded without deleting records");
       return 0;
     }
     if (command === "initialize-fresh" || command === "import-sqlite") {

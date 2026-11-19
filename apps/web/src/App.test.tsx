@@ -3,6 +3,7 @@ import { cleanup, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
+import type { AccessRequestStatus } from './types'
 
 const account = {
   homeAccountId: 'home-id',
@@ -36,7 +37,36 @@ const output = {
   evidence_url: '/api/outputs/output-1/evidence',
 }
 
-function installMocks(denyAccess = false, capabilities: { lyrics?: boolean; vocals?: boolean } = {}) {
+function installMocks(
+  denyAccess = false,
+  capabilities: { lyrics?: boolean; vocals?: boolean } = {},
+  initialAccessRequestStatus: AccessRequestStatus = 'none',
+  isAdmin = true,
+  failAccessDecision = false,
+) {
+  let accessDenied = denyAccess
+  let accessRequestStatus = initialAccessRequestStatus
+  let pendingRequests = [{
+    request_id: 'request-1',
+    subject: 'requester-1',
+    created_at: '2026-11-18T12:00:00.000Z',
+  }]
+  const adminUsers = [
+    {
+      issuer: 'https://identity.example.test/tenant/v2.0',
+      subject: 'existing-user',
+      enabled: true,
+      admin: true,
+      paid_speech: true,
+    },
+    {
+      issuer: 'https://identity.example.test/tenant/v2.0',
+      subject: 'current-user',
+      enabled: true,
+      admin: true,
+      paid_speech: true,
+    },
+  ]
   vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => undefined)
   vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined)
   const logoutPopup = vi.fn(async (_request: {
@@ -88,10 +118,11 @@ function installMocks(denyAccess = false, capabilities: { lyrics?: boolean; voca
         issuer: 'https://identity.example.test/tenant/v2.0',
         subject: 'current-user',
       },
+      '/api/access-requests': { status: accessRequestStatus },
       '/api/access': {
         issuer: 'https://identity.example.test/tenant/v2.0',
         subject: 'current-user',
-        admin: true,
+        admin: isAdmin,
         paid_speech: false,
       },
       '/api/briefs': [
@@ -149,31 +180,50 @@ function installMocks(denyAccess = false, capabilities: { lyrics?: boolean; voca
           },
         ],
       },
-      '/api/admin/users': {
-        users: [
-          {
-            issuer: 'https://identity.example.test/tenant/v2.0',
-            subject: 'existing-user',
-            enabled: true,
-            admin: true,
-            paid_speech: true,
-          },
-          {
-            issuer: 'https://identity.example.test/tenant/v2.0',
-            subject: 'current-user',
-            enabled: true,
-            admin: true,
-            paid_speech: true,
-          },
-        ],
-      },
+      '/api/admin/users': { users: adminUsers },
     }
 
-    if (path === '/api/access' && denyAccess) {
+    if (path === '/api/access-requests' && init?.method === 'POST') {
+      accessRequestStatus = 'pending'
+      return Response.json({ status: accessRequestStatus })
+    }
+
+    if (path === '/api/access-requests' && accessRequestStatus === 'approved') {
+      accessDenied = false
+    }
+
+    if (path === '/api/access' && accessDenied) {
       return new Response(JSON.stringify({ detail: 'Application access denied' }), {
         status: 403,
         headers: { 'Content-Type': 'application/json' },
       })
+    }
+
+    if (path === '/api/admin/access-requests' && init?.method !== 'POST') {
+      return Response.json({ requests: pendingRequests })
+    }
+
+    if (path.startsWith('/api/admin/access-requests/') && init?.method === 'POST') {
+      const requestId = path.split('/').at(-2)
+      const requested = pendingRequests.find((request) => request.request_id === requestId)
+      pendingRequests = pendingRequests.filter((request) => request.request_id !== requestId)
+      if (failAccessDecision) {
+        return new Response(JSON.stringify({ detail: 'The request was already decided' }), {
+          status: 409,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      const body = JSON.parse(String(init.body)) as { decision: 'approved' | 'denied' }
+      if (body.decision === 'approved' && requested) {
+        adminUsers.push({
+          issuer: 'https://identity.example.test/tenant/v2.0',
+          subject: requested.subject,
+          enabled: true,
+          admin: false,
+          paid_speech: false,
+        })
+      }
+      return Response.json({ status: body.decision })
     }
 
     const payload = payloads[path]
@@ -351,17 +401,71 @@ describe('React workspace', () => {
     )
   })
 
-  it('shows an access error and the verified identity when enrollment is denied', async () => {
+  it('shows a request action instead of identity details when application access is denied', async () => {
     const user = userEvent.setup()
     installMocks(true)
     render(<App />)
 
     await user.click(await screen.findByRole('button', { name: 'Sign in with Entra External ID' }))
-    expect(await screen.findByRole('alert')).toHaveTextContent('Application access denied')
-    expect(
-      await screen.findByRole('heading', { name: 'Application access required' }),
-    ).toBeInTheDocument()
-    expect(screen.getByText('current-user')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Request access' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Request access' })).toBeEnabled()
+    expect(screen.queryByText('current-user')).not.toBeInTheDocument()
+    expect(screen.queryByText('https://identity.example.test/tenant/v2.0')).not.toBeInTheDocument()
+  })
+
+  it('submits an access request by keyboard and announces pending status', async () => {
+    const user = userEvent.setup()
+    const { fetchMock } = installMocks(true)
+    render(<App />)
+
+    await user.click(await screen.findByRole('button', { name: 'Sign in with Entra External ID' }))
+    const requestButton = await screen.findByRole('button', { name: 'Request access' })
+    requestButton.focus()
+    await user.keyboard('{Enter}')
+
+    expect(await screen.findByRole('status')).toHaveTextContent('Your request is pending review.')
+    expect(screen.getByText('Access request submitted. An administrator will review it.'))
+      .toHaveAttribute('aria-live', 'polite')
+    const request = fetchMock.mock.calls.find(([input, init]) =>
+      new URL(String(input), window.location.origin).pathname === '/api/access-requests' &&
+      init?.method === 'POST')
+    expect(request?.[1]?.body).toBeUndefined()
+    expect(new Headers(request?.[1]?.headers).get('Authorization')).toBe('Bearer test-access-token')
+  })
+
+  it('allows a denied request to be submitted again', async () => {
+    const user = userEvent.setup()
+    const { fetchMock } = installMocks(true, {}, 'denied')
+    render(<App />)
+
+    await user.click(await screen.findByRole('button', { name: 'Sign in with Entra External ID' }))
+    expect(await screen.findByRole('status')).toHaveTextContent('Your request was denied.')
+    await user.click(screen.getByRole('button', { name: 'Request access again' }))
+
+    expect(await screen.findByRole('status')).toHaveTextContent('Your request is pending review.')
+    expect(fetchMock.mock.calls.some(([input, init]) =>
+      new URL(String(input), window.location.origin).pathname === '/api/access-requests' &&
+      init?.method === 'POST')).toBe(true)
+  })
+
+  it('reloads the workspace after access has been approved', async () => {
+    const user = userEvent.setup()
+    installMocks(true, {}, 'approved')
+    render(<App />)
+
+    await user.click(await screen.findByRole('button', { name: 'Sign in with Entra External ID' }))
+    expect(await screen.findByRole('status')).toHaveTextContent('Your request was approved.')
+    await user.click(screen.getByRole('button', { name: 'Reload workspace' }))
+
+    expect(await screen.findByRole('heading', { name: 'Advertisers' })).toBeVisible()
+  })
+
+  it('keeps sign-in available before a user is authenticated', async () => {
+    installMocks()
+    render(<App />)
+
+    expect(await screen.findByRole('button', { name: 'Sign in with Entra External ID' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Request access' })).not.toBeInTheDocument()
   })
 
   it('keeps the workspace available when the current user removes administrator access', async () => {
@@ -377,6 +481,92 @@ describe('React workspace', () => {
 
     expect(await screen.findByRole('heading', { name: 'Advertisers' })).toBeVisible()
     expect(screen.queryByRole('button', { name: 'Manage access' })).not.toBeInTheDocument()
+  })
+
+  it('lists pending requests with a read-only identity reference', async () => {
+    const user = userEvent.setup()
+    installMocks()
+    render(<App />)
+
+    await user.click(await screen.findByRole('button', { name: 'Sign in with Entra External ID' }))
+    await user.click(await screen.findByRole('button', { name: 'Manage access' }))
+
+    const queue = await screen.findByRole('region', { name: 'Pending access requests' })
+    expect(within(queue).getByText('requester-1')).toBeVisible()
+    expect(within(queue).getByRole('button', { name: 'Grant access to requester-1' })).toBeVisible()
+    expect(within(queue).getByRole('button', { name: 'Deny request from requester-1' })).toBeVisible()
+    expect(within(queue).queryByLabelText('Verified subject')).not.toBeInTheDocument()
+  })
+
+  it('grants baseline access by keyboard and announces the decision', async () => {
+    const user = userEvent.setup()
+    const { fetchMock } = installMocks()
+    render(<App />)
+
+    await user.click(await screen.findByRole('button', { name: 'Sign in with Entra External ID' }))
+    await user.click(await screen.findByRole('button', { name: 'Manage access' }))
+    const grantButton = await screen.findByRole('button', { name: 'Grant access to requester-1' })
+    grantButton.focus()
+    await user.keyboard('{Enter}')
+
+    expect(await screen.findByText(/requester-1: enabled, not administrator, paid Speech denied/)).toBeVisible()
+    expect(screen.getByText(
+      'Access granted to requester-1. Baseline application access is enabled. Administrator and paid Speech permissions remain off.',
+    )).toHaveAttribute('aria-live', 'polite')
+    const decision = fetchMock.mock.calls.find(([input, init]) =>
+      new URL(String(input), window.location.origin).pathname.endsWith('/request-1/decision') &&
+      init?.method === 'POST')
+    expect(JSON.parse(String(decision?.[1]?.body))).toEqual({ decision: 'approved' })
+  })
+
+  it('denies a request by keyboard and announces the decision', async () => {
+    const user = userEvent.setup()
+    const { fetchMock } = installMocks()
+    render(<App />)
+
+    await user.click(await screen.findByRole('button', { name: 'Sign in with Entra External ID' }))
+    await user.click(await screen.findByRole('button', { name: 'Manage access' }))
+    const denyButton = await screen.findByRole('button', { name: 'Deny request from requester-1' })
+    denyButton.focus()
+    await user.keyboard('{Enter}')
+
+    expect(await screen.findByRole('status')).toHaveTextContent('No pending access requests.')
+    expect(screen.getByText('Access request for requester-1 denied.'))
+      .toHaveAttribute('aria-live', 'polite')
+    const decision = fetchMock.mock.calls.find(([input, init]) =>
+      new URL(String(input), window.location.origin).pathname.endsWith('/request-1/decision') &&
+      init?.method === 'POST')
+    expect(JSON.parse(String(decision?.[1]?.body))).toEqual({ decision: 'denied' })
+  })
+
+  it('hides admin access controls from non-administrators', async () => {
+    const user = userEvent.setup()
+    const { fetchMock } = installMocks(false, {}, 'none', false)
+    render(<App />)
+
+    await user.click(await screen.findByRole('button', { name: 'Sign in with Entra External ID' }))
+
+    expect(screen.queryByRole('button', { name: 'Manage access' })).not.toBeInTheDocument()
+    expect(fetchMock.mock.calls.some(([input]) =>
+      new URL(String(input), window.location.origin).pathname.startsWith('/api/admin/'))).toBe(false)
+  })
+
+  it('announces a decision error and refreshes the pending queue', async () => {
+    const user = userEvent.setup()
+    const { fetchMock } = installMocks(false, {}, 'none', true, true)
+    render(<App />)
+
+    await user.click(await screen.findByRole('button', { name: 'Sign in with Entra External ID' }))
+    await user.click(await screen.findByRole('button', { name: 'Manage access' }))
+    await user.click(await screen.findByRole('button', { name: 'Grant access to requester-1' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('The request was already decided')
+    expect(await screen.findByRole('status')).toHaveTextContent('No pending access requests.')
+    expect(screen.getByText('Granting access for requester-1 failed.'))
+      .toHaveAttribute('aria-live', 'polite')
+    expect(fetchMock.mock.calls.filter(([input]) =>
+      new URL(String(input), window.location.origin).pathname === '/api/admin/access-requests'))
+      .toHaveLength(2)
   })
 
   it('keeps inspected briefs, batch selection and recent-run inspection independent', async () => {

@@ -91,13 +91,48 @@ describe("SQLite authorization and paid ledger", () => {
     await expect(second.bootstrap_owner(issuer, user!.subject)).rejects.toBeInstanceOf(StorageConflict);
     await expect(first.set_user("other", "other", permissions)).rejects.toBeInstanceOf(StorageAccessDenied);
   });
+  it("queues, denies, resubmits and grants baseline access without redundant enabled-user requests", async () => {
+    const store = new WebStorage(directory());
+    await store.bootstrap_owner(issuer, "owner");
+    expect(await store.get_access_request(issuer, "requester")).toBeNull();
+
+    const first = await store.request_access(issuer, "requester");
+    expect(first.status).toBe("pending");
+    if (first.status !== "pending") throw new Error("Expected a pending request");
+    expect(await store.request_access(issuer, "requester")).toEqual(first);
+    expect(await store.list_access_requests_as_admin(issuer, "owner")).toEqual([first.request]);
+
+    const denied = await store.decide_access_request_as_admin(issuer, "owner", first.request.request_id, "denied");
+    expect(denied.status).toBe("denied");
+    const retry = await store.request_access(issuer, "requester");
+    expect(retry.status).toBe("pending");
+    if (retry.status !== "pending") throw new Error("Expected a pending request");
+    expect(retry.request.request_id).not.toBe(first.request.request_id);
+
+    await store.set_user(issuer, "requester", { enabled: false, admin: true, paid_speech: true });
+    const approved = await store.decide_access_request_as_admin(issuer, "owner", retry.request.request_id, "approved");
+    expect(approved.status).toBe("approved");
+    expect(await store.get_user(issuer, "requester")).toMatchObject({
+      enabled: 1, admin: 0, paid_speech: 0,
+    });
+    expect((await store.get_access_request(issuer, "requester"))?.status).toBe("approved");
+
+    expect(await store.request_access(issuer, "owner")).toEqual({ status: "already_enabled" });
+    expect(await store.get_access_request(issuer, "owner")).toBeNull();
+  });
   it("rechecks revoked administrator and paid permissions within the write lock", async () => {
     const store = new WebStorage(directory());
     await store.bootstrap_owner(issuer, "owner");
+    const queued = await store.request_access(issuer, "applicant");
+    if (queued.status !== "pending") throw new Error("Expected a pending request");
     await store.set_user(issuer, "delegate", permissions);
     await store.set_user(issuer, "delegate", { ...permissions, admin: false });
     await expect(store.set_user_as_admin(issuer, "delegate", issuer, "owner", { enabled: false, admin: false, paid_speech: false })).rejects.toBeInstanceOf(StorageAccessDenied);
     await expect(store.list_users_as_admin(issuer, "delegate")).rejects.toBeInstanceOf(StorageAccessDenied);
+    await expect(store.list_access_requests_as_admin(issuer, "delegate")).rejects.toBeInstanceOf(StorageAccessDenied);
+    await expect(store.decide_access_request_as_admin(issuer, "delegate", queued.request.request_id, "approved")).rejects.toBeInstanceOf(StorageAccessDenied);
+    expect((await store.get_access_request(issuer, "applicant"))?.status).toBe("pending");
+    expect(await store.get_user(issuer, "applicant")).toBeNull();
     await store.set_user(issuer, "owner", { ...permissions, paid_speech: false });
     await expect(store.reserve_paid_run({ ...reservation("revoked"), issuer })).rejects.toBeInstanceOf(StorageAccessDenied);
     expect(await store.get_run("run-revoked", "owner")).toBeNull();

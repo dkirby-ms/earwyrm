@@ -89,20 +89,81 @@ export function arrange(request: CompositionRequest, seed: Seed): Arrangement {
 
 /** Render an instrumental guide with the same pitches and onsets the later voice will use. */
 export function arrange_preview(request: PreviewCompositionRequest, seed: Seed): Arrangement {
-  const width = preview_phrase_width(request.duration_seconds);
-  const lines = request.syllables_per_line.map((count, index) => {
-    const start_seconds = 3 + index * width;
-    const duration = Math.min(width, count * 0.5);
-    return { syllables: Array<string>(count).fill(""), start_seconds, end_seconds: start_seconds + duration };
+  const { duration_seconds, syllables_per_line } = request;
+  const width = preview_phrase_width(duration_seconds) * 8;
+  const plan = musical_plan(seed), form = musical_form(duration_seconds), random = seeded_random(seed);
+  const cadence = form.cadence_start_seconds;
+  // Speech alignment caps committed vocal windows at 25 seconds, even for longer scores.
+  const cta_end = Math.min(25, cadence);
+  const backing = compose(seed, duration_seconds).filter(note => note.instrument !== "lead" ||
+    note.start + note.duration <= 3 || note.start >= cadence);
+  const vocal: Note[] = [], timing: SyllableNote[] = [];
+  const [opening, , recall] = syllables_per_line;
+  const hook_size = Math.min(3, opening, recall);
+  const hook_rhythm = plan.rhythm[0] > plan.rhythm[1] ? [3, 1, 4] : [2, 1, 5];
+  const phrase_ticks = (count: number) => Math.min(width, count * 3);
+  let hook_slack = Math.min(phrase_ticks(opening) - opening, phrase_ticks(recall) - recall);
+  const hook_slots = hook_rhythm.slice(0, hook_size).map(length => {
+    const extra = Math.min(length - 1, hook_slack);
+    hook_slack -= extra;
+    return 1 + extra;
   });
-  const arrangement = arrange_lines({ duration_seconds: request.duration_seconds, lines }, seed);
-  // Keep the instrumental intro and cadence, but use the committed vocal motif as the middle lead.
-  arrangement.backing = arrangement.backing.filter(note => note.instrument !== "lead" ||
-    note.start + note.duration <= 3 || note.start >= request.duration_seconds - 2);
-  arrangement.backing.push(...arrangement.vocal.map(note => ({
-    ...note, instrument: "lead" as const, gain: 0.055,
-  })));
-  return arrangement;
+
+  syllables_per_line.forEach((count, line_index) => {
+    const returning = line_index === 0 || line_index === 2;
+    const cta = line_index === 3;
+    const slots = guided_phrase_slots(count, phrase_ticks(count), returning ? hook_slots : [], line_index);
+    const length = slots.reduce((sum, slot) => sum + slot, 0);
+    let tick = cta ? cta_end * 8 - length : 24 + line_index * width;
+    let degree = 0;
+    let leap = 0;
+    slots.forEach((slot, syllable_index) => {
+      const start = tick / 8, duration = slot / 8;
+      const chord = chord_degree(plan, Math.floor(start / 2), form);
+      if (returning && syllable_index < hook_size) {
+        degree = plan.motif[syllable_index];
+      } else if (cta && syllable_index === count - 1) {
+        degree = 4;
+      } else if (syllable_index === 0 || syllable_index === count - 1) {
+        const tones = [chord - 7, chord - 5, chord - 3, chord, chord + 2, chord + 4];
+        const target = syllable_index === 0 ? (cta ? 4 : -1) : degree;
+        degree = tones.reduce((nearest, tone) => Math.abs(tone - target) < Math.abs(nearest - target) ? tone : nearest);
+      } else {
+        const [low, high] = line_index === 1 ? [-4, 4] : [-2, 8];
+        // A wide interval is answered by a step in the opposite direction.
+        const steps = leap >= 4 ? [-2, -1] : leap <= -4 ? [1, 2] : [-5, -4, -2, -1, 0, 1, 2, 4, 5];
+        const choices = steps.map(step => degree + step).filter(next => next >= low && next <= high);
+        const previous = degree;
+        degree = choices[Math.floor(random() * choices.length)];
+        leap = degree - previous;
+      }
+      const pitch = plan.pitch(degree + 7);
+      vocal.push({ start, duration, pitch, instrument: "vocal", gain: 0.25 });
+      timing.push({ line_index, syllable_index, syllable: "", start_seconds: start, duration_seconds: duration, midi_note: pitch });
+      backing.push({ start, duration, pitch, instrument: "lead", gain: slot >= 4 ? 0.085 : 0.06 });
+      tick += slot;
+    });
+  });
+
+  return { seed, backing, vocal, chords: arrangement_chords(plan, form, backing), timing };
+}
+
+/** Allocate eighth-second ticks; protect the recurring hook and spend slack on accents and the ending. */
+function guided_phrase_slots(count: number, budget: number, hook: readonly number[], line_index: number): number[] {
+  const slots = Array.from({ length: count }, (_, index) => hook[index] ?? 1);
+  const pulse = line_index === 1 ? [1, 2, 1, 3] : [3, 1, 2, 1];
+  const weights = slots.map((_, index) => index === count - 1 ? 6 : pulse[index % pulse.length]);
+  let slack = budget - slots.reduce((sum, slot) => sum + slot, 0);
+  while (slack > 0) {
+    let next = -1;
+    for (let index = hook.length; index < count; index++) {
+      if (slots[index] < 8 && (next < 0 || weights[index] / slots[index] > weights[next] / slots[next])) next = index;
+    }
+    if (next < 0) break;
+    slots[next]++;
+    slack--;
+  }
+  return slots;
 }
 
 function arrange_lines(request: { duration_seconds: number; lines: Omit<LyricLine, "text">[] }, seed: Seed): Arrangement {
@@ -124,11 +185,14 @@ function arrange_lines(request: { duration_seconds: number; lines: Omit<LyricLin
       start += duration;
     });
   });
-  const plan = musical_plan(seed), form = musical_form(request.duration_seconds);
-  const chords = Array.from({ length: request.duration_seconds / 2 }, (_, bar) => ({
+  const chords = arrangement_chords(musical_plan(seed), musical_form(request.duration_seconds), backing);
+  return { seed, backing, vocal, chords, timing };
+}
+
+function arrangement_chords(plan: ReturnType<typeof musical_plan>, form: ReturnType<typeof musical_form>, backing: readonly Note[]): Chord[] {
+  return Array.from({ length: form.duration_seconds / 2 }, (_, bar) => ({
     start_seconds: bar * 2, duration_seconds: 2,
     root_midi: plan.pitch(chord_degree(plan, bar, form)),
     pitches: backing.filter(note => note.instrument === "pad" && note.start === bar * 2).map(note => note.pitch),
   }));
-  return { seed, backing, vocal, chords, timing };
 }
