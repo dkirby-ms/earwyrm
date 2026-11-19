@@ -28,6 +28,34 @@ export const FRAMES = SAMPLE_RATE * DURATION;
 export const BEAT = 0.5;
 /** Whole 4/4 bars at 120 BPM; reserve verse, two hook phrases and cadence within 12-30 seconds. */
 export const ScoreDuration = z.number().min(12).max(DURATION).multipleOf(2);
+/** Supported output length, including fractional seconds for tempo-derived scores. */
+export const RenderDuration = z.number().min(12).max(DURATION);
+/** Bounded tempo for generated v1 scores. */
+export const ScoreTempo = z.number().int().min(100).max(140);
+
+/** Tests legacy whole-bar lengths or sample-rounded 8-12 bar score lengths at an explicit tempo. */
+export function valid_render_duration(duration_seconds: number, tempo_bpm?: number): boolean {
+  if (tempo_bpm === undefined) return ScoreDuration.safeParse(duration_seconds).success;
+  const duration = RenderDuration.safeParse(duration_seconds), tempo = ScoreTempo.safeParse(tempo_bpm);
+  if (!duration.success || !tempo.success) return false;
+  const bars = Math.round(duration_seconds * tempo_bpm / 240);
+  return bars >= 8 && bars <= 12 && Math.abs(duration_seconds - bars * 240 / tempo_bpm) <= 1 / SAMPLE_RATE;
+}
+
+/**
+ * Validate a legacy whole-bar length or an explicitly tempo-bound v1 score duration.
+ *
+ * @param tempo_bpm - Omit for the legacy 12-30 second whole-bar contract.
+ * @returns The unchanged duration after validation.
+ */
+export function validate_render_duration(duration_seconds: number, tempo_bpm?: number): number {
+  if (!valid_render_duration(duration_seconds, tempo_bpm)) {
+    throw new RangeError(tempo_bpm === undefined
+      ? "Duration must be 12-30 seconds in whole bars"
+      : "Tempo-derived score duration must be 8-12 bars at 100-140 BPM");
+  }
+  return duration_seconds;
+}
 
 /** Section boundaries in seconds; the final bar is reserved for a tonic cadence. */
 export interface MusicalForm {
@@ -37,9 +65,14 @@ export interface MusicalForm {
 }
 
 /** Describe a verse, returning chorus hook and final cadence on bar boundaries. */
-export function musical_form(duration_seconds = DURATION): MusicalForm {
-  duration_seconds = ScoreDuration.parse(duration_seconds);
-  return { duration_seconds, hook_start_seconds: Math.max(2, duration_seconds - 10), cadence_start_seconds: duration_seconds - 2 };
+export function musical_form(duration_seconds = DURATION, tempo_bpm?: number): MusicalForm {
+  duration_seconds = validate_render_duration(duration_seconds, tempo_bpm);
+  const bar_seconds = 240 / (tempo_bpm ?? 120);
+  return {
+    duration_seconds,
+    hook_start_seconds: Math.max(bar_seconds, duration_seconds - 5 * bar_seconds),
+    cadence_start_seconds: duration_seconds - bar_seconds,
+  };
 }
 
 /** Choose a concise seeded form, extending by whole bars for complete speech; never truncate. */
@@ -205,9 +238,14 @@ function validate_note(note: Note, duration_seconds = DURATION): void {
   if (![note.start, note.duration, note.pitch, note.gain].every(Number.isFinite) || note.start < 0 || note.duration <= 0 || note.start + note.duration > duration_seconds + 1e-9 || !Number.isInteger(note.pitch) || note.pitch < 0 || note.pitch > 127 || note.gain < 0 || !["pad", "bass", "lead", "vocal", "kick", "hat", "snare"].includes(note.instrument)) throw new RangeError("Invalid note timing, pitch or instrument");
 }
 
-/** Render oscillator instruments and seeded noise; reject events beyond the selected whole-bar end. */
-export function synthesize(notes: readonly Note[], { seed, duration_seconds = DURATION }: { seed: Seed; duration_seconds?: number }): Audio {
-  const output = new Float64Array(ScoreDuration.parse(duration_seconds) * SAMPLE_RATE);
+/**
+ * Render oscillator instruments and seeded noise.
+ *
+ * @param options - Omit `tempo_bpm` for legacy whole-bar durations; 100-140 BPM enables 8-12 bar score durations.
+ */
+export function synthesize(notes: readonly Note[], { seed, duration_seconds = DURATION, tempo_bpm }: { seed: Seed; duration_seconds?: number; tempo_bpm?: number }): Audio {
+  duration_seconds = validate_render_duration(duration_seconds, tempo_bpm);
+  const output = new Float64Array(Math.round(duration_seconds * SAMPLE_RATE));
   const random = seeded_random(seed);
   for (const note of notes) {
     validate_note(note, duration_seconds);
@@ -240,9 +278,17 @@ function peak(audio: Audio): number {
   return maximum;
 }
 
-/** Return faded, -1 dB peak-normalized audio; reject silence or invalid whole-bar PCM. */
-export function normalize(audio: Audio): Audio {
-  if (!ScoreDuration.safeParse(audio.length / SAMPLE_RATE).success) throw new RangeError("Audio must contain 12 to 30 seconds in whole bars");
+/**
+ * Return faded, -1 dB peak-normalized audio.
+ *
+ * @param tempo_bpm - Optional 100-140 BPM score tempo for sample-rounded 8-12 bar audio.
+ */
+export function normalize(audio: Audio, tempo_bpm?: number): Audio {
+  if (!valid_render_duration(audio.length / SAMPLE_RATE, tempo_bpm)) {
+    throw new RangeError(tempo_bpm === undefined
+      ? "Audio must contain 12 to 30 seconds in whole bars"
+      : "Audio must match 8-12 bars at 100-140 BPM");
+  }
   const maximum = peak(audio);
   if (maximum < 1e-8) throw new RangeError("Refusing to export silent audio");
   const output = audio.slice();
@@ -268,15 +314,19 @@ function filter(audio: Audio, cutoff: number, highpass = false): Audio {
   return out;
 }
 
-/** Duck the bed using vocal energy; inputs must have equal, valid whole-bar lengths. */
-export function mix(bed: Audio, vocal: Audio): Audio {
-  if (bed.length !== vocal.length || !ScoreDuration.safeParse(bed.length / SAMPLE_RATE).success) throw new RangeError("Mix inputs must contain equal whole-bar durations");
+/**
+ * Duck the bed using vocal energy.
+ *
+ * @param tempo_bpm - Optional 100-140 BPM score tempo for sample-rounded 8-12 bar inputs.
+ */
+export function mix(bed: Audio, vocal: Audio, tempo_bpm?: number): Audio {
+  if (bed.length !== vocal.length || !valid_render_duration(bed.length / SAMPLE_RATE, tempo_bpm)) throw new RangeError("Mix inputs must contain equal supported score durations");
   peak(bed);
   const maximum = peak(vocal);
   if (maximum < 1e-8) throw new RangeError("Vocal is silent");
   const normalized = vocal.map(value => value / maximum);
   const envelope = filter(normalized.map(Math.abs), 12);
-  return normalize(bed.map((value, i) => value * (0.55 - 0.35 * Math.max(0, Math.min(1, envelope[i] * 12))) + normalized[i] * 0.7));
+  return normalize(bed.map((value, i) => value * (0.55 - 0.35 * Math.max(0, Math.min(1, envelope[i] * 12))) + normalized[i] * 0.7), tempo_bpm);
 }
 
 /** Transfer 18 logarithmic speech-band envelopes plus unvoiced consonants. */
@@ -332,11 +382,25 @@ export function instrument_palette(seed: Seed) {
 
 export type InstrumentPalette = (typeof GM_PALETTES)[number];
 
-/** Synchronously write type-0, 480 PPQ MIDI with GM programs and the selected whole-bar end. */
-export function write_midi(path: string, notes: readonly Note[], duration_seconds = DURATION, palette: InstrumentPalette = GM_PALETTES[0]): void {
-  ScoreDuration.parse(duration_seconds);
+/**
+ * Synchronously write type-0, 480 PPQ MIDI.
+ *
+ * @param tempo_bpm - Optional 100-140 BPM score tempo; omission retains legacy whole-bar 120-BPM output.
+ */
+export function write_midi(
+  path: string,
+  notes: readonly Note[],
+  duration_seconds = DURATION,
+  palette: InstrumentPalette = GM_PALETTES[0],
+  tempo_bpm?: number,
+): void {
+  duration_seconds = validate_render_duration(duration_seconds, tempo_bpm);
+  const tempo = tempo_bpm === undefined ? 120 : ScoreTempo.parse(tempo_bpm);
+  const ticks_per_second = tempo * 8;
+  const microseconds_per_quarter = Math.round(60_000_000 / tempo);
   const channels: Record<string, number> = { pad: 0, bass: 1, lead: 2, vocal: 3, kick: 9, hat: 9, snare: 9 };
-  const events: [number, number[]][] = [[0, [255, 81, 3, 7, 161, 32]]];
+  const events: [number, number[]][] = [[0, [255, 81, 3,
+    (microseconds_per_quarter >> 16) & 255, (microseconds_per_quarter >> 8) & 255, microseconds_per_quarter & 255]]];
   for (const instrument of ["pad", "bass", "lead", "vocal"] as const) {
     if (notes.some(note => note.instrument === instrument)) {
       events.push([0, [192 | channels[instrument], instrument === "vocal" ? 54 : palette[instrument]]]);
@@ -345,15 +409,16 @@ export function write_midi(path: string, notes: readonly Note[], duration_second
   for (const note of notes) {
     validate_note(note, duration_seconds);
     const channel = channels[note.instrument], velocity = Math.max(1, Math.min(127, Math.round(note.gain * 300)));
-    events.push([Math.round(note.start / BEAT * 480), [144 | channel, note.pitch, velocity]], [Math.round((note.start + note.duration) / BEAT * 480), [128 | channel, note.pitch, 0]]);
+    events.push([Math.round(note.start * ticks_per_second), [144 | channel, note.pitch, velocity]],
+      [Math.round((note.start + note.duration) * ticks_per_second), [128 | channel, note.pitch, 0]]);
   }
   // At tick zero, programs must precede the first notes. Otherwise retain note-off before note-on.
-  const order = (message: number[]) => (message[0] & 240) === 192 ? 0 : message[0];
+  const order = (message: number[]) => message[0] === 255 && message[1] === 81 ? -1 : (message[0] & 240) === 192 ? 0 : message[0];
   events.sort((a, b) => a[0] - b[0] || order(a[1]) - order(b[1]) || Buffer.compare(Buffer.from(a[1]), Buffer.from(b[1])));
   const track: number[] = [];
   let previous = 0;
   for (const [tick, message] of events) { track.push(...variable_length(tick - previous), ...message); previous = tick; }
-  track.push(...variable_length(Math.max(0, duration_seconds / BEAT * 480 - previous)), 255, 47, 0);
+  track.push(...variable_length(Math.max(0, Math.round(duration_seconds * ticks_per_second) - previous)), 255, 47, 0);
   const header = Buffer.alloc(22);
   header.write("MThd", 0); header.writeUInt32BE(6, 4); header.writeUInt16BE(0, 8); header.writeUInt16BE(1, 10); header.writeUInt16BE(480, 12); header.write("MTrk", 14); header.writeUInt32BE(track.length, 18);
   writeFileSync(path, Buffer.concat([header, Buffer.from(track)]));

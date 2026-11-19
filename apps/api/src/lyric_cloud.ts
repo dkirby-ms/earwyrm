@@ -73,7 +73,7 @@ const Moderation = z.object({ categoriesAnalysis: z.array(z.object({ category: z
 const Protected = z.object({ protectedMaterialAnalysis: z.object({ detected: z.boolean() }) });
 
 /** Remove only local constraints unsupported by Foundry's strict JSON-schema subset. */
-function wire_schema(model: z.ZodType): unknown {
+export function wire_schema(model: z.ZodType): unknown {
   const unsupported = new Set(["minLength", "maxLength", "minimum", "maximum", "minItems", "maxItems", "pattern", "default", "$schema"]);
   const clean = (value: unknown): unknown => {
     if (Array.isArray(value)) return value.map(clean);

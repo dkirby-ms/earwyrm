@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
-import { normalize, Seed, write_midi, write_wav } from "./dsp.js";
+import { normalize, RenderDuration, ScoreTempo, Seed, write_midi, write_wav, type Note } from "./dsp.js";
 import { render_backing } from "./backing.js";
 import { arrange, arrange_preview, Chord, CompositionRequest, PreviewCompositionRequest, ProductPath, SyllableNote } from "./melody.js";
 import { is_storage_error, parse_seed_json, PostgresConnection, serialized, SqliteConnection, transaction, type Connection } from "./persistence.js";
@@ -10,6 +10,8 @@ import { screen, select_screened, SimilarityReport } from "./similarity.js";
 import { prepare_database_file } from "./sqlite_files.js";
 import { canonical_json, private_root, type StorageOptions } from "./web_storage.js";
 import { media_bytes } from "./preview_quota.js";
+import { ArrangementScore, compile_score } from "./score_dsl.js";
+import { ScoreProviderProvenance, type ScoreProviderProvenance as ScoreProviderProvenanceType } from "./score_cloud.js";
 
 export const ARTIFACT_TYPES = {
   "score.mid": "audio/midi", "score.json": "application/json", "timing.json": "application/json",
@@ -37,13 +39,30 @@ export const CompositionResult = z.strictObject({
   queue_backend: z.string().default("sqlite-local"), product_path: ProductPath,
   /** Safe seeds stay numeric; larger historical 63-bit identities use canonical decimal strings. */
   seed: Seed,
-  duration_seconds: z.number().int().default(30), style: z.string().default("retro-synth"),
+  duration_seconds: RenderDuration.default(30), style: z.string().default("retro-synth"),
+  tempo_bpm: ScoreTempo.optional(),
   midi: Artifact, backing_tracks: z.array(Artifact), artifacts: z.record(z.string(), Artifact),
   chords: z.array(Chord), syllable_timing: z.array(SyllableNote), similarity: SimilarityReport,
   components: z.array(Component), ai_generated: z.boolean().default(true),
 });
 export type CompositionResult = z.infer<typeof CompositionResult>;
 type Melodies = Record<string, number[]>;
+type CreateArtifactDirectory = (job_id: string) => string;
+type ScoreRenderMetadata = { provider: ScoreProviderProvenanceType; score_sha256: string };
+const ScoreRenderRequest = z.strictObject({
+  schema_version: z.literal(1).default(1),
+  logical_job_id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/),
+  request_sha256: z.string().regex(/^[a-f0-9]{64}$/),
+  product_path: ProductPath,
+  score: ArrangementScore,
+  timing: z.array(SyllableNote).min(8).max(176),
+  provider: ScoreProviderProvenance,
+});
+type ScoreRenderRequest = z.infer<typeof ScoreRenderRequest>;
+export interface MelodyServiceOptions extends StorageOptions {
+  /** Local renderer override for deterministic failure tests; production defaults to `render_backing`. */
+  render_backing?: typeof render_backing;
+}
 
 /** Normalizes legacy seed tokens in memory without rewriting stored JSON or digest-protected artifacts. */
 function stored_result(text: string, status: unknown): CompositionResult {
@@ -57,12 +76,14 @@ export class MelodyService {
   readonly artifact_dir: string;
   readonly database_path: string;
   readonly database_url: string | null;
+  private readonly renderer: typeof render_backing;
   private ready: Promise<void> | undefined;
-  constructor(root: string, options: StorageOptions = {}) {
+  constructor(root: string, options: MelodyServiceOptions = {}) {
     this.root = private_root(root);
     this.artifact_dir = join(this.root, "artifacts");
     this.database_path = join(this.root, "melody.sqlite3");
     this.database_url = options.database_url ?? null;
+    this.renderer = options.render_backing ?? render_backing;
     for (const path of [this.root, this.artifact_dir]) {
       mkdirSync(path, { recursive: true, mode: 0o700 });
       if (lstatSync(path).isSymbolicLink()) throw new TypeError("Private artifact directories must not be symlinks");
@@ -95,6 +116,89 @@ export class MelodyService {
       CREATE TABLE IF NOT EXISTS local_outputs (output_id TEXT PRIMARY KEY, melodies_json TEXT NOT NULL);
     `);
   }
+  /** Removes only newly created artifacts if rendering, insertion, or the transaction commit fails. */
+  private async arrangement_transaction(
+    operation: (c: Connection, create_artifacts: CreateArtifactDirectory) => Promise<CompositionResult>,
+  ): Promise<CompositionResult> {
+    let directory: string | undefined;
+    try {
+      return await serialized(this.database_path, async () => transaction(await this._connect(), c => operation(c, job_id => {
+        const path = join(this.artifact_dir, job_id);
+        mkdirSync(path, { mode: 0o700 });
+        directory = path;
+        return path;
+      })));
+    } catch (error) {
+      if (directory !== undefined) rmSync(directory, { recursive: true, force: true });
+      throw error;
+    }
+  }
+  /** Writes artifacts and a queue row; the transaction caller owns cleanup until commit succeeds. */
+  private async persist_arrangement(
+    c: Connection,
+    create_artifacts: CreateArtifactDirectory,
+    request: { logical_job_id: string; product_path: z.infer<typeof ProductPath>; duration_seconds: number },
+    request_json: string,
+    seed: Seed,
+    arrangement: { backing: Note[]; vocal: Note[]; chords: Chord[]; timing: SyllableNote[] },
+    melodies: Melodies,
+    similarity: SimilarityReport,
+    components: Component[],
+    generator_version: string,
+    tempo_bpm?: number,
+    score_metadata?: ScoreRenderMetadata,
+    max_bytes?: number,
+  ): Promise<CompositionResult> {
+    const job_id = randomUUID();
+    const directory = create_artifacts(job_id);
+    const { audio, ...instrumentation } = await this.renderer(arrangement.backing, seed, request.duration_seconds, tempo_bpm);
+    const all_components = [
+      ...components,
+      Component.parse({
+        component: "instruments",
+        origin: instrumentation.soundfont ? `FluidSynth backing with ${instrumentation.soundfont}` : "Harmonic oscillators, synthesized kick and seeded noise in src/dsp.ts",
+        evidence: "backing.wav, score.mid and provenance.json",
+      }),
+    ];
+    const notes = [...arrangement.backing, ...arrangement.vocal];
+    write_midi(join(directory, "score.mid"), notes, request.duration_seconds, instrumentation.palette, tempo_bpm);
+    writeFileSync(join(directory, "score.json"), canonical_json(notes), { mode: 0o600 });
+    writeFileSync(join(directory, "timing.json"), canonical_json(arrangement.timing), { mode: 0o600 });
+    write_wav(join(directory, "backing.wav"), normalize(audio, tempo_bpm));
+    writeFileSync(join(directory, "provenance.json"), canonical_json({
+      ai_generated: true, seed, generator_version, duration_seconds: request.duration_seconds,
+      ...(tempo_bpm === undefined ? {} : { tempo_bpm }),
+      ...(score_metadata ? {
+        score_schema_version: 1,
+        score_sha256: score_metadata.score_sha256,
+        provider: score_metadata.provider,
+      } : {}),
+      instrumentation, components: all_components, similarity,
+    }), { mode: 0o600 });
+    if (max_bytes !== undefined && media_bytes(directory) > max_bytes) {
+      throw new CompositionUnavailable("Preview artifacts exceed their storage reservation");
+    }
+    const artifacts: Record<string, Artifact> = {};
+    for (const [name, media_type] of Object.entries(ARTIFACT_TYPES)) {
+      chmodSync(join(directory, name), 0o600);
+      artifacts[name] = {
+        uri: `earwyrm://jobs/${job_id}/${name}`, media_type,
+        sha256: createHash("sha256").update(readFileSync(join(directory, name))).digest("hex"),
+      };
+    }
+    const result = CompositionResult.parse({
+      job_id, logical_job_id: request.logical_job_id, product_path: request.product_path, seed,
+      duration_seconds: request.duration_seconds,
+      ...(tempo_bpm === undefined ? {} : { tempo_bpm }),
+      midi: artifacts["score.mid"], backing_tracks: [artifacts["backing.wav"]], artifacts,
+      chords: arrangement.chords, syllable_timing: arrangement.timing, similarity, components: all_components,
+      queue_backend: this.database_url === null ? "sqlite-local" : "postgresql",
+    });
+    await c.execute("INSERT INTO render_jobs VALUES (?, ?, ?, ?, ?, 'queued', ?)", [
+      job_id, request.logical_job_id, request_json, canonical_json(result), canonical_json(melodies), new Date().toISOString(),
+    ]);
+    return result;
+  }
   private async history(c: Connection): Promise<Melodies> {
     const history: Melodies = {};
     for (const row of (await c.execute("SELECT job_id AS identity, melodies_json FROM render_jobs UNION ALL SELECT output_id AS identity, melodies_json FROM local_outputs")).rows) {
@@ -108,69 +212,100 @@ export class MelodyService {
     const request = "syllables_per_line" in input ? PreviewCompositionRequest.parse(input) : CompositionRequest.parse(input);
     try {
       await this.initialized();
-      return await serialized(this.database_path, async () => {
-        let directory: string | undefined;
-        let committed = false;
-        try {
-          const result = await transaction(await this._connect(), async c => {
-            const canonical = canonical_json(request);
-            const existing = (await c.execute("SELECT request_json, result_json, status FROM render_jobs WHERE logical_job_id = ?", [request.logical_job_id])).rows[0];
-            if (existing) {
-              // Older Python JSON escapes non-ASCII; compare normalized values rather than byte spelling.
-              if (canonical !== canonical_json(parse_seed_json(String(existing.request_json)))) throw new JobConflict("Logical job ID already belongs to a different request");
-              return stored_result(String(existing.result_json), existing.status);
-            }
-            const [seed, arrangement, melodies, report] = select_screened(seed => {
-              const guided = "syllables_per_line" in request;
-              const arrangement = guided ? arrange_preview(request, seed) : arrange(request, seed);
-              const melodies: Melodies = { vocal: arrangement.vocal.map(note => note.pitch) };
-              if (!guided) melodies.lead = arrangement.backing.filter(note => note.instrument === "lead").map(note => note.pitch);
-              return [arrangement, melodies];
-            }, { seed: request.seed, history: await this.history(c) });
-            const job_id = randomUUID();
-            directory = join(this.artifact_dir, job_id);
-            mkdirSync(directory, { mode: 0o700 });
-            const { audio, ...instrumentation } = await render_backing(arrangement.backing, seed, request.duration_seconds);
-            const components = [
-              Component.parse({ component: "melody_and_chords", origin: "Seeded phrase composer in src/dsp.ts and src/melody.ts", evidence: "score.json, score.mid, timing.json and recorded seed" }),
-              Component.parse({ component: "instruments", origin: instrumentation.soundfont ? `FluidSynth backing with ${instrumentation.soundfont}` : "Harmonic oscillators, synthesized kick and seeded noise in src/dsp.ts", evidence: "backing.wav, score.mid and provenance.json" }),
-              ...("lyrics" in request ? [
-                Component.parse({ component: "lyrics", origin: "Caller-supplied lyric/timing contract", evidence: "Retained request; upstream moderation and rights review required" }),
-              ] : []),
-            ];
-            const notes = [...arrangement.backing, ...arrangement.vocal];
-            write_midi(join(directory, "score.mid"), notes, request.duration_seconds, instrumentation.palette);
-            writeFileSync(join(directory, "score.json"), canonical_json(notes), { mode: 0o600 });
-            writeFileSync(join(directory, "timing.json"), canonical_json(arrangement.timing), { mode: 0o600 });
-            write_wav(join(directory, "backing.wav"), normalize(audio));
-            writeFileSync(join(directory, "provenance.json"), canonical_json({ ai_generated: true, seed, generator_version: "syllables_per_line" in request ? "earwyrm-guided-hook-v3" : "earwyrm-phrase-v2", duration_seconds: request.duration_seconds, instrumentation, components, similarity: report }), { mode: 0o600 });
-            if ("syllables_per_line" in request && media_bytes(directory) > 2.5 * 1024 * 1024) {
-              throw new CompositionUnavailable("Preview artifacts exceed their storage reservation");
-            }
-            const artifacts: Record<string, Artifact> = {};
-            for (const [name, media_type] of Object.entries(ARTIFACT_TYPES)) {
-              chmodSync(join(directory, name), 0o600);
-              artifacts[name] = { uri: `earwyrm://jobs/${job_id}/${name}`, media_type, sha256: createHash("sha256").update(readFileSync(join(directory, name))).digest("hex") };
-            }
-            const result = CompositionResult.parse({
-              job_id, logical_job_id: request.logical_job_id, product_path: request.product_path, seed,
-              duration_seconds: request.duration_seconds,
-              midi: artifacts["score.mid"], backing_tracks: [artifacts["backing.wav"]], artifacts,
-              chords: arrangement.chords, syllable_timing: arrangement.timing, similarity: report, components,
-              queue_backend: this.database_url === null ? "sqlite-local" : "postgresql",
-            });
-            await c.execute("INSERT INTO render_jobs VALUES (?, ?, ?, ?, ?, 'queued', ?)", [job_id, request.logical_job_id, canonical, canonical_json(result), canonical_json(melodies), new Date().toISOString()]);
-            return result;
-          });
-          committed = true;
-          return result;
-        } finally {
-          if (!committed && directory !== undefined) rmSync(directory, { recursive: true, force: true });
+      return await this.arrangement_transaction(async (c, create_artifacts) => {
+        const canonical = canonical_json(request);
+        const existing = (await c.execute("SELECT request_json, result_json, status FROM render_jobs WHERE logical_job_id = ?", [request.logical_job_id])).rows[0];
+        if (existing) {
+          // Older Python JSON escapes non-ASCII; compare normalized values rather than byte spelling.
+          if (canonical !== canonical_json(parse_seed_json(String(existing.request_json)))) throw new JobConflict("Logical job ID already belongs to a different request");
+          return stored_result(String(existing.result_json), existing.status);
         }
+        const [seed, arrangement, melodies, report] = select_screened(seed => {
+          const guided = "syllables_per_line" in request;
+          const arrangement = guided ? arrange_preview(request, seed) : arrange(request, seed);
+          const melodies: Melodies = { vocal: arrangement.vocal.map(note => note.pitch) };
+          if (!guided) melodies.lead = arrangement.backing.filter(note => note.instrument === "lead").map(note => note.pitch);
+          return [arrangement, melodies];
+        }, { seed: request.seed, history: await this.history(c) });
+        const components = [
+          Component.parse({ component: "melody_and_chords", origin: "Seeded phrase composer in src/dsp.ts and src/melody.ts", evidence: "score.json, score.mid, timing.json and recorded seed" }),
+          ...("lyrics" in request ? [
+            Component.parse({ component: "lyrics", origin: "Caller-supplied lyric/timing contract", evidence: "Retained request; upstream moderation and rights review required" }),
+          ] : []),
+        ];
+        return this.persist_arrangement(
+          c, create_artifacts, request, canonical, seed, arrangement, melodies, report, components,
+          "syllables_per_line" in request ? "earwyrm-guided-hook-v3" : "earwyrm-phrase-v2",
+          undefined, undefined,
+          "syllables_per_line" in request ? 2.5 * 1024 * 1024 : undefined,
+        );
       });
     } catch (error) {
       if (!is_storage_error(error)) throw error;
       throw new CompositionUnavailable("Composition storage is unavailable; retry the same logical job ID", { cause: error });
+    }
+  }
+  /** Renders a committed provider score once; identical retries recover the durable job and artifacts. */
+  async submit_score(input: ScoreRenderRequest): Promise<CompositionResult> {
+    const request = ScoreRenderRequest.parse(input);
+    try {
+      await this.initialized();
+      return await this.arrangement_transaction(async (c, create_artifacts) => {
+        const canonical = canonical_json(request);
+        const existing = (await c.execute("SELECT request_json, result_json, status FROM render_jobs WHERE logical_job_id = ?", [request.logical_job_id])).rows[0];
+        if (existing) {
+          if (canonical !== canonical_json(parse_seed_json(String(existing.request_json)))) {
+            throw new JobConflict("Logical job ID already belongs to a different score request");
+          }
+          return stored_result(String(existing.result_json), existing.status);
+        }
+        const arrangement = compile_score(request.score, request.timing, await this.history(c));
+        const melodies = arrangement.melodies;
+        const seed = createHash("sha256").update(canonical_json({ logical_job_id: request.logical_job_id, score: request.score })).digest().readUInt32BE(0);
+        const components = [
+          Component.parse({
+            component: "arrangement_score",
+            origin: request.provider.provider === "azure-foundry"
+              ? `Microsoft Foundry deployment ${request.provider.deployment}`
+              : request.provider.provider,
+            evidence: `ArrangementScore schema v${request.score.schema_version}; score.json, score.mid, timing.json and provenance.json`,
+          }),
+          Component.parse({
+            component: "instruments",
+            origin: "Local score renderer in src/backing.ts",
+            evidence: "backing.wav, score.mid and provenance.json",
+          }),
+          Component.parse({
+            component: "lyrics",
+            origin: "Accepted owner-scoped lyric option",
+            evidence: "timing.json; upstream moderation and rights review required",
+          }),
+        ];
+        return this.persist_arrangement(
+          c,
+          create_artifacts,
+          {
+            logical_job_id: request.logical_job_id,
+            product_path: request.product_path,
+            duration_seconds: arrangement.duration_seconds,
+          },
+          canonical,
+          seed,
+          arrangement,
+          melodies,
+          arrangement.similarity,
+          components,
+          "earwyrm-score-v1",
+          request.score.tempo_bpm,
+          {
+            provider: request.provider,
+            score_sha256: createHash("sha256").update(canonical_json(request.score)).digest("hex"),
+          },
+        );
+      });
+    } catch (error) {
+      if (!is_storage_error(error)) throw error;
+      throw new CompositionUnavailable("Score storage is unavailable; retry the same logical job ID", { cause: error });
     }
   }
   /** Lists guided-preview identities and media sizes, including incomplete publications. */
@@ -236,6 +371,17 @@ export class MelodyService {
       const row = (await c.execute("SELECT result_json, status FROM render_jobs WHERE job_id = ?", [job_id])).rows[0];
       if (!row) throw new JobNotFound("Composition job was not found");
       return stored_result(String(row.result_json), row.status);
+    } finally { await c.close(); }
+  }
+  /** Resolves a committed job by its stable logical identity without exposing filesystem paths. */
+  async get_job_by_logical_id(logical_job_id: string): Promise<CompositionResult> {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(logical_job_id)) throw new JobNotFound("Composition job was not found");
+    await this.initialized();
+    const c = await this._connect();
+    try {
+      const row = (await c.execute("SELECT job_id FROM render_jobs WHERE logical_job_id = ?", [logical_job_id])).rows[0];
+      if (!row) throw new JobNotFound("Composition job was not found");
+      return await this.get_job(String(row.job_id));
     } finally { await c.close(); }
   }
   /** Delivers only committed, allowlisted, integrity-checked bytes; symlinks fail closed. */

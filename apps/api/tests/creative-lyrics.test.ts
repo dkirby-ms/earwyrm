@@ -4,6 +4,9 @@ import { Assessment, AzureLyricBackend, CATEGORIES, CloudFailure, LyricCloudSett
 import { lyric_allowance, lyric_budget } from "../src/lyric_budget.js";
 import { LyricDraft, LyricRequest, LyricResult, validate_draft } from "../src/lyrics.js";
 import { LyricWriter } from "../src/lyric_service.js";
+import {
+  AzureScoreComposer, score_prompt, type ScoreTelemetry, type ScoreTelemetrySpan,
+} from "../src/score_cloud.js";
 
 const request_fixture = (): LyricRequest => LyricRequest.parse({
   brief: { brief_id: "brief-001", name: "Bright Bike", offer: "Bike tune ups", location: "Lakeview", contact_details: { email: "shop@example.com", phone: "+1-202-555-0101" }, tone: "Friendly and practical", approved_claims: ["Bike tune ups are available", "Call to plan a visit"] },
@@ -13,6 +16,16 @@ const draft_fixture = (): LyricDraft => LyricDraft.parse({
   hook: "Bright Bike, a tune up for your ride",
   lyrics: "Bright Bike, a tune up for your ride\nCall Bright Bike to plan your next ride",
   syllables_per_line: [8, 8], rhyme_scheme: "--", brand_count: 2, cta: "Call Bright Bike to plan your next ride",
+});
+const accepted_lyrics = () => LyricResult.parse({ status: "accepted", attempts: 1, output: draft_fixture(), reasons: [] });
+const score_fixture = () => ({
+  schema_version: 1, style: "retro-synth", tempo_bpm: 120, time_signature: "4/4", key_root: 0, mode: "major", bars: 8,
+  progression: [0, 4, 5, 3], hook_motif: [0, 2, 4],
+  tracks: [
+    { instrument: "pad", events: [{ step: 0, degree: 0, duration_steps: 8 }] },
+    { instrument: "bass", events: [{ step: 0, degree: 0, duration_steps: 2 }] },
+    { instrument: "lead", events: [{ step: 0, degree: 0, duration_steps: 2 }] },
+  ],
 });
 const guided_fixture = () => {
   const cta = "Call Bright Bike to plan your next day";
@@ -272,5 +285,135 @@ describe("Azure wire contracts without paid requests", () => {
     expect(Preflight.safeParse({ english: true }).success).toBe(false);
     expect(Assessment.safeParse({ english: true, grounded: true, risky_claims: "false" }).success).toBe(false);
     expect(Screening.safeParse({ moderation_passed: true, protected_material_detected: false, extra: true }).success).toBe(false);
+  });
+});
+
+describe("structured score provider without paid requests", () => {
+  function telemetry_fixture() {
+    const spans: Array<{ name: string; attributes: Record<string, unknown>; status?: unknown; ended: boolean }> = [];
+    const measurements: Array<{ seconds: number; attributes: Record<string, unknown> }> = [];
+    const telemetry: ScoreTelemetry = {
+      startActiveSpan: async (name, attributes, callback) => {
+        const state = { name, attributes: { ...attributes }, status: undefined as unknown, ended: false };
+        spans.push(state);
+        const span: ScoreTelemetrySpan = {
+          setAttribute: (key, value) => { state.attributes[key] = value; },
+          setStatus: status => { state.status = status; },
+          end: () => { state.ended = true; },
+        };
+        return callback(span);
+      },
+      recordDuration: (seconds, attributes) => measurements.push({ seconds, attributes: { ...attributes } }),
+    };
+    return { telemetry, spans, measurements };
+  }
+
+  it("uses only validated accepted fields and posts a strict, capped score request", async () => {
+    const request = request_fixture();
+    const prompt = score_prompt(request, accepted_lyrics());
+    expect(prompt).toEqual({
+      brief: {
+        name: request.brief.name, offer: request.brief.offer, location: request.brief.location,
+        tone: request.brief.tone, approved_claims: request.brief.approved_claims,
+      },
+      cta: request.cta, lyrics: draft_fixture().lyrics, style: "retro-synth",
+    });
+    expect(JSON.stringify(prompt)).not.toContain(request.brief.contact_details.email);
+    expect(JSON.stringify(prompt)).not.toContain(request.brief.contact_details.phone);
+    expect(() => score_prompt(request, LyricResult.parse({
+      status: "human_review_required", attempts: 1, output: draft_fixture(), reasons: ["human_review"],
+    }))).toThrow("lyrics_not_accepted");
+
+    const client = transport({
+      ...completion(JSON.stringify(score_fixture())),
+      usage: { prompt_tokens: 321, completion_tokens: 456 },
+    });
+    const observed = telemetry_fixture();
+    const score = await new AzureScoreComposer(settings, credential, client, observed.telemetry).compose(prompt);
+    expect(score).toEqual(score_fixture());
+    expect(client).toHaveBeenCalledTimes(1);
+    const [url, init] = client.mock.calls[0];
+    expect(url).toBe("https://model.openai.azure.com/openai/v1/chat/completions");
+    const body = JSON.parse(String(init.body));
+    expect(body.max_completion_tokens).toBe(1200);
+    expect(body.response_format.json_schema.strict).toBe(true);
+    expect(body.response_format.json_schema.schema.additionalProperties).toBe(false);
+    expect(JSON.parse(body.messages[1].content)).toEqual(prompt);
+    expect(String(init.body)).not.toContain(request.brief.contact_details.email);
+    expect(String(init.body)).not.toContain(request.brief.contact_details.phone);
+    expect(observed.spans).toHaveLength(1);
+    expect(observed.spans[0]).toMatchObject({
+      attributes: {
+        "gen_ai.operation.name": "chat",
+        "gen_ai.request.max_tokens": 1200,
+        "gen_ai.response.finish_reasons": ["stop"],
+        "gen_ai.usage.input_tokens": 321,
+        "gen_ai.usage.output_tokens": 456,
+      },
+      ended: true,
+    });
+    expect(JSON.stringify(observed.spans)).not.toContain(JSON.stringify(prompt));
+    expect(observed.measurements).toHaveLength(1);
+    expect(observed.measurements[0]!.seconds).toBeGreaterThanOrEqual(0);
+    expect(observed.measurements[0]!.attributes).toEqual({
+      "gen_ai.operation.name": "chat", "gen_ai.provider.name": "azure.ai.inference",
+    });
+  });
+
+  it("omits unselected creative direction and bounds an accepted maximal request", async () => {
+    const request = request_fixture();
+    request.creative_direction = "Do not include this browser-supplied instruction in score generation.";
+    request.brief.offer = "O".repeat(400);
+    request.brief.location = "L".repeat(400);
+    request.brief.tone = "T".repeat(400);
+    request.brief.approved_claims = Array.from({ length: 20 }, (_, index) => `${index}${"C".repeat(398)}`);
+    const prompt = score_prompt(request, accepted_lyrics());
+    const client = transport(completion(JSON.stringify(score_fixture())));
+    const observed = telemetry_fixture();
+    await new AzureScoreComposer(settings, credential, client, observed.telemetry).compose(prompt);
+    expect(observed.spans[0]!.attributes).not.toHaveProperty("gen_ai.usage.input_tokens");
+    expect(observed.spans[0]!.attributes).not.toHaveProperty("gen_ai.usage.output_tokens");
+    const body = String(client.mock.calls[0]![1].body);
+    expect(Buffer.byteLength(body, "utf8")).toBeLessThanOrEqual(65536);
+    expect(body).not.toContain(request.creative_direction);
+  });
+
+  it.each([
+    [completion("", { message: { refusal: "sensitive refusal details" } }), "model_refusal"],
+    [completion(JSON.stringify(score_fixture()), { finish_reason: "length" }), "incomplete_model_output"],
+    [completion("{"), "malformed_score_output"],
+    [completion("{}"), "invalid_score_output"],
+    [completion("x".repeat(65537)), "score_output_too_large"],
+    [{ ...completion(JSON.stringify(score_fixture())), usage: { prompt_tokens: -1, completion_tokens: 3 } }, "malformed_model_envelope"],
+    [{ ...completion(JSON.stringify(score_fixture())), usage: { prompt_tokens: 3, completion_tokens: 1.5 } }, "malformed_model_envelope"],
+  ] as const)("fails closed and emits content-free telemetry for %s", async (data, code) => {
+    const client = transport(data);
+    const observed = telemetry_fixture();
+    const request = request_fixture();
+    const prompt = score_prompt(request, accepted_lyrics());
+    await expect(new AzureScoreComposer(settings, credential, client, observed.telemetry).compose(prompt))
+      .rejects.toMatchObject({ code });
+    expect(client).toHaveBeenCalledTimes(1);
+    expect(observed.spans).toHaveLength(1);
+    expect(observed.spans[0]!.attributes["error.type"]).toBe(code);
+    expect(observed.spans[0]!.ended).toBe(true);
+    expect(observed.measurements).toHaveLength(1);
+    expect(observed.measurements[0]!.attributes["error.type"]).toBe(code);
+    expect(JSON.stringify({ spans: observed.spans, measurements: observed.measurements }))
+      .not.toContain("sensitive refusal details");
+    expect(JSON.stringify({ spans: observed.spans, measurements: observed.measurements }))
+      .not.toContain(JSON.stringify(prompt));
+  });
+
+  it("uses a bounded telemetry error type for unexpected provider failures", async () => {
+    const client = vi.fn<CloudTransport>().mockRejectedValue(new CloudFailure("unbounded private failure detail"));
+    const observed = telemetry_fixture();
+    const prompt = score_prompt(request_fixture(), accepted_lyrics());
+    await expect(new AzureScoreComposer(settings, credential, client, observed.telemetry).compose(prompt))
+      .rejects.toThrow("unbounded private failure detail");
+    expect(observed.spans[0]!.attributes["error.type"]).toBe("cloud_failure");
+    expect(observed.measurements[0]!.attributes["error.type"]).toBe("cloud_failure");
+    expect(JSON.stringify({ spans: observed.spans, measurements: observed.measurements }))
+      .not.toContain("unbounded private failure detail");
   });
 });

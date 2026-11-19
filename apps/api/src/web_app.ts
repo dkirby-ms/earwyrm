@@ -8,13 +8,15 @@ import { pathToFileURL } from 'node:url';
 import { Decimal } from 'decimal.js';
 import { z } from 'zod';
 import { DefaultAzureCredential, ManagedIdentityCredential } from '@azure/identity';
-import { lyric_allowance, lyric_budget, type PaidLyricAction } from './lyric_budget.js';
+import { lyric_allowance, lyric_budget, type PaidLyricGenerationAction } from './lyric_budget.js';
 import { AzureLyricBackend, CloudFailure, LyricCloudSettings, type LyricBackend } from './lyric_cloud.js';
 import { LyricWriter } from './lyric_service.js';
+import { AzureScoreComposer, score_prompt, ScoreProviderProvenance, type ScoreComposer } from './score_cloud.js';
+import { ArrangementScore, score_lyric_timing, type ArrangementScore as Arrangement } from './score_dsl.js';
 import { has_cta_rhyme, LyricRequest, LyricResult, LyricRuleError, validate_draft } from './lyrics.js';
 import { bind_timing, digest, GuidedPreview, guided_pronunciations, known_meter, phrase_counts } from './guided_arrangement.js';
 import { PreviewCompositionRequest, preview_duration } from './melody.js';
-import { MelodyService, CompositionUnavailable } from './melody_service.js';
+import { MelodyService, CompositionUnavailable, JobConflict, type CompositionResult } from './melody_service.js';
 import { PreviewQuotaExceeded } from './preview_quota.js';
 import { SimilarityError } from './similarity.js';
 import { ChatMessage, ChatSelection, composition_request, type JingleAdvisor } from './jingle_chat.js';
@@ -82,6 +84,13 @@ export const UserAccessSubmission = z.object({
 export type UserAccessSubmission = z.infer<typeof UserAccessSubmission>;
 const AccessRequestBody = z.strictObject({});
 const AccessRequestDecisionBody = z.strictObject({ decision: z.enum(['approved', 'denied']) });
+const ScoreReconciliationSubmission = z.strictObject({
+  owner: z.string().trim().min(1).max(200),
+  logical_job_id: z.string().regex(/^score-[a-f0-9]{64}$/),
+  confirmed_not_accepted: z.literal(true),
+  confirmed_submission_stopped: z.literal(true).optional(),
+  evidence_reference: z.string().trim().min(1).max(500),
+});
 
 /** Paid calls have not been explicitly enabled. */
 export class PaidRenderingDisabled extends Error {}
@@ -253,6 +262,7 @@ export type WebAppStorage = Pick<WebStorage,
   'save_output' | 'set_run_status' | 'finish_attempt' | 'get_run' | 'list_runs' | 'list_outputs' |
   'get_output' | 'audio_path' | 'save_evaluation' | 'reconcile_attempt' |
   'save_lyric_option' | 'list_lyric_options' | 'get_lyric_option' | 'has_lyric_budget' | 'reserve_lyric_action' |
+  'claim_score_compose' | 'commit_score_compose' | 'finish_score_compose' | 'get_score_compose' | 'reconcile_score_compose' |
   'reserve_previews' | 'complete_previews' | 'pin_preview'>;
 /** All providers, persistence and identity fetchers remain lazy until a route needs them. */
 export interface CreateAppOptions {
@@ -269,6 +279,8 @@ export interface CreateAppOptions {
   /** Test adapters retain the same writer gates; production configuration stays server-side. */
   lyric_backend?: LyricBackend;
   chat_advisor?: JingleAdvisor;
+  /** Injected provider for tests; production uses the shared Foundry settings and credentials. */
+  score_composer?: ScoreComposer;
 }
 
 /** Creates the same-origin API without listening, initializing databases, constructing Speech or making paid calls. */
@@ -324,7 +336,7 @@ export function create_app(options: CreateAppOptions = {}): Express {
     return store.has_lyric_budget();
   }
 
-  async function paid_lyric_backend(action: PaidLyricAction): Promise<LyricBackend> {
+  async function paid_lyric_backend(action: PaidLyricGenerationAction): Promise<LyricBackend> {
     const settings = lyric_settings();
     const budget = lyric_budget(source);
     const allowance = lyric_allowance(action, budget);
@@ -338,6 +350,18 @@ export function create_app(options: CreateAppOptions = {}): Express {
     return new AzureLyricBackend(settings!, credential, undefined, allowance.consume);
   }
 
+  async function score_provider(): Promise<ScoreComposer> {
+    if (options.score_composer) return options.score_composer;
+    const settings = lyric_settings();
+    if (!settings) throw new HttpError(503, 'Paid score composition is unavailable');
+    const clientId = source.LYRIC_MANAGED_IDENTITY_CLIENT_ID;
+    const authOptions = { retryOptions: { maxRetries: 0 } };
+    const credential = clientId
+      ? new ManagedIdentityCredential({ ...authOptions, clientId })
+      : new DefaultAzureCredential(authOptions);
+    return new AzureScoreComposer(settings, credential);
+  }
+
   async function storage(): Promise<WebAppStorage> {
     if (app.locals.storage) return app.locals.storage as WebAppStorage;
     storage_pending ??= (async () => {
@@ -349,6 +373,39 @@ export function create_app(options: CreateAppOptions = {}): Express {
     })();
     try { return await storage_pending; }
     finally { storage_pending = undefined; }
+  }
+  async function publish_composition(
+    store: WebAppStorage,
+    owner: string,
+    selected: ReturnType<typeof selected_inputs>[number],
+    option_id: string,
+    draft: ReturnType<typeof validate_draft>,
+    committed: CompositionResult,
+    started: number,
+  ) {
+    let preview = await store.get_run(committed.job_id, owner);
+    if (!preview) await store.create_run(committed.job_id, owner, 'instrumental', [selected.brief.brief_id]);
+    if (!preview?.outputs.length) {
+      const artifacts = await (await jingle_tools()).artifacts(committed);
+      await store.save_output({
+        run_id: committed.job_id, owner, audio: artifacts.backing,
+        manifest: {
+          brief_id: selected.brief.brief_id, variant: 'instrumental',
+          duration_seconds: committed.duration_seconds, render_seconds: (performance.now() - started) / 1000,
+          numeric_gates: 'Pending', status: 'Pending', components: committed.components,
+          ai_generated: true, azure_usage: { submitted_characters: 0, request_cost_usd: '0' },
+          lyric_source: { option_id, ...draft, status: 'accepted', broadcast_approval_required: true },
+          composition_source: {
+            job_id: committed.job_id, option_id, backing_sha256: committed.artifacts['backing.wav']!.sha256,
+          },
+          ...(selected.custom ? { workspace_brief: selected.custom } : {}),
+        },
+      });
+    }
+    await store.set_run_status(committed.job_id, 'completed');
+    preview = await store.get_run(committed.job_id, owner);
+    if (!preview) throw new HttpError(500, 'Composition preview is unavailable');
+    return public_run(preview);
   }
   async function guided_preview(job_id: string, owner: string, selected: ReturnType<typeof selected_inputs>[number]) {
     const preview = await (await storage()).get_run(job_id, owner);
@@ -498,6 +555,7 @@ export function create_app(options: CreateAppOptions = {}): Express {
     [/^\/api\/admin\/users$/, ['GET', 'PUT']],
     [/^\/api\/admin\/access-requests$/, ['GET']],
     [/^\/api\/admin\/access-requests\/[^/]+\/decision$/, ['POST']],
+    [/^\/api\/admin\/score-reservations\/reconcile$/, ['POST']],
     [/^\/api\/renders$/, ['GET', 'POST']],
     [/^\/api\/renders\/estimate$/, ['POST']],
     [/^\/api\/renders\/[^/]+$/, ['GET']],
@@ -679,8 +737,11 @@ export function create_app(options: CreateAppOptions = {}): Express {
   });
   app.get('/api/lyrics/options', ...authorized('renders.read'), async (_request, response) => {
     const stored = await (await storage()).list_lyric_options(identity(response).subject);
+    const available = await lyric_available(response);
     response.json({
-      available: await lyric_available(response), option_count: 3,
+      available,
+      score_compose_max_usd: available ? lyric_allowance('compose', lyric_budget(source)).cost.toFixed() : null,
+      option_count: 3,
       options: stored.map(public_lyric_option),
     });
   });
@@ -744,32 +805,126 @@ export function create_app(options: CreateAppOptions = {}): Express {
       const logical_id = `chat-${createHash('sha256').update(canonical_json([identity(response).issuer, owner, saved.option_id])).digest('hex')}`;
       const tools = await jingle_tools();
       const committed = await tools.compose(composition_request(lyric_request, result.output, logical_id));
-      let preview = await store.get_run(committed.job_id, owner);
-      if (!preview) await store.create_run(committed.job_id, owner, 'instrumental', [selected.brief.brief_id]);
-      if (!preview?.outputs.length) {
-        const artifacts = await tools.artifacts(committed);
-        await store.save_output({
-          run_id: committed.job_id, owner, audio: artifacts.backing,
-          manifest: {
-            brief_id: selected.brief.brief_id, variant: 'instrumental',
-            duration_seconds: committed.duration_seconds, render_seconds: (performance.now() - started) / 1000,
-            numeric_gates: 'Pending', status: 'Pending', components: committed.components,
-            ai_generated: true, azure_usage: { submitted_characters: 0, request_cost_usd: '0' },
-            lyric_source: { option_id: saved.option_id, ...result.output, status: 'accepted', broadcast_approval_required: true },
-            composition_source: { job_id: committed.job_id, option_id: saved.option_id, backing_sha256: committed.artifacts['backing.wav']!.sha256 },
-            ...(selected.custom ? { workspace_brief: selected.custom } : {}),
-          },
-        });
-      }
-      await store.set_run_status(committed.job_id, 'completed');
-      preview = await store.get_run(committed.job_id, owner);
-      if (!preview) throw new HttpError(500, 'Composition preview is unavailable');
-      response.json({ tool: 'compose_arrangement', job_id: committed.job_id, run: public_run(preview) });
+      const run = await publish_composition(store, owner, selected, saved.option_id, result.output, committed, started);
+      response.json({ tool: 'compose_arrangement', job_id: committed.job_id, run });
     } catch (error) {
       if (!(error instanceof JingleToolError)) throw error;
       console.error('ERROR: Chat composition MCP failed');
       throw new HttpError(503, 'Composition could not complete. Retry this same lyric option to recover the existing job.');
     } finally { render_active = false; }
+  });
+  app.post('/api/score/compose', ...authorized('renders.write'), async (request, response) => {
+    const started = performance.now();
+    const payload = parse(BriefSelection.extend({
+      option_id: z.uuid(), confirm_paid_generation: z.literal(true),
+    }), request.body);
+    if (payload.brief_ids.length !== 1) throw new HttpError(422, 'Compose a score for one active brief at a time');
+    if (payload.lyric_selections?.length || payload.composition_selections?.length) {
+      throw new HttpError(422, 'Score composition accepts one saved lyric option and no browser-selected content');
+    }
+    const [selected] = selected_inputs(payload.brief_ids, payload.custom_briefs);
+    if (!selected) throw new HttpError(422, 'Select one active brief');
+    if (!await lyric_available(response)) throw new HttpError(409, 'Paid score composition is disabled or unavailable for this account');
+    const owner = identity(response).subject;
+    const store = await storage();
+    const saved = await store.get_lyric_option(payload.option_id, owner);
+    if (!saved || saved.brief_id !== selected.brief.brief_id) throw new HttpError(404, 'Lyric option was not found for this brief');
+    const lyric_request = LyricRequest.parse(saved.request);
+    const result = LyricResult.parse(saved.result);
+    if (lyric_request.arrangement) throw new HttpError(409, 'Guided lyrics already belong to a selected arrangement');
+    if (result.status !== 'accepted' || !result.output) throw new HttpError(409, 'Only accepted lyric options can be composed');
+    if (canonical_json(lyric_request.brief) !== canonical_json(selected.brief) || lyric_request.cta !== brief_cta(selected)) {
+      throw new HttpError(409, 'Lyric option does not match the current brief');
+    }
+
+    let score_input: ReturnType<typeof score_prompt>;
+    try { score_input = score_prompt(lyric_request, result); }
+    catch (error) {
+      if (error instanceof CloudFailure || error instanceof LyricRuleError || error instanceof z.ZodError) {
+        throw new HttpError(409, 'The saved lyric option is no longer valid for score composition');
+      }
+      throw error;
+    }
+    const provider = await score_provider();
+    const budget = lyric_budget(source);
+    const allowance = lyric_allowance('compose', budget);
+    const logical_job_id = `score-${createHash('sha256')
+      .update(canonical_json([identity(response).issuer, owner, payload.option_id, 'compose']))
+      .digest('hex')}`;
+    const request_sha256 = createHash('sha256').update(canonical_json(score_input)).digest('hex');
+    const claim = await store.claim_score_compose({
+      owner, logical_job_id, request_sha256, cost: allowance.cost,
+      cap: budget.per_action, total: budget.total,
+    });
+    if (!claim.claimed) {
+      if (claim.status === 'outcome_unknown') {
+        response.status(503).json({
+          code: 'provider_outcome_unknown', logical_job_id, retryable: false,
+          detail: 'The score provider outcome is uncertain; an operator must reconcile it before another submission.',
+        });
+        return;
+      }
+      if (claim.status !== 'committed' || claim.score_json === null) {
+        throw new HttpError(409, claim.status === 'failed'
+          ? 'The score submission requires confirmed provider reconciliation before it can be retried.'
+          : 'This score job is already being submitted.');
+      }
+    }
+
+    let score: Arrangement;
+    let provider_provenance: ReturnType<typeof ScoreProviderProvenance.parse>;
+    if (claim.claimed) {
+      allowance.consume('model');
+      try {
+        score = ArrangementScore.parse(await provider.compose(score_input));
+        provider_provenance = ScoreProviderProvenance.parse(
+          provider.provenance ?? { provider: 'injected', deployment: null },
+        );
+        await store.commit_score_compose(owner, logical_job_id, request_sha256, score, provider_provenance, claim.attempt_count);
+      } catch {
+        try { await store.finish_score_compose(owner, logical_job_id, request_sha256, 'outcome_unknown', claim.attempt_count); }
+        catch { console.error('ERROR: Paid score outcome could not be persisted'); }
+        console.error('ERROR: Paid score composition failed');
+        response.status(503).json({
+          code: 'provider_outcome_unknown', logical_job_id, retryable: false,
+          detail: 'The score provider outcome is uncertain; an operator must reconcile it before another submission.',
+        });
+        return;
+      }
+    } else {
+      score = ArrangementScore.parse(JSON.parse(claim.score_json!));
+      provider_provenance = claim.provider_json === null
+        ? ScoreProviderProvenance.parse({ provider: 'legacy-unrecorded', deployment: null })
+        : ScoreProviderProvenance.parse(JSON.parse(claim.provider_json));
+    }
+
+    let composition;
+    try {
+      const timing = score_lyric_timing(score, result.output.lyrics.split('\n'), lyric_request.pronunciations);
+      const melody = new MelodyService(join(store.root, 'melody'), { database_url: store.database_url ?? undefined });
+      composition = await melody.submit_score({
+        schema_version: 1, logical_job_id, request_sha256, product_path: lyric_request.product_path,
+        score, timing, provider: provider_provenance,
+      });
+    } catch (error) {
+      if (error instanceof JobConflict) throw new HttpError(409, error.message);
+      if (error instanceof SimilarityError) throw new HttpError(409, 'The generated score did not pass melody similarity screening.');
+      if (error instanceof RangeError) throw new HttpError(409, 'The generated score cannot fit the accepted lyric timing.');
+      if (error instanceof CompositionUnavailable) {
+        console.error('ERROR: Paid score artifacts could not be committed');
+        response.status(503).json({
+          code: 'score_render_unavailable', logical_job_id, retryable: true,
+          detail: 'The committed score could not be rendered. Retry this same score job to recover it.',
+        });
+        return;
+      }
+      throw error;
+    }
+    const run = await publish_composition(store, owner, selected, saved.option_id, result.output, composition, started);
+    response.json({
+      tool: 'compose_score', job_id: composition.job_id, logical_job_id,
+      status: 'committed', score, composition, run,
+    });
   });
   app.post('/api/lyrics/options', ...authorized('renders.write'), async (request, response) => {
     const payload = parse(BriefSelection.extend({ confirm_paid_generation: z.literal(true), arrangement_job_id: z.uuid().optional() }), request.body);
@@ -1043,6 +1198,24 @@ export function create_app(options: CreateAppOptions = {}): Express {
       if (error instanceof StorageNotFound) throw new HttpError(404, 'Paid attempt was not found');
       throw error;
     } finally { render_active = false; }
+  });
+  app.post('/api/admin/score-reservations/reconcile', ...authorized('renders.write'), async (request, response) => {
+    const submission = parse(ScoreReconciliationSubmission, request.body);
+    const { issuer, subject } = identity(response);
+    const store = await storage();
+    const operator = await store.get_user(issuer, subject);
+    if (!operator?.admin) throw new HttpError(403, 'Application administrator access is required');
+    try {
+      await store.reconcile_score_compose(
+        submission.owner, submission.logical_job_id, submission.evidence_reference, submission.confirmed_submission_stopped,
+      );
+    } catch (error) {
+      if (error instanceof StorageNotFound) throw new HttpError(404, 'Score reservation was not found');
+      if (error instanceof StorageConflict) throw new HttpError(409, error.message);
+      if (error instanceof TypeError) throw new HttpError(422, error.message);
+      throw error;
+    }
+    response.json({ logical_job_id: submission.logical_job_id, status: 'confirmed_not_accepted', retryable: true });
   });
 
   // Resolve real paths before serving to match StaticFiles' symlink containment policy.

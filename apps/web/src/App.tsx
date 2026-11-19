@@ -199,8 +199,10 @@ function App() {
   const [editingBrief, setEditingBrief] = useState(false)
   const [includeVocals, setIncludeVocals] = useState(false)
   const [lyricAvailable, setLyricAvailable] = useState(false)
+  const [scoreComposeMaxUsd, setScoreComposeMaxUsd] = useState<string | null>(null)
   const [lyricConsent, setLyricConsent] = useState(false)
   const [chatConsent, setChatConsent] = useState(false)
+  const [scoreConsentOptionId, setScoreConsentOptionId] = useState('')
   const [chatSessions, setChatSessions] = useState<Readonly<Record<string, ChatSession>>>({})
   const [lyricOptions, setLyricOptions] = useState<Readonly<Record<string, readonly LyricOption[]>>>({})
   const [selectedLyricIds, setSelectedLyricIds] = useState<Readonly<Record<string, string>>>({})
@@ -280,7 +282,7 @@ function App() {
         '/api/render-options',
         apiScopes.reads,
       )
-      const lyricAvailability = await apiJson<{ available: boolean; options?: LyricOption[] }>(
+      const lyricAvailability = await apiJson<{ available: boolean; score_compose_max_usd?: string | null; options?: LyricOption[] }>(
         authClient, publicConfig, '/api/lyrics/options', apiScopes.reads,
       )
       const runResponse = await apiJson<{ runs: RenderRun[] }>(
@@ -320,6 +322,7 @@ function App() {
       setBriefs(loaded)
       setActiveBriefId(current => loaded.some(brief => brief.brief_id === current) ? current : loaded[0]?.brief_id ?? '')
       setLyricAvailable(lyricAvailability.available)
+      setScoreComposeMaxUsd(lyricAvailability.score_compose_max_usd ?? null)
       if (lyricAvailability.options) {
         const grouped: Record<string, LyricOption[]> = {}
         for (const option of lyricAvailability.options) (grouped[option.brief_id] ??= []).push(option)
@@ -544,8 +547,10 @@ function App() {
       setEditingBrief(false)
       setIncludeVocals(false)
       setLyricAvailable(false)
+      setScoreComposeMaxUsd(null)
       setLyricConsent(false)
       setChatConsent(false)
+      setScoreConsentOptionId('')
       setChatSessions({})
       setLyricOptions({})
       setSelectedLyricIds({})
@@ -650,6 +655,7 @@ function App() {
     setEditingBrief(false)
     setLyricConsent(false)
     setChatConsent(false)
+    setScoreConsentOptionId('')
     setEstimate(null)
     if (briefId !== activeBriefId) {
       setArrangements([])
@@ -777,6 +783,29 @@ function App() {
       await loadWorkspaceData(client, config)
       inspectCompletedRun(result.job_id, [brief.brief_id])
       setAnnouncement('MCP arrangement ready. Listen, then estimate vocals on this exact arrangement. Retrying this lyric recovers the same preview.')
+    })
+  }
+
+  async function composeScore(option: LyricOption): Promise<void> {
+    if (!client || !config || !activeBrief || scoreConsentOptionId !== option.option_id || !scoreComposeMaxUsd) return
+    const brief = activeBrief
+    setScoreConsentOptionId('')
+    await runAction('Generating a paid AI arrangement score', async () => {
+      const result = await apiJson<{ job_id: string; score: { bars: number; tempo_bpm: number } }>(
+        client, config, '/api/score/compose', apiScopes.render, {
+          method: 'POST',
+          body: {
+            brief_ids: [brief.brief_id],
+            custom_briefs: brief.source === 'custom' ? [customPayload(brief)] : [],
+            option_id: option.option_id,
+            confirm_paid_generation: true,
+          },
+        },
+      )
+      if (chatContext.current !== brief.brief_id) return
+      await loadWorkspaceData(client, config)
+      inspectCompletedRun(result.job_id, [brief.brief_id])
+      setAnnouncement(`AI arrangement score generated: ${result.score.bars} bars at ${result.score.tempo_bpm} BPM.`)
     })
   }
 
@@ -1493,10 +1522,27 @@ function App() {
                             className="button button-secondary" type="button"
                             disabled={busy || option.status !== 'accepted' || !option.output}
                             aria-pressed={selectedLyric?.option_id === option.option_id}
-                            onClick={() => { setSelectedLyricIds(current => ({ ...current, [activeBriefId]: option.option_id })); setEstimate(null); setAnnouncement(`Lyric option ${index + 1} selected for audio.`) }}
+                            onClick={() => { setSelectedLyricIds(current => ({ ...current, [activeBriefId]: option.option_id })); setScoreConsentOptionId(''); setEstimate(null); setAnnouncement(`Lyric option ${index + 1} selected for audio.`) }}
                           >{selectedLyric?.option_id === option.option_id ? 'Selected lyrics' : `Use option ${index + 1}`}</button>
                           {selectedLyric?.option_id === option.option_id && <button className="button button-primary" type="button" disabled={busy || !paidAvailable || !activeBrief} onClick={() => void estimatePaidRender(activeBrief ? [activeBrief] : [], selectedLyric)}>Estimate voice + music</button>}</div>
                           {selectedLyric?.option_id === option.option_id && <div className="button-row"><button className="button button-secondary" type="button" disabled={busy} onClick={() => void buildMusicPreview(option)}>Build MCP music preview</button><p className="muted">No cloud requests. Builds once per draft; then add vocals to that exact arrangement in Listen &amp; review.</p></div>}
+                          {selectedLyric?.option_id === option.option_id && <div className="score-compose">
+                            <label className="check-label">
+                              <input
+                                type="checkbox"
+                                checked={scoreConsentOptionId === option.option_id}
+                                disabled={busy || !lyricAvailable || !scoreComposeMaxUsd}
+                                onChange={event => setScoreConsentOptionId(event.currentTarget.checked ? option.option_id : '')}
+                              />
+                              I authorize one paid AI arrangement request for up to ${scoreComposeMaxUsd ?? 'unavailable'}. This amount is reserved from the shared paid-text budget; an uncertain provider outcome will not be retried automatically.
+                            </label>
+                            <button
+                              className="button button-primary"
+                              type="button"
+                              disabled={busy || !lyricAvailable || !scoreComposeMaxUsd || scoreConsentOptionId !== option.option_id}
+                              onClick={() => void composeScore(option)}
+                            >Generate AI arrangement</button>
+                          </div>}
                           {selectedLyric?.option_id === option.option_id && <p className="muted">{renderOptionsMessage(options, unresolvedCount, paidStatusUncertain)}</p>}
                           {option.status === 'human_review_required' && <p className="muted">Held for human review. This draft cannot be rendered.</p>}
                         </article>

@@ -427,6 +427,9 @@ The normal workflow provisions one Microsoft Foundry `AIServices` account
 (`S0`) and a model deployment shared by chat and lyrics. Voice and text are
 enabled together; there are no per-feature approvals or dispatch switches.
 Speech and Content Safety use their own endpoints on the shared account.
+Paid score composition uses this same model deployment and existing text
+settings. It adds no composer-specific deployment flag or mandatory preview
+gate; each paid score request still requires explicit user consent.
 
 Set these nonsecret variables once in the `earwyrm-web` GitHub environment,
 and update them when pricing, model configuration, or budget limits change:
@@ -454,6 +457,25 @@ accounts, model deployments, and scoped role assignments. The existing
 still govern requests. Deployment does not make billable model or Speech calls
 to test the endpoints. After deployment, verify managed identity, Speech word
 timings, structured model output, and both Content Safety checks on the PoC.
+
+Before enabling paid score use, verify that the selected model/version supports
+the required structured output and confirm current uncached model pricing,
+output-token limits, and the per-action and shared text-budget ceilings. The
+deployment workflow does not test paid score generation or validate provider
+timeout and billing reconciliation behavior.
+
+Score telemetry is API-only: configure the process host's OpenTelemetry SDK,
+exporter, context propagator, service name/version, deployment environment and
+SDK resource attributes before relying on it. No in-process exporter or
+destination is configured by the app. Offline tests verify content-free spans,
+duration measurements and reported token counts, not export delivery.
+
+The `azure.yaml` web service selects `Dockerfile.web`. That image installs
+FluidSynth and `fluid-soundfont-gm`, sets `EARWYRM_SOUNDFONT` to
+`/usr/share/sounds/sf2/FluidR3_GM.sf2`, and retains the package notice at
+`/usr/share/doc/fluid-soundfont-gm/copyright`. Verify non-root readability and
+sampled rendering in the built image before deployment; this is a local image
+check, not a deployment claim or a legal review of package attribution.
 
 ### Upgrade an existing PostgreSQL store
 

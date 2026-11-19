@@ -9,13 +9,15 @@ import { once } from 'node:events';
 import { createHash } from 'node:crypto';
 import { create_app, EXPECTED_ANSWERS, type CreateAppOptions } from '../src/web_app.js';
 import { AuthSettings, TokenValidator, type Environment } from '../src/web_auth.js';
-import { STATIC_ROOT, WebStorage } from '../src/web_storage.js';
+import { canonical_json, STATIC_ROOT, StorageConflict, WebStorage } from '../src/web_storage.js';
 import { acquire_writer_lock, prepare_databases } from '../src/cloud_web.js';
 import { SAMPLE_RATE, write_wav } from '../src/dsp.js';
 import { load_inputs, render_brief } from '../src/render.js';
 import { CloudFailure, type LyricBackend } from '../src/lyric_cloud.js';
 import { LyricRequest, LyricResult, WORD } from '../src/lyrics.js';
-import { MelodyService } from '../src/melody_service.js';
+import { CompositionUnavailable, MelodyService } from '../src/melody_service.js';
+import { ArrangementScore, compile_score, score_lyric_timing } from '../src/score_dsl.js';
+import { score_prompt } from '../src/score_cloud.js';
 
 const issuer = 'https://tenant.example.test/tenant/v2.0';
 const authority = 'https://tenant.example.test/tenant';
@@ -95,6 +97,32 @@ const lyric_limits = {
   LYRIC_MODEL_CALL_MAX_USD: '0.01', LYRIC_SAFETY_CALL_MAX_USD: '0.001',
   LYRIC_PER_ACTION_CAP_USD: '1', LYRIC_TOTAL_BUDGET_USD: '5',
 };
+const test_score = ArrangementScore.parse({
+  schema_version: 1, style: 'retro-synth', tempo_bpm: 120, time_signature: '4/4',
+  key_root: 0, mode: 'major', bars: 8, progression: [0, 4, 5, 3], hook_motif: [0, 4, 2, 6, 3, 5, 1],
+  tracks: [
+    { instrument: 'pad', events: [{ step: 0, degree: 0, duration_steps: 8 }] },
+    { instrument: 'bass', events: [{ step: 0, degree: 0, duration_steps: 2 }, { step: 4, degree: 3, duration_steps: 2 }] },
+    { instrument: 'lead', events: [
+      { step: 0, degree: 0, duration_steps: 1 }, { step: 2, degree: 4, duration_steps: 1 },
+      { step: 4, degree: 2, duration_steps: 1 }, { step: 6, degree: 6, duration_steps: 1 },
+    ] },
+  ],
+});
+
+/** Persists an accepted lyric option using the same screened fixture contract as the API tests. */
+async function save_accepted_lyric_option(store: WebStorage, owner = 'user-a') {
+  const sample = load_inputs()[0]!;
+  const cta = sample[1].split(/(?<=[.!?])\s+/).at(-1)!;
+  const hook = `${sample[0].name}, a tune up for your ride`;
+  const draft = {
+    hook, lyrics: `${hook}\n${cta}`, syllables_per_line: [12, 16],
+    rhyme_scheme: '--', brand_count: 2, cta,
+  };
+  const lyric_request = LyricRequest.parse({ brief: sample[0], cta, product_path: 'spoken' });
+  const result = LyricResult.parse({ status: 'accepted', attempts: 1, output: draft });
+  return store.save_lyric_option(owner, lyric_request, result);
+}
 
 describe('same-origin Express API', () => {
   const custom_details = {
@@ -930,6 +958,334 @@ describe('guarded paid text ledger', () => {
     expect(responses.find(res => res.status === 409)?.body.detail).toContain('budget is exhausted');
     expect(preflight).toHaveBeenCalledTimes(1);
     expect((await send(second)).status).toBe(409);
+  });
+});
+
+describe('guarded paid score composition', () => {
+  const lyric_backend: LyricBackend = {
+    preflight: vi.fn(async () => ({ english: true, risky_claims: false, artist_imitation: false })),
+    generate: vi.fn(async () => ''),
+    assess: vi.fn(async () => ({ english: true, grounded: true, risky_claims: false })),
+    screen: vi.fn(async () => ({ moderation_passed: true, protected_material_detected: false })),
+  };
+  const body_for = (option_id: string) => ({
+    brief_ids: ['brief-001'], option_id, confirm_paid_generation: true,
+  });
+
+  it('requires consent, an accepted matching option, and shared budget before the provider call', async () => {
+    const root = root_dir();
+    const score_composer = { compose: vi.fn(async (_input: unknown) => test_score) };
+    const environ = { ...lyric_limits, LYRIC_ENABLED: 'true', LYRIC_TOTAL_BUDGET_USD: '0.01' };
+    const { app, store, access_token } = await fixture({ data_dir: root, environ, lyric_backend, score_composer });
+    const accepted = await save_accepted_lyric_option(store);
+    const held = await store.save_lyric_option('user-a', accepted.request, LyricResult.parse({
+      status: 'human_review_required', attempts: 1, output: accepted.result.output,
+      reasons: ['risky_claims_require_human_review'],
+    }));
+    const post = (body: object, access = access_token) =>
+      request(app).post('/api/score/compose').auth(access, { type: 'bearer' }).send(body);
+
+    expect((await post({ ...body_for(accepted.option_id), confirm_paid_generation: undefined })).status).toBe(422);
+    expect((await post(body_for(held.option_id))).status).toBe(409);
+    expect((await post({ ...body_for(accepted.option_id), brief_ids: ['brief-002'] })).status).toBe(404);
+    expect((await post(body_for(accepted.option_id), await token('user-b'))).status).toBe(409);
+    expect(score_composer.compose).not.toHaveBeenCalled();
+
+    const db = new DatabaseSync(store.database_path);
+    try {
+      db.prepare('INSERT INTO lyric_reservations VALUES (?, ?, ?, ?)').run('prior', 'write', '0.01', new Date().toISOString());
+    } finally { db.close(); }
+    const exhausted = await post(body_for(accepted.option_id));
+    expect(exhausted.status).toBe(409);
+    expect(exhausted.body.detail).toContain('shared chat, lyrics, and compose budget');
+    expect(score_composer.compose).not.toHaveBeenCalled();
+    const verify = new DatabaseSync(store.database_path);
+    try { expect(verify.prepare('SELECT count(*) AS count FROM score_reservations').get()?.count).toBe(0); }
+    finally { verify.close(); }
+  });
+
+  it('commits one score, replays the committed result, and charges later text actions to the shared budget', async () => {
+    const root = root_dir();
+    const score_composer = { compose: vi.fn(async (_input: unknown) => test_score) };
+    const chat_advisor = { suggest: vi.fn(async () => ({ reply: 'unused', creative_direction: 'unused' })) };
+    const environ = { ...lyric_limits, LYRIC_ENABLED: 'true', LYRIC_TOTAL_BUDGET_USD: '0.01' };
+    const { app, store, access_token } = await fixture({ data_dir: root, environ, lyric_backend, score_composer, chat_advisor });
+    const option = await save_accepted_lyric_option(store);
+    const post = () => request(app).post('/api/score/compose').auth(access_token, { type: 'bearer' }).send(body_for(option.option_id));
+
+    const availability = await request(app).get('/api/lyrics/options').auth(access_token, { type: 'bearer' });
+    expect(availability.body).toMatchObject({ available: true, score_compose_max_usd: '0.01' });
+    const first = await post();
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    expect(first.body).toMatchObject({ tool: 'compose_score', status: 'committed', score: test_score });
+    expect(first.body.run).toMatchObject({ run_id: first.body.job_id, status: 'completed', outputs: [{
+      variant: 'instrumental', composition_source: { job_id: first.body.job_id, option_id: option.option_id },
+    }] });
+    const audio_url = first.body.run.outputs[0].audio_url;
+    expect((await request(app).get(audio_url).auth(access_token, { type: 'bearer' })).status).toBe(200);
+    expect((await request(app).get(audio_url).auth(await token('user-b'), { type: 'bearer' })).status).toBe(404);
+    const retry = await post();
+    expect(retry.status).toBe(200);
+    expect(retry.body).toEqual(first.body);
+    expect(score_composer.compose).toHaveBeenCalledTimes(1);
+    expect(score_composer.compose.mock.calls[0]?.[0]).not.toHaveProperty('brief.contact_details');
+
+    const db = new DatabaseSync(store.database_path);
+    try {
+      expect(db.prepare('SELECT owner, action, logical_job_id, reserved_usd, status FROM score_reservations').get())
+        .toMatchObject({ owner: 'user-a', action: 'compose', reserved_usd: '0.01', status: 'committed' });
+      expect(db.prepare('SELECT count(*) AS count FROM score_reservations').get()?.count).toBe(1);
+    } finally { db.close(); }
+    const later_chat = await request(app).post('/api/chat').auth(access_token, { type: 'bearer' }).send({
+      action: 'discuss', brief_ids: ['brief-001'], confirm_paid_generation: true,
+      messages: [{ role: 'user', content: 'Make it bright' }],
+    });
+    expect(later_chat.status).toBe(409);
+    expect(chat_advisor.suggest).not.toHaveBeenCalled();
+  });
+
+  it('blocks concurrent and uncertain retries from resubmitting the provider action', async () => {
+    const root = root_dir();
+    let release_provider = () => {};
+    let mark_started = () => {};
+    const provider_gate = new Promise<void>(resolve => { release_provider = resolve; });
+    const provider_started = new Promise<void>(resolve => { mark_started = resolve; });
+    const score_composer = { compose: vi.fn(async () => {
+      mark_started();
+      await provider_gate;
+      return test_score;
+    }) };
+    const environ = { ...lyric_limits, LYRIC_ENABLED: 'true' };
+    const first = await fixture({ data_dir: root, environ, lyric_backend, score_composer });
+    const second = await fixture({ data_dir: root, environ, lyric_backend, score_composer }, false);
+    const option = await save_accepted_lyric_option(first.store);
+    const send = (target: typeof first) =>
+      request(target.app).post('/api/score/compose').auth(target.access_token, { type: 'bearer' }).send(body_for(option.option_id));
+
+    const pending = send(first).then(response => response);
+    await provider_started;
+    const concurrent = await send(second);
+    expect(concurrent.status).toBe(409);
+    release_provider();
+    const completed = await pending;
+    expect(completed.status, JSON.stringify(completed.body)).toBe(200);
+    expect((await send(second)).status).toBe(200);
+    expect(score_composer.compose).toHaveBeenCalledTimes(1);
+
+    const failing_composer = { compose: vi.fn(async () => { throw new CloudFailure('cloud_transport_failed'); }) };
+    const uncertain = await fixture({
+      environ, lyric_backend, score_composer: failing_composer,
+    });
+    const uncertain_option = await save_accepted_lyric_option(uncertain.store);
+    const send_uncertain = () => request(uncertain.app).post('/api/score/compose')
+      .auth(uncertain.access_token, { type: 'bearer' }).send(body_for(uncertain_option.option_id));
+    expect((await send_uncertain()).status).toBe(503);
+    const blocked = await send_uncertain();
+    expect(blocked.status).toBe(503);
+    expect(blocked.body).toMatchObject({ code: 'provider_outcome_unknown', logical_job_id: expect.any(String), retryable: false });
+    expect(failing_composer.compose).toHaveBeenCalledTimes(1);
+    const uncertain_db = new DatabaseSync(uncertain.store.database_path);
+    try {
+      expect(uncertain_db.prepare('SELECT status, score_json FROM score_reservations').get())
+        .toEqual({ status: 'outcome_unknown', score_json: null });
+    } finally { uncertain_db.close(); }
+  });
+
+    it.each([{ tempo_bpm: 137, bars: 9 }, { tempo_bpm: 140, bars: 12 }])('uses a fractional-tempo paid preview for exact backing and MIDI continuity through both vocal variants: %j', async parameters => {
+      const root = root_dir();
+      const score = ArrangementScore.parse({ ...test_score, ...parameters });
+      const score_composer = { compose: vi.fn(async () => score) };
+      const synthesize = vi.fn(async (text: string) => {
+        const words = [...text.matchAll(WORD)].map((match, index) => ({
+          text: match[0], text_offset: match.index, offset: index / 8, duration: 1 / 8,
+        }));
+        return { result_id: 'TEST', audio: new Float64Array(words.length * SAMPLE_RATE / 8).fill(0.1), words };
+      });
+      const renderer = vi.fn(render_brief);
+      const { app, store, access_token } = await fixture({
+        data_dir: root,
+        environ: { ...speech_environment(root, { SPEECH_TOTAL_BUDGET_USD: '2' }), ...lyric_limits, LYRIC_ENABLED: 'true' },
+        lyric_backend, score_composer, render: renderer, speech_factory: () => ({ synthesize }),
+      });
+      const option = await save_accepted_lyric_option(store);
+      const post = (path: string, body: object) =>
+        request(app).post(path).auth(access_token, { type: 'bearer' }).send(body);
+      const composed = await post('/api/score/compose', body_for(option.option_id));
+      expect(composed.status, JSON.stringify(composed.body)).toBe(200);
+      const selection = {
+        brief_ids: ['brief-001'],
+        lyric_selections: [{ brief_id: 'brief-001', option_id: option.option_id }],
+        composition_selections: [{ brief_id: 'brief-001', job_id: composed.body.job_id }],
+      };
+      const estimate = await post('/api/renders/estimate', selection);
+      expect(estimate.status, JSON.stringify(estimate.body)).toBe(200);
+      const rendered = await post('/api/renders', { ...selection, mode: 'azure', confirmation: estimate.body });
+      expect(rendered.status, JSON.stringify(rendered.body)).toBe(200);
+      expect(synthesize).toHaveBeenCalledExactlyOnceWith(option.result.output!.lyrics);
+      const committed = renderer.mock.calls[0]![6]!.composition!;
+      expect(committed.result.tempo_bpm).toBe(parameters.tempo_bpm);
+      const melody = new MelodyService(join(root, 'melody'));
+      expect(committed.midi).toEqual(await melody.read_artifact(composed.body.job_id, 'score.mid'));
+      expect(committed.backing).toEqual(await melody.read_artifact(composed.body.job_id, 'backing.wav'));
+      const outputs = await store.list_outputs('user-a');
+      const vocals = outputs.filter(row => row.variant === 'spoken' || row.variant === 'vocoded');
+      expect(vocals.map(row => row.variant).sort()).toEqual(['spoken', 'vocoded']);
+      for (const row of vocals) {
+        const wav = readFileSync(await store.audio_path(row));
+        expect(wav.readUInt32LE(40)).toBe(Math.round(score.bars * 240 / score.tempo_bpm * SAMPLE_RATE) * 2);
+        expect(row.manifest.numeric_gates).toBe('Pass');
+        expect(row.manifest.composition_source).toMatchObject({
+          job_id: composed.body.job_id, backing_sha256: committed.result.artifacts['backing.wav']!.sha256,
+        });
+      }
+      expect((await post('/api/score/compose', body_for(option.option_id))).body.job_id).toBe(composed.body.job_id);
+      expect(score_composer.compose).toHaveBeenCalledTimes(1);
+    });
+
+    it('recovers interrupted submitted claims only after stop attestation and fences late result writes', async () => {
+      const root = root_dir();
+      const score_composer = { compose: vi.fn(async () => test_score) };
+      const options = { data_dir: root, environ: { ...lyric_limits, LYRIC_ENABLED: 'true' }, lyric_backend, score_composer };
+      const original = await fixture(options);
+      const option = await save_accepted_lyric_option(original.store);
+      const logical_job_id = `score-${createHash('sha256')
+        .update(canonical_json([issuer, 'user-a', option.option_id, 'compose'])).digest('hex')}`;
+      const request_sha256 = createHash('sha256')
+        .update(canonical_json(score_prompt(option.request, option.result))).digest('hex');
+      const reservation = { owner: 'user-a', logical_job_id, request_sha256, cost: '0.01', cap: '1', total: '5' };
+      expect((await original.store.claim_score_compose(reservation)).claimed).toBe(true);
+      const restarted = await fixture(options, false);
+      const post = (path: string, body: object) =>
+        request(restarted.app).post(path).auth(restarted.access_token, { type: 'bearer' }).send(body);
+      expect((await post('/api/score/compose', body_for(option.option_id))).status).toBe(409);
+      const reconciliation = {
+        owner: 'user-a', logical_job_id, confirmed_not_accepted: true, evidence_reference: 'TEST-ONLY stopped worker and provider evidence',
+      };
+      expect((await post('/api/admin/score-reservations/reconcile', reconciliation)).status).toBe(409);
+      expect((await post('/api/admin/score-reservations/reconcile', {
+        ...reconciliation, confirmed_submission_stopped: true,
+      })).status).toBe(200);
+      const next = await restarted.store.claim_score_compose(reservation);
+      expect(next).toMatchObject({ claimed: true, attempt_count: 2 });
+      await expect(original.store.commit_score_compose('user-a', logical_job_id, request_sha256, test_score))
+        .rejects.toBeInstanceOf(StorageConflict);
+      await expect(original.store.finish_score_compose('user-a', logical_job_id, request_sha256, 'outcome_unknown'))
+        .rejects.toBeInstanceOf(StorageConflict);
+      await restarted.store.commit_score_compose('user-a', logical_job_id, request_sha256, test_score, { provider: 'injected', deployment: null }, 2);
+      expect((await post('/api/score/compose', body_for(option.option_id))).status).toBe(200);
+      expect(score_composer.compose).not.toHaveBeenCalled();
+    });
+
+    it('covers repriced reconciled attempts without reducing reservations or exceeding the current shared total', async () => {
+      const store = new WebStorage(root_dir());
+      const reservation = { owner: 'owner', logical_job_id: 'score-price', request_sha256: 'a'.repeat(64), cost: '0.01', cap: '1', total: '1' };
+      await store.claim_score_compose(reservation);
+      await store.finish_score_compose('owner', reservation.logical_job_id, reservation.request_sha256, 'outcome_unknown');
+      await store.reconcile_score_compose('owner', reservation.logical_job_id, 'TEST-ONLY non-acceptance');
+      await expect(store.claim_score_compose({ ...reservation, cost: '0.02', total: '0.01' })).rejects.toBeInstanceOf(StorageConflict);
+      expect((await store.claim_score_compose({ ...reservation, cost: '0.02', total: '0.02' })).attempt_count).toBe(2);
+      await store.finish_score_compose('owner', reservation.logical_job_id, reservation.request_sha256, 'outcome_unknown', 2);
+      await store.reconcile_score_compose('owner', reservation.logical_job_id, 'TEST-ONLY second non-acceptance');
+      await expect(store.claim_score_compose({ ...reservation, total: '0.019' })).rejects.toBeInstanceOf(StorageConflict);
+      expect((await store.claim_score_compose({ ...reservation, cost: '0.005', total: '0.02' })).attempt_count).toBe(3);
+      const db = new DatabaseSync(store.database_path);
+      try {
+        expect(db.prepare('SELECT reserved_usd, attempt_count FROM score_reservations').all())
+          .toEqual([{ reserved_usd: '0.02', attempt_count: 3 }]);
+      } finally { db.close(); }
+    });
+  it('replays a committed score after rendering fails without another provider call', async () => {
+    const root = root_dir();
+    const score_composer = { compose: vi.fn(async () => test_score) };
+    const { app, store, access_token } = await fixture({
+      data_dir: root, environ: { ...lyric_limits, LYRIC_ENABLED: 'true' }, lyric_backend, score_composer,
+    });
+    const option = await save_accepted_lyric_option(store);
+    const post = () => request(app).post('/api/score/compose')
+      .auth(access_token, { type: 'bearer' }).send(body_for(option.option_id));
+    const render = vi.spyOn(MelodyService.prototype, 'submit_score')
+      .mockRejectedValueOnce(new CompositionUnavailable('test render failure'));
+
+    const failed = await post();
+    expect(failed.status).toBe(503);
+    expect(failed.body).toMatchObject({ code: 'score_render_unavailable', retryable: true });
+    const db = new DatabaseSync(store.database_path);
+    try { expect(db.prepare('SELECT status, attempt_count FROM score_reservations').get()).toEqual({ status: 'committed', attempt_count: 1 }); }
+    finally { db.close(); }
+
+    vi.spyOn(store, 'save_output').mockRejectedValueOnce(Object.assign(new Error('test publication failure'), { code: 'SQLITE_BUSY' }));
+    expect((await post()).status).toBe(503);
+    const retried = await Promise.all([post(), post()]);
+    expect(retried.map(response => response.status)).toEqual([200, 200]);
+    expect(retried[0]!.body.logical_job_id).toBe(failed.body.logical_job_id);
+    expect(await store.list_outputs('user-a')).toHaveLength(1);
+    expect(score_composer.compose).toHaveBeenCalledTimes(1);
+    expect(render).toHaveBeenCalledTimes(4);
+  });
+
+  it('requires an administrator to reconcile an unknown outcome before retrying', async () => {
+    const root = root_dir();
+    let attempts = 0;
+    const score_composer = { compose: vi.fn(async () => {
+      if (attempts++ === 0) throw new CloudFailure('cloud_transport_failed');
+      return test_score;
+    }) };
+    const { app, store, access_token } = await fixture({
+      data_dir: root, environ: { ...lyric_limits, LYRIC_ENABLED: 'true' }, lyric_backend, score_composer,
+    });
+    const option = await save_accepted_lyric_option(store);
+    const post = () => request(app).post('/api/score/compose')
+      .auth(access_token, { type: 'bearer' }).send(body_for(option.option_id));
+    const uncertain = await post();
+    expect(uncertain.status).toBe(503);
+    const reconciliation = {
+      owner: 'user-a', logical_job_id: uncertain.body.logical_job_id,
+      confirmed_not_accepted: true, evidence_reference: 'TEST-ONLY provider and billing evidence',
+    };
+    expect((await request(app).post('/api/admin/score-reservations/reconcile')
+      .auth(await token('user-b'), { type: 'bearer' }).send(reconciliation)).status).toBe(403);
+    const confirmed = await request(app).post('/api/admin/score-reservations/reconcile')
+      .auth(access_token, { type: 'bearer' }).send(reconciliation);
+    expect(confirmed.status).toBe(200);
+    expect(confirmed.body).toMatchObject({ logical_job_id: uncertain.body.logical_job_id, status: 'confirmed_not_accepted', retryable: true });
+
+    const retried = await post();
+    expect(retried.status).toBe(200);
+    expect(score_composer.compose).toHaveBeenCalledTimes(2);
+    const db = new DatabaseSync(store.database_path);
+    try {
+      expect(db.prepare('SELECT status, attempt_count FROM score_reservations').get()).toEqual({ status: 'committed', attempt_count: 2 });
+      expect(db.prepare('SELECT attempt_number, evidence_reference FROM score_reconciliations').get())
+        .toEqual({ attempt_number: 1, evidence_reference: 'TEST-ONLY provider and billing evidence' });
+    } finally { db.close(); }
+  });
+
+  it('keeps a screened-out committed score from making another provider call', async () => {
+    const root = root_dir();
+    const score_composer = { compose: vi.fn(async () => test_score) };
+    const { app, store, access_token } = await fixture({
+      data_dir: root, environ: { ...lyric_limits, LYRIC_ENABLED: 'true' }, lyric_backend, score_composer,
+    });
+    const option = await save_accepted_lyric_option(store);
+    if (!option.result.output) throw new Error('Accepted fixture lyrics are missing');
+    const timing = score_lyric_timing(test_score, option.result.output.lyrics.split('\n'), option.request.pronunciations);
+    const melodies = compile_score(test_score, timing).melodies;
+    const melody = new MelodyService(join(root, 'melody'));
+    await melody.init();
+    const db = new DatabaseSync(melody.database_path);
+    try { db.prepare('INSERT INTO local_outputs VALUES (?, ?)').run('prior-score', JSON.stringify(melodies)); }
+    finally { db.close(); }
+    const post = () => request(app).post('/api/score/compose')
+      .auth(access_token, { type: 'bearer' }).send(body_for(option.option_id));
+
+    const rejected = await post();
+    expect(rejected.status).toBe(409);
+    expect(rejected.body.detail).toContain('similarity screening');
+    expect((await post()).status).toBe(409);
+    expect(score_composer.compose).toHaveBeenCalledTimes(1);
+    const verify = new DatabaseSync(store.database_path);
+    try { expect(verify.prepare('SELECT status, score_json FROM score_reservations').get()?.status).toBe('committed'); }
+    finally { verify.close(); }
   });
 });
 

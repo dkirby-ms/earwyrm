@@ -1,6 +1,6 @@
 import * as sdk from "microsoft-cognitiveservices-speech-sdk";
 import { ManagedIdentityCredential } from "@azure/identity";
-import { DURATION, SAMPLE_RATE, ScoreDuration, musical_form, musical_plan, tone, vocal_pitch, type Audio, type MusicalForm, type Note, type Seed } from "./dsp.js";
+import { DURATION, SAMPLE_RATE, musical_form, musical_plan, tone, validate_render_duration, vocal_pitch, type Audio, type MusicalForm, type Note, type Seed } from "./dsp.js";
 import { SyllableNote } from "./melody.js";
 
 export const VOICE = "en-US-JennyNeural";
@@ -122,9 +122,14 @@ function fit_interval(audio: Audio, offset: number, duration: number, target_dur
   return fitted;
 }
 
-function align_committed(utterance: Utterance, timing: readonly SyllableNote[], duration_seconds: number): [Audio, Audio, Note[], WordAlignment[]] {
-  ScoreDuration.parse(duration_seconds);
-  const modulator = new Float64Array(duration_seconds * SAMPLE_RATE), carrier = new Float64Array(modulator.length);
+function align_committed(
+  utterance: Utterance,
+  timing: readonly SyllableNote[],
+  duration_seconds: number,
+  tempo_bpm?: number,
+): [Audio, Audio, Note[], WordAlignment[]] {
+  duration_seconds = validate_render_duration(duration_seconds, tempo_bpm);
+  const modulator = new Float64Array(Math.round(duration_seconds * SAMPLE_RATE)), carrier = new Float64Array(modulator.length);
   const notes: Note[] = [], alignment: WordAlignment[] = [];
   let index = 0, previous_end = 0;
   for (const word of utterance.words) {
@@ -133,8 +138,8 @@ function align_committed(utterance: Utterance, timing: readonly SyllableNote[], 
     while (covered.length < expected.length) {
       const event = SyllableNote.parse(timing[index++]);
       const label = letters(event.syllable);
-      if (!label || !expected.startsWith(covered + label) || event.start_seconds < previous_end ||
-          event.start_seconds + event.duration_seconds > Math.min(25, duration_seconds - 1)) {
+      if (!label || !expected.startsWith(covered + label) || event.start_seconds + 1e-9 < previous_end ||
+          event.start_seconds + event.duration_seconds > Math.min(25, duration_seconds - 1) + 1e-9) {
         throw new RangeError("Committed vocal timing does not cover the complete words in order");
       }
       const offset = word.offset + word.duration * covered.length / expected.length;
@@ -178,9 +183,11 @@ export function validate_utterance(utterance: Utterance, text: string): void {
  * @remarks Without a form, retains the legacy seconds 3-25 window and 30-second buffers.
  * @returns Owned speech modulator, harmonic carrier, notes and source-to-target mapping.
  */
-export function align(utterance: Utterance, text: string, root: number, { melody_seed = null, form, timing }: { melody_seed?: Seed | null; form?: MusicalForm; timing?: readonly SyllableNote[] } = {}): [Audio, Audio, Note[], WordAlignment[]] {
+export function align(utterance: Utterance, text: string, root: number, {
+  melody_seed = null, form, timing, tempo_bpm,
+}: { melody_seed?: Seed | null; form?: MusicalForm; timing?: readonly SyllableNote[]; tempo_bpm?: number } = {}): [Audio, Audio, Note[], WordAlignment[]] {
   validate_utterance(utterance, text);
-  if (timing) return align_committed(utterance, timing, form?.duration_seconds ?? DURATION);
+  if (timing) return align_committed(utterance, timing, form?.duration_seconds ?? DURATION, tempo_bpm);
   if (utterance.words.length > 88) throw new RangeError("Script has too many words for the bounded vocal window");
   if (form) {
     const expected = musical_form(form.duration_seconds);
@@ -241,11 +248,11 @@ export function align(utterance: Utterance, text: string, root: number, { melody
 }
 
 /** Place complete unmodified speech near the end, retaining one second of final silence. */
-export function place_spoken(utterance: Utterance, duration_seconds = DURATION): Audio {
-  ScoreDuration.parse(duration_seconds);
+export function place_spoken(utterance: Utterance, duration_seconds = DURATION, tempo_bpm?: number): Audio {
+  duration_seconds = validate_render_duration(duration_seconds, tempo_bpm);
   if (utterance.audio.length > Math.min(25, duration_seconds - 2) * SAMPLE_RATE) throw new RangeError("Natural speech exceeds the bounded 25-second maximum window; shorten the script");
   if (!utterance.audio.length || !utterance.audio.every(Number.isFinite)) throw new RangeError("Speech must be finite nonempty audio");
-  const output = new Float64Array(duration_seconds * SAMPLE_RATE);
+  const output = new Float64Array(Math.round(duration_seconds * SAMPLE_RATE));
   output.set(utterance.audio, output.length - SAMPLE_RATE - utterance.audio.length);
   return output;
 }

@@ -1,0 +1,158 @@
+{
+  "task_id": "llm-midi-jingle",
+  "task_slug": "llm-midi-jingle",
+  "session_name": "LLM MIDI jingle pipeline",
+  "parent_task": null,
+  "child_tasks": [
+    {
+      "task_id": "llm-midi-jingle-build",
+      "task_slug": "llm-midi-jingle-build",
+      "state_path": ".copilot-tracking/rpi-sessions/2026-11-19/llm-midi-jingle/llm-midi-jingle-build-state.json"
+    }
+  ],
+  "mode": "automatic",
+  "active_phase": "Follow-up",
+  "status": "completed",
+  "session_status": "stopped",
+  "artifact_paths": {
+    "research": ".copilot-tracking/research/2026-11-19/llm-midi-jingle-research.md",
+    "plan": ".copilot-tracking/plans/2026-11-19/llm-midi-jingle-build-plan.md",
+    "critique": ".copilot-tracking/reviews/plans/2026-11-19/llm-midi-jingle-plan-critique.md",
+    "changes": ".copilot-tracking/changes/2026-11-19/llm-midi-jingle-build-changes.md",
+    "review": ".copilot-tracking/reviews/logs/2026-11-19/llm-midi-jingle-build-review-2.md",
+    "refinement": ".copilot-tracking/reviews/logs/2026-11-19/llm-midi-jingle-build-refinement-2.md"
+  },
+  "documents": {
+    "research": [
+      ".copilot-tracking/research/2026-11-19/llm-midi-jingle-research.md"
+    ],
+    "plan": [
+      ".copilot-tracking/plans/2026-11-19/llm-midi-jingle-plan.md",
+      ".copilot-tracking/plans/2026-11-19/llm-midi-jingle-build-plan.md"
+    ],
+    "critique": [
+      ".copilot-tracking/reviews/plans/2026-11-19/llm-midi-jingle-plan-critique.md"
+    ],
+    "changes": [".copilot-tracking/changes/2026-11-19/llm-midi-jingle-build-changes.md"],
+    "review": [".copilot-tracking/reviews/logs/2026-11-19/llm-midi-jingle-build-review.md", ".copilot-tracking/reviews/logs/2026-11-19/llm-midi-jingle-build-review-2.md"],
+    "refinement": [".copilot-tracking/reviews/logs/2026-11-19/llm-midi-jingle-build-refinement.md", ".copilot-tracking/reviews/logs/2026-11-19/llm-midi-jingle-build-refinement-2.md"]
+  },
+  "confirmed_decisions": [
+    {
+      "decision": "Automatic session scope",
+      "status": "current",
+      "evidence": "Initial request: investigate docs/idea.md and build a plan. Follow-up user request on 2026-11-19: \"build this\". Scope is amended to implement the researched feature according to the existing plan, including source changes and validation. Deployment, paid live inference, and external tracker writes remain excluded. Root task/state: llm-midi-jingle at .copilot-tracking/rpi-sessions/2026-11-19/llm-midi-jingle/llm-midi-jingle-state.json."
+    },
+    {
+      "decision": "Automatic progression boundary",
+      "status": "through-review",
+      "evidence": "User selected Handle it end to end in response to the RPI mode question. This authorizes phase progression but does not expand the requested outcome beyond research and a plan."
+    },
+    {
+      "decision": "Research decision participation",
+      "status": "agent-owned",
+      "evidence": "Handle it end to end selection."
+    },
+    {
+      "decision": "Planning decision participation",
+      "status": "agent-owned",
+      "evidence": "Handle it end to end selection."
+    },
+    {
+      "decision": "Review decision participation",
+      "status": "agent-owned",
+      "evidence": "Handle it end to end selection."
+    },
+    {
+      "decision": "Follow-up decision participation",
+      "status": "agent-owned",
+      "evidence": "Handle it end to end selection."
+    },
+    {
+      "decision": "Planning critique",
+      "status": "standard",
+      "evidence": "First-task default; user did not request skipping it."
+    },
+    {
+      "decision": "Review step",
+      "status": "run",
+      "evidence": "Initial parent acceptance/refinement and significant-change surface passes completed. Local P12 timing predicate repair validated without another review, under same-session review limits. The child's original skip did not skip parent Review."
+    },
+    {
+      "decision": "Subagent use",
+      "status": "auto",
+      "evidence": "Default; use direct research unless substantial independent context warrants a helper."
+    },
+    {
+      "decision": "Canvas",
+      "status": "current",
+      "evidence": "instanceId rpi-llm-midi-jingle; handle 4CQP; extensionId plugin:hve-core:rpi-workflow"
+    },
+    {
+      "decision": "Research disposition",
+      "status": "executed",
+      "evidence": "Research is complete and Planning Readiness is Ready in .copilot-tracking/research/2026-11-19/llm-midi-jingle-research.md, supported by C1-C17 and W1-W4."
+    },
+    {
+      "decision": "Research recommendation D1",
+      "status": "selected",
+      "evidence": "Use a compact, versioned pattern-based arrangement DSL within the existing provider output cap, compiled into the existing renderer; defer synth patch and hardware integration. See the primary research artifact."
+    },
+    {
+      "decision": "Planning integration boundary",
+      "status": "selected",
+      "evidence": "Use the existing explicit compose action after lyric acceptance for one LLM-authored score request. Keep the three deterministic guided previews unchanged; this is the bounded path that receives selected lyrics and avoids multiplying calls across three alternatives. See planning decision D2 and research C16-C17."
+    },
+    {
+      "decision": "Paid compose consent",
+      "status": "selected",
+      "evidence": "Preserve explicit per-action consent and capped budgets for billable score generation, without adding a deployment-level feature approval. See research C12, C15-C17."
+    },
+    {
+      "decision": "Planning scope D5",
+      "status": "deferred",
+      "evidence": "Humanization, dynamics, polyphony controls, section/drum variation, and the second Composer/Producer pass remain outside the bounded first increment. See docs/idea.md and plan D5."
+    },
+    {
+      "decision": "Paid budget D6",
+      "status": "selected",
+      "evidence": "Reuse existing model-call, per-action, and total paid-text caps for one compose request, with idempotent reservation; do not introduce new budget defaults or a composer-specific feature gate."
+    },
+    {
+      "decision": "Telemetry D7",
+      "status": "selected",
+      "evidence": "Use context-propagated OpenTelemetry GenAI conventions and content-free provider outcomes; keep prompts, advertiser details, lyrics, contact details, and unbounded identifiers out of telemetry."
+    },
+    {
+      "decision": "Initial plan critique outcome",
+      "status": "complete; revise resolved",
+      "evidence": "The standard initial critique returned Revise with 3 High, 7 Medium, and 2 Low findings. All 12 findings were resolved in the plan's Critique Disposition table."
+    },
+    {
+      "decision": "Plan disposition",
+      "status": "complete",
+      "evidence": "The research-backed plan and initial standard critique are complete. All 12 critique findings were disposed as planner-owned corrections; implementation, deployment, and paid live inference remain outside scope."
+    },
+    {
+      "decision": "Implementation authorization",
+      "status": "selected",
+      "evidence": "User's own words on 2026-11-19: \"build this\". This authorizes implementation of the existing LLM MIDI jingle plan; it does not authorize deployment or paid live inference."
+    },
+    {
+      "decision": "Follow-up selection",
+      "status": "selected",
+      "evidence": "Start child task llm-midi-jingle-build at .copilot-tracking/rpi-sessions/2026-11-19/llm-midi-jingle/llm-midi-jingle-build-state.json. Reuse the existing research, plan, and critique; implementation output is .copilot-tracking/changes/2026-11-19/llm-midi-jingle-build-changes.md. No unresolved critique finding is being assigned."
+    },
+    {
+      "decision": "Review disposition",
+      "status": "executed",
+      "evidence": "Initial P05-P08 and surface P09-P11 reviews completed; original and surface findings resolved through P12. Final outcomes are Conformant acceptance and Clean refinement. P11 full tests: 481 API passed, one optional PostgreSQL skipped, 27 web passed; P12 final affected API/MCP: 172 passed; final workspace build/typecheck/whitespace passed. Paid/live inference, listening, deployment, real PostgreSQL and exporter verification remain unperformed."
+    }
+  ],
+  "blockers": [],
+  "next_action": {
+    "phase": "Follow-up",
+    "action": "Complete; no required offline action remains. Paid listening requires separate user consent/budget; deployment and host telemetry export verification are not claimed."
+  },
+  "prioritized_follow_ups": []
+}

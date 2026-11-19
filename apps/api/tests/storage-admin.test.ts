@@ -9,6 +9,7 @@ import { acquire_writer_lock, import_sqlite, initialize_fresh, main } from "../s
 import { prepare_databases } from "../src/cloud_web.js";
 import { MelodyService } from "../src/melody_service.js";
 import { CompositionRequest } from "../src/melody.js";
+import { ArrangementScore } from "../src/score_dsl.js";
 import { database_url_from_environment, parse_seed_json, PostgresConnection, postgres_connection_options, StoreNotInitialized, validate_postgres_store, type QueryResult, type Row } from "../src/persistence.js";
 import { StorageConflict, WebStorage } from "../src/web_storage.js";
 
@@ -96,7 +97,8 @@ function postgres_target(fail_on?: string): DatabaseSync {
       return { rows: db.prepare("SELECT 1 FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' LIMIT 1").all() as Row[], rowcount: 0 };
     }
     if (statement.includes("information_schema.columns")) {
-      return { rows: db.prepare("SELECT name AS column_name FROM pragma_table_info('access_requests')").all() as Row[], rowcount: 0 };
+      const table = /table_name = '([a-z_]+)'/.exec(statement)?.[1] ?? "";
+      return { rows: db.prepare(`SELECT name AS column_name FROM pragma_table_info('${table}')`).all() as Row[], rowcount: 0 };
     }
     const prepared = db.prepare(statement);
     if (prepared.columns().length) return { rows: prepared.all(...parameters) as Row[], rowcount: 0 };
@@ -147,7 +149,7 @@ describe("operator transactions and read-only import", () => {
   it("recreates the application tables and owner without creating local databases", async () => {
     const db = postgres_target(), root = directory();
     await initialize_fresh(root, local, { issuer: "issuer", subject: "owner" });
-    expect(user_tables(db)).toHaveLength(13);
+    expect(user_tables(db)).toHaveLength(16);
     expect(db.prepare("SELECT issuer, subject, enabled, admin, paid_speech FROM application_users").get()).toMatchObject({
       issuer: "issuer", subject: "owner", enabled: 1, admin: 1, paid_speech: 1,
     });
@@ -157,7 +159,7 @@ describe("operator transactions and read-only import", () => {
     db.prepare("INSERT INTO application_users VALUES ('issuer', 'former-user', 0, 0, 0, 'old')").run();
     db.prepare("INSERT INTO runs VALUES ('old-run', 'owner', 'instrumental', '[]', 'complete', 'old')").run();
     await initialize_fresh(root, local, { issuer: "issuer", subject: "owner" });
-    expect(user_tables(db)).toHaveLength(13);
+    expect(user_tables(db)).toHaveLength(16);
     expect(db.prepare("SELECT count(*) AS count FROM application_users").get()!.count).toBe(1);
     expect(db.prepare("SELECT count(*) AS count FROM runs").get()!.count).toBe(0);
     expect(db.prepare("SELECT enabled, admin, paid_speech FROM application_users").get()).toEqual({
@@ -190,10 +192,10 @@ describe("operator transactions and read-only import", () => {
     writeFileSync(join(root, ".earwyrm-initialized"), "");
     await initialize_fresh(root, local, { issuer: "issuer", subject: "owner" });
     expect(readdirSync(root)).toEqual([".earwyrm-writer.lock"]);
-    expect(user_tables(db)).toHaveLength(13);
+    expect(user_tables(db)).toHaveLength(16);
     writeFileSync(join(root, "unrecognized.txt"), "preserve");
     await expect(initialize_fresh(root, local, { issuer: "issuer", subject: "owner" })).rejects.toThrow("unrecognized data directory entries");
-    expect(user_tables(db)).toHaveLength(13);
+    expect(user_tables(db)).toHaveLength(16);
     rmSync(join(root, "unrecognized.txt"));
     const release = acquire_writer_lock(root);
     await expect(initialize_fresh(root, local, { issuer: "issuer", subject: "owner" })).rejects.toThrow("active writer");
@@ -230,7 +232,7 @@ describe("operator transactions and read-only import", () => {
     }
     if (!hasLyrics) {
       const sourceDb = new DatabaseSync(web.database_path);
-      sourceDb.exec("DROP TABLE lyric_options; DROP TABLE lyric_reservations; DROP TABLE preview_reservations");
+      sourceDb.exec("DROP TABLE score_reconciliations; DROP TABLE score_schema_migrations; DROP TABLE lyric_options; DROP TABLE lyric_reservations; DROP TABLE score_reservations; DROP TABLE preview_reservations");
       sourceDb.close();
     }
     if (!hasAccessRequests) {
@@ -242,7 +244,7 @@ describe("operator transactions and read-only import", () => {
     const webBytes = readFileSync(web.database_path), melodyBytes = readFileSync(melody.database_path);
     const audio = readFileSync(join(web.audio_dir, output.file)), wav = readFileSync(join(melody.artifact_dir, job.job_id, "backing.wav"));
     const db = postgres_target();
-    expect(await import_sqlite(root, local)).toEqual({ runs: 1, paid_attempts: 0, outputs: 1, evaluations: 0, application_identity: 1, application_users: 1, ...(hasAccessRequests ? { access_requests: 1 } : {}), ...(hasLyrics ? { lyric_options: 0, lyric_reservations: 1, preview_reservations: 0 } : {}), render_jobs: 1, local_outputs: 0 });
+    expect(await import_sqlite(root, local)).toEqual({ runs: 1, paid_attempts: 0, outputs: 1, evaluations: 0, application_identity: 1, application_users: 1, ...(hasAccessRequests ? { access_requests: 1 } : {}), ...(hasLyrics ? { lyric_options: 0, lyric_reservations: 1, score_reservations: 0, score_reconciliations: 0, preview_reservations: 0 } : {}), render_jobs: 1, local_outputs: 0 });
     if (hasAccessRequests) expect(db.prepare("SELECT subject, status, email FROM access_requests").get())
       .toEqual({ subject: "requester", status: "pending", email: hasEmail ? "requester@example.test" : null });
     if (hasLyrics) expect(db.prepare("SELECT reserved_usd FROM lyric_reservations").get()?.reserved_usd).toBe("0.001");
@@ -259,6 +261,51 @@ describe("operator transactions and read-only import", () => {
     expect(readFileSync(join(web.audio_dir, output.file))).toEqual(audio);
     expect(readFileSync(join(melody.artifact_dir, job.job_id, "backing.wav"))).toEqual(wav);
     await expect(import_sqlite(root, local)).rejects.toThrow("empty target");
+  });
+  it("imports legacy v1 score reservations with defaults from the upgraded schema", async () => {
+    const root = directory(), { web } = await source(root);
+    const sourceDb = new DatabaseSync(web.database_path);
+    sourceDb.exec("DROP TABLE score_reconciliations; DROP TABLE score_schema_migrations; ALTER TABLE score_reservations DROP COLUMN provider_json; ALTER TABLE score_reservations DROP COLUMN attempt_count");
+    sourceDb.prepare("INSERT INTO score_reservations (reservation_id, owner, action, logical_job_id, request_sha256, reserved_usd, status, score_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run("legacy-reservation", "owner", "compose", "score-legacy", "a".repeat(64), "0.01", "outcome_unknown", null, new Date().toISOString(), new Date().toISOString());
+    sourceDb.close();
+    const db = postgres_target();
+    expect(await import_sqlite(root, local)).toMatchObject({ score_reservations: 1 });
+    expect(db.prepare("SELECT status, score_json, provider_json, attempt_count FROM score_reservations").get())
+      .toEqual({ status: "outcome_unknown", score_json: null, provider_json: null, attempt_count: 1 });
+  });
+  it("imports current-schema SQL null score provenance without changing reservations or source bytes", async () => {
+    const root = directory(), { web, melody } = await source(root);
+    const sourceDb = new DatabaseSync(web.database_path);
+    for (const status of ["submitted", "outcome_unknown", "failed"]) {
+      sourceDb.prepare("INSERT INTO score_reservations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(`reservation-${status}`, "owner", "compose", `score-${status}`, "a".repeat(64), "0.01", status, null, "created", "updated", null, 2);
+    }
+    const reservations = sourceDb.prepare("SELECT * FROM score_reservations ORDER BY reservation_id").all();
+    sourceDb.close();
+    const webBytes = readFileSync(web.database_path), melodyBytes = readFileSync(melody.database_path);
+    const db = postgres_target();
+    expect(await import_sqlite(root, local)).toMatchObject({ score_reservations: 3 });
+    expect(db.prepare("SELECT * FROM score_reservations ORDER BY reservation_id").all()).toEqual(reservations);
+    expect(readFileSync(web.database_path)).toEqual(webBytes);
+    expect(readFileSync(melody.database_path)).toEqual(melodyBytes);
+  });
+  it("rejects malformed non-null score provenance before opening the import target", async () => {
+    const root = directory(), { web } = await source(root);
+    const sourceDb = new DatabaseSync(web.database_path);
+    sourceDb.prepare("INSERT INTO score_reservations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run("reservation", "owner", "compose", "score-invalid", "a".repeat(64), "0.01", "submitted", null, "created", "updated", null, 1);
+    const db = postgres_target(), execute = vi.mocked(PostgresConnection.prototype.execute);
+    try {
+      for (const provider of ["{", "null", "[]", "1", "{}", '{"provider":"unsupported","deployment":null}']) {
+        sourceDb.prepare("UPDATE score_reservations SET provider_json=?").run(provider);
+        const before = readFileSync(web.database_path);
+        await expect(import_sqlite(root, local)).rejects.toThrow(/invalid JSON|invalid shape|invalid score provider/);
+        expect(execute).not.toHaveBeenCalled();
+        expect(user_tables(db)).toEqual([]);
+        expect(readFileSync(web.database_path)).toEqual(before);
+      }
+    } finally { sourceDb.close(); }
   });
   it("rolls back a partial import including schema while preserving every source byte", async () => {
     const root = directory(), { web, melody, output } = await source(root);
@@ -289,7 +336,7 @@ describe("operator transactions and read-only import", () => {
       expect.objectContaining({ subject: "requester", email: "requester@example.test" }),
     ]);
     await store.reserve_lyric_action("discuss", new Decimal(1), new Decimal(1), new Decimal(1));
-    db.exec("DROP TABLE lyric_options; DROP TABLE lyric_reservations");
+    db.exec("DROP TABLE score_reconciliations; DROP TABLE score_schema_migrations; DROP TABLE lyric_options; DROP TABLE lyric_reservations; DROP TABLE score_reservations");
     expect(await store.has_lyric_budget()).toBe(false);
     await expect(validate_postgres_store(local)).rejects.toThrow("explicit database upgrade");
     await prepare_databases(root, { database_url: local, upgrade_postgres: true });
@@ -301,6 +348,43 @@ describe("operator transactions and read-only import", () => {
     expect(db.prepare("SELECT subject FROM application_users").get()!.subject).toBe("owner");
     expect(db.prepare("SELECT run_id FROM runs").get()!.run_id).toBe("preserved-run");
     await validate_postgres_store(local);
+  });
+  it("preserves committed score reservations across idempotent PostgreSQL upgrades", async () => {
+    const db = postgres_target(), root = directory();
+    await initialize_fresh(root, local, { issuer: "issuer", subject: "owner" });
+    const store = new WebStorage(root, { database_url: local });
+    const score = ArrangementScore.parse({
+      schema_version: 1, style: "retro-synth", tempo_bpm: 120, time_signature: "4/4",
+      key_root: 0, mode: "major", bars: 8, progression: [0, 4, 5, 3], hook_motif: [0, 2, 4],
+      tracks: [
+        { instrument: "pad", events: [{ step: 0, degree: 0, duration_steps: 8 }] },
+        { instrument: "bass", events: [{ step: 0, degree: 0, duration_steps: 2 }] },
+        { instrument: "lead", events: [{ step: 0, degree: 0, duration_steps: 1 }] },
+      ],
+    });
+    const reservation = {
+      owner: "owner", logical_job_id: "score-job", request_sha256: "a".repeat(64),
+      cost: "0.01", cap: "1", total: "5",
+    };
+    expect((await store.claim_score_compose(reservation)).claimed).toBe(true);
+    await store.commit_score_compose("owner", "score-job", reservation.request_sha256, score, {
+      provider: "injected", deployment: null,
+    });
+    await expect(store.claim_score_compose({ ...reservation, request_sha256: "b".repeat(64) }))
+      .rejects.toBeInstanceOf(StorageConflict);
+    await prepare_databases(root, { database_url: local, upgrade_postgres: true });
+    await prepare_databases(root, { database_url: local, upgrade_postgres: true });
+    const recovered = await store.claim_score_compose(reservation);
+    expect(recovered).toMatchObject({ status: "committed", claimed: false, attempt_count: 1 });
+    expect(JSON.parse(recovered.score_json ?? "null")).toEqual(score);
+    expect(JSON.parse(recovered.provider_json ?? "null")).toEqual({ provider: "injected", deployment: null });
+    db.exec("DROP TABLE score_reconciliations; DROP TABLE score_schema_migrations; ALTER TABLE score_reservations DROP COLUMN provider_json; ALTER TABLE score_reservations DROP COLUMN attempt_count");
+    expect(await store.has_lyric_budget()).toBe(false);
+    await prepare_databases(root, { database_url: local, upgrade_postgres: true });
+    const upgraded_legacy = await store.claim_score_compose(reservation);
+    expect(upgraded_legacy).toMatchObject({ status: "committed", claimed: false, attempt_count: 1, provider_json: null });
+    expect(JSON.parse(upgraded_legacy.score_json ?? "null")).toEqual(score);
+    expect(db.prepare("SELECT count(*) AS count FROM score_reservations").get()?.count).toBe(1);
   });
   it.each(["owner", "manifest", "audio-symlink", "artifact", "json", "wal", "schema", "out-of-range-seed"])("rejects unsafe source %s before touching target", async defect => {
     const root = directory(), { web, melody, output, job } = await source(root);

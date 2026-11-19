@@ -5,6 +5,8 @@ import { spawnSync } from "node:child_process";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
+import { ArrangementScore } from "./score_dsl.js";
+import { ScoreProviderProvenance } from "./score_cloud.js";
 import { ARTIFACT_TYPES, CompositionResult, MelodyService } from "./melody_service.js";
 import { database_url_from_environment, is_storage_error, parse_seed_json, PostgresConnection, REQUIRED_TABLES, SqliteConnection, transaction, validate_postgres_store, type Connection } from "./persistence.js";
 import { StorageAccessDenied, StorageConflict, WebStorage } from "./web_storage.js";
@@ -20,8 +22,12 @@ export const WEB_TABLE_COLUMNS: Record<string, readonly string[]> = {
   access_requests: ["request_id", "issuer", "subject", "status", "created_at", "updated_at", "email"],
   lyric_options: ["option_id", "owner", "brief_id", "request_json", "result_json", "created_at"],
   lyric_reservations: ["reservation_id", "action", "reserved_usd", "created_at"],
+  score_reservations: ["reservation_id", "owner", "action", "logical_job_id", "request_sha256", "reserved_usd", "status", "score_json", "created_at", "updated_at", "provider_json", "attempt_count"],
+  score_reconciliations: ["reservation_id", "attempt_number", "evidence_reference", "reconciled_at"],
+  score_schema_migrations: ["version", "applied_at"],
   preview_reservations: ["request_key", "owner", "logical_ids_json", "reserved_bytes", "completed", "pinned", "created_at"],
 };
+const LEGACY_SCORE_RESERVATION_COLUMNS = WEB_TABLE_COLUMNS.score_reservations.slice(0, 10);
 export const MELODY_TABLE_COLUMNS: Record<string, readonly string[]> = {
   render_jobs: ["job_id", "logical_job_id", "request_json", "result_json", "melodies_json", "status", "created_at"],
   local_outputs: ["output_id", "melodies_json"],
@@ -34,6 +40,7 @@ export const JSON_COLUMN_TYPES: [string, string, "array" | "object"][] = [
   ["outputs", "manifest_json", "object"], ["render_jobs", "request_json", "object"],
   ["render_jobs", "result_json", "object"], ["render_jobs", "melodies_json", "object"], ["local_outputs", "melodies_json", "object"],
   ["lyric_options", "request_json", "object"], ["lyric_options", "result_json", "object"],
+  ["score_reservations", "provider_json", "object"],
   ["preview_reservations", "logical_ids_json", "array"],
 ];
 /** The caller owns the returned release function; the lock interoperates with Python flock writers. */
@@ -59,7 +66,7 @@ function require_root(root: string): string {
   return realpathSync(root);
 }
 const RESET_TABLES = [
-  "preview_reservations", "lyric_reservations", "lyric_options", "access_requests", "application_users", "application_identity", "evaluations", "outputs", "paid_attempts",
+  "preview_reservations", "score_reconciliations", "score_schema_migrations", "score_reservations", "lyric_reservations", "lyric_options", "access_requests", "application_users", "application_identity", "evaluations", "outputs", "paid_attempts",
   "runs", "local_outputs", "render_jobs", "earwyrm_store_metadata",
 ] as const;
 const RESET_DATA_ENTRIES = ["audio", "work", "melody", "earwyrm.sqlite3", ".earwyrm-initialized"] as const;
@@ -110,7 +117,7 @@ export async function initialize_fresh(directory: string, database_url: string, 
       await WebStorage._create_schema(c);
       await WebStorage._bootstrap_owner(c, owner.issuer, owner.subject);
       await MelodyService._create_schema(c);
-      const tables = [...REQUIRED_TABLES, "lyric_reservations", "preview_reservations"];
+      const tables = [...REQUIRED_TABLES, "lyric_reservations", "score_reservations", "score_reconciliations", "score_schema_migrations", "preview_reservations"];
       const count = (await c.execute(`SELECT count(*) AS table_count FROM pg_catalog.pg_class
         WHERE relnamespace = current_schema()::regnamespace AND relkind IN ('r', 'p')
         AND relname IN (${tables.map(() => "?").join(",")})`, tables)).rows[0];
@@ -140,7 +147,10 @@ async function validate_source(c: Connection, columns: Record<string, readonly s
   }
   for (const [table, column, kind] of JSON_COLUMN_TYPES) {
     if (!names.has(table)) continue;
+    const tableColumns = (await c.execute(`PRAGMA table_info(${table})`)).rows.map(row => String(row.name));
+    if (!tableColumns.includes(column)) continue;
     for (const row of (await c.execute(`SELECT ${column} FROM ${table}`)).rows) {
+      if (table === "score_reservations" && column === "provider_json" && row[column] === null) continue;
       let value: unknown;
       try { value = JSON.parse(String(row[column])); }
       catch (error) {
@@ -173,6 +183,52 @@ async function validate_web(c: Connection, root: string, tables: Set<string>): P
     if (users.some(row => Object.values(row).some(value => value !== 0 && value !== 1))) throw new TypeError("SQLite source contains invalid user permissions");
     if (!identity.length && users.length) throw new TypeError("SQLite users have no application identity");
   }
+  if (tables.has("score_reservations")) {
+    const columns = (await c.execute("PRAGMA table_info(score_reservations)")).rows.map(row => String(row.name));
+    const selected = ["owner", "action", "logical_job_id", "request_sha256", "status", "score_json",
+      ...(columns.includes("provider_json") ? ["provider_json"] : []),
+      ...(columns.includes("attempt_count") ? ["attempt_count"] : [])].join(", ");
+    for (const row of (await c.execute(`SELECT ${selected} FROM score_reservations`)).rows) {
+      if (!row.owner || row.action !== "compose" || !row.logical_job_id ||
+          typeof row.request_sha256 !== "string" || !/^[a-f0-9]{64}$/.test(row.request_sha256) ||
+          !["submitted", "committed", "outcome_unknown", "failed"].includes(String(row.status))) {
+        throw new TypeError("SQLite source contains an invalid score reservation");
+      }
+      if (row.attempt_count !== undefined && (!Number.isSafeInteger(Number(row.attempt_count)) || Number(row.attempt_count) < 1)) {
+        throw new TypeError("SQLite source contains an invalid score attempt count");
+      }
+      if (row.provider_json != null) {
+        let provider: unknown;
+        try { provider = JSON.parse(String(row.provider_json)); }
+        catch (error) {
+          if (!(error instanceof SyntaxError)) throw error;
+          throw new TypeError("SQLite source contains invalid score provider provenance", { cause: error });
+        }
+        if (!ScoreProviderProvenance.safeParse(provider).success) throw new TypeError("SQLite source contains invalid score provider provenance");
+      }
+      if (row.status === "committed") {
+        if (typeof row.score_json !== "string" || !ArrangementScore.safeParse(JSON.parse(row.score_json)).success) {
+          throw new TypeError("SQLite source contains an invalid committed score");
+        }
+      } else if (row.score_json !== null) {
+        throw new TypeError("SQLite source contains an uncommitted score");
+      }
+    }
+  }
+  if (tables.has("score_reconciliations")) {
+    for (const row of (await c.execute("SELECT attempt_number, evidence_reference, reconciled_at FROM score_reconciliations")).rows) {
+      if (!Number.isSafeInteger(Number(row.attempt_number)) || Number(row.attempt_number) < 1 ||
+          typeof row.evidence_reference !== "string" || !row.evidence_reference.trim() || !row.reconciled_at) {
+        throw new TypeError("SQLite source contains an invalid score reconciliation");
+      }
+    }
+  }
+  if (tables.has("score_schema_migrations")) {
+    const migrations = (await c.execute("SELECT version, applied_at FROM score_schema_migrations")).rows;
+    if (migrations.length !== 1 || migrations[0]!.version !== 2 || !migrations[0]!.applied_at) {
+      throw new TypeError("SQLite source contains an unsupported score migration version");
+    }
+  }
 }
 async function validate_melody(c: Connection, root: string): Promise<void> {
   for (const row of (await c.execute("SELECT job_id, logical_job_id, request_json, result_json FROM render_jobs")).rows) {
@@ -195,7 +251,8 @@ async function validate_melody(c: Connection, root: string): Promise<void> {
 /** Copies a validated table using explicit columns; the caller owns the target transaction. */
 export async function _copy_sqlite_table(source: Connection, target: Connection, table: string, columns: readonly string[]): Promise<number> {
   const supported = WEB_TABLE_COLUMNS[table] ?? MELODY_TABLE_COLUMNS[table];
-  const legacy = table === "access_requests" ? supported?.filter(column => column !== "email") : undefined;
+  const legacy = table === "access_requests" ? supported?.filter(column => column !== "email")
+    : table === "score_reservations" ? LEGACY_SCORE_RESERVATION_COLUMNS : undefined;
   if (!supported || (JSON.stringify(columns) !== JSON.stringify(supported) &&
       (!legacy || JSON.stringify(columns) !== JSON.stringify(legacy)))) throw new TypeError("Unsupported import table");
   const names = columns.join(", "), sql = `INSERT INTO ${table} (${names}) VALUES (${columns.map(() => "?").join(", ")})`;
@@ -222,8 +279,14 @@ export async function import_sqlite(directory: string, database_url: string): Pr
     web = new SqliteConnection(webPath, true);
     melody = new SqliteConnection(melodyPath, true);
     const sourceColumns = { ...WEB_TABLE_COLUMNS };
-    for (const table of ["access_requests", "lyric_options", "lyric_reservations", "preview_reservations"]) {
+    for (const table of ["access_requests", "lyric_options", "lyric_reservations", "score_reservations", "score_reconciliations", "score_schema_migrations", "preview_reservations"]) {
       if (!(await web.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", [table])).rows.length) delete sourceColumns[table];
+    }
+    if (sourceColumns.score_reservations) {
+      const scoreColumns = (await web.execute("PRAGMA table_info(score_reservations)")).rows.map(row => String(row.name));
+      if (JSON.stringify(scoreColumns) === JSON.stringify(LEGACY_SCORE_RESERVATION_COLUMNS)) {
+        sourceColumns.score_reservations = LEGACY_SCORE_RESERVATION_COLUMNS;
+      }
     }
     if (sourceColumns.access_requests &&
         !(await web.execute("PRAGMA table_info(access_requests)")).rows.some(row => row.name === "email")) {
@@ -240,6 +303,7 @@ export async function import_sqlite(directory: string, database_url: string): Pr
       await WebStorage._create_schema(target);
       await MelodyService._create_schema(target);
       for (const [source, columns, tables] of sources) for (const table of Object.keys(columns)) {
+        if (table === "score_schema_migrations") continue;
         if (tables.has(table)) counts[table] = await _copy_sqlite_table(source, target, table, columns[table]!);
       }
       for (const [table, count] of Object.entries(counts)) {

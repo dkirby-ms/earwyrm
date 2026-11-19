@@ -7,12 +7,16 @@ import { SAMPLE_RATE, instrument_palette, synthesize, write_midi, type Note, typ
 
 const exec = promisify(execFile);
 
-/** Render matching MIDI and backing instrumentation. An unset bank selects the compatibility synth. */
-export async function render_backing(notes: readonly Note[], seed: Seed, duration_seconds: number) {
+/**
+ * Render matching MIDI and backing audio.
+ *
+ * @param tempo_bpm - Optional 100-140 BPM score tempo; omission retains legacy whole-bar rendering.
+ */
+export async function render_backing(notes: readonly Note[], seed: Seed, duration_seconds: number, tempo_bpm?: number) {
   const palette = instrument_palette(seed);
   const bank = process.env.EARWYRM_SOUNDFONT?.trim();
   if (!bank) return {
-    audio: synthesize(notes, { seed, duration_seconds }),
+    audio: synthesize(notes, { seed, duration_seconds, tempo_bpm }),
     palette,
     renderer: "oscillator",
     soundfont: null,
@@ -25,14 +29,14 @@ export async function render_backing(notes: readonly Note[], seed: Seed, duratio
     const midi = join(directory, "backing.mid"), pcm = join(directory, "backing.raw");
     const config = join(directory, "fluidsynth.conf");
     await writeFile(config, "");
-    write_midi(midi, notes, duration_seconds, palette);
+    write_midi(midi, notes, duration_seconds, palette, tempo_bpm);
     const { stderr } = await exec("fluidsynth", [
       "-niq", "-f", config, "-r", String(SAMPLE_RATE), "-T", "raw", "-O", "s16", "-E", "little",
       "-F", pcm, "--", soundfont, midi,
     ], { cwd: directory, timeout: 15_000, killSignal: "SIGKILL" });
     if (/fluidsynth:\s*error:/i.test(stderr)) throw new Error("FluidSynth reported a render error");
     const raw = await readFile(pcm);
-    const frames = duration_seconds * SAMPLE_RATE;
+    const frames = Math.round(duration_seconds * SAMPLE_RATE);
     if (raw.length % 4 !== 0 || raw.length < frames * 4) throw new Error("Incomplete stereo PCM");
     const audio = new Float64Array(frames);
     for (let i = 0; i < frames; i++) {

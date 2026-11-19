@@ -6,10 +6,13 @@ const ceilings = {
   discuss: { model: 2, safety: 2 },
   write: { model: 9, safety: 2 },
   options: { model: 27, safety: 6 },
+  compose: { model: 1, safety: 0 },
 } as const;
 
 /** Identifies one consented web action and its worst-case provider workload. */
 export type PaidLyricAction = keyof typeof ceilings;
+/** Paid lyric actions with a separate legacy reservation table. */
+export type PaidLyricGenerationAction = Exclude<PaidLyricAction, 'compose'>;
 
 function price(env: Record<string, string | undefined>, name: string): Decimal {
   const raw = env[name]?.trim();

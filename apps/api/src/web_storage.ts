@@ -7,12 +7,16 @@ import { PostgresConnection, SqliteConnection, serialized, transaction, type Con
 import { prepare_database_file } from "./sqlite_files.js";
 import { STATIC_ROOT } from "./paths.js";
 import type { LyricRequest, LyricResult } from "./lyrics.js";
-import type { PaidLyricAction } from "./lyric_budget.js";
+import type { PaidLyricGenerationAction } from "./lyric_budget.js";
 import type { MelodyService } from "./melody_service.js";
+import type { ScoreProviderProvenance } from "./score_cloud.js";
 import { complete_preview, create_preview_schema, pin_preview, prune_previews, reserve_preview } from "./preview_quota.js";
 
 const Money = Decimal.clone({ precision: 28 });
 export { STATIC_ROOT };
+function is_score_reservation_status(value: string): value is ScoreReservationStatus {
+  return value === "submitted" || value === "committed" || value === "outcome_unknown" || value === "failed";
+}
 /** A durable reservation or immutable record prevents this operation. */
 export class StorageConflict extends Error {}
 /** No record belongs to the supplied owner. */
@@ -72,6 +76,26 @@ export interface EvaluationOptions {
 /** Server-owned screening outcome; only accepted results can be selected for rendering. */
 export interface StoredLyricOption {
   option_id: string; brief_id: string; request: LyricRequest; result: LyricResult;
+}
+/** Persisted single-call score reservation and provider-submission state. */
+export type ScoreReservationStatus = "submitted" | "committed" | "outcome_unknown" | "failed";
+/** Existing reservation state returned to a retry without resubmitting. */
+export interface ScoreReservationClaim {
+  reservation_id: string;
+  status: ScoreReservationStatus;
+  score_json: string | null;
+  provider_json: string | null;
+  attempt_count: number;
+  claimed: boolean;
+}
+/** Identity and bounded amount for one score-generation reservation. */
+export interface ScoreReservationOptions {
+  owner: string;
+  logical_job_id: string;
+  request_sha256: string;
+  cost: Decimal.Value;
+  cap: Decimal.Value;
+  total: Decimal.Value;
 }
 
 /** Stable JSON for idempotent requests; rejects non-finite numbers instead of replacing them with null. */
@@ -195,31 +219,235 @@ export class WebStorage {
 
   /** Adds content-free, cumulative reservations without resetting existing spend. */
   static async _create_lyric_budget_schema(connection: Connection): Promise<void> {
-    await connection.execute(`CREATE TABLE IF NOT EXISTS lyric_reservations (
-      reservation_id TEXT PRIMARY KEY, action TEXT NOT NULL CHECK (action IN ('discuss','write','options')),
-      reserved_usd TEXT NOT NULL, created_at TEXT NOT NULL)`);
+    await connection.executescript(`
+      CREATE TABLE IF NOT EXISTS lyric_reservations (
+        reservation_id TEXT PRIMARY KEY, action TEXT NOT NULL CHECK (action IN ('discuss','write','options')),
+        reserved_usd TEXT NOT NULL, created_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS score_reservations (
+        reservation_id TEXT PRIMARY KEY, owner TEXT NOT NULL,
+        action TEXT NOT NULL CHECK (action = 'compose'), logical_job_id TEXT NOT NULL,
+        request_sha256 TEXT NOT NULL, reserved_usd TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('submitted','committed','outcome_unknown','failed')),
+        score_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        provider_json TEXT, attempt_count INTEGER NOT NULL DEFAULT 1,
+        UNIQUE (owner, action, logical_job_id));
+      CREATE TABLE IF NOT EXISTS score_reconciliations (
+        reservation_id TEXT NOT NULL REFERENCES score_reservations(reservation_id),
+        attempt_number INTEGER NOT NULL, evidence_reference TEXT NOT NULL, reconciled_at TEXT NOT NULL,
+        PRIMARY KEY (reservation_id, attempt_number));
+      CREATE TABLE IF NOT EXISTS score_schema_migrations (
+        version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
+    `);
+    const columns = connection instanceof SqliteConnection
+      ? (await connection.execute("PRAGMA table_info(score_reservations)")).rows.map(row => String(row.name))
+      : (await connection.execute(
+        "SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'score_reservations'",
+      )).rows.map(row => String(row.column_name));
+    if (!columns.includes("provider_json")) await connection.execute("ALTER TABLE score_reservations ADD COLUMN provider_json TEXT");
+    if (!columns.includes("attempt_count")) await connection.execute("ALTER TABLE score_reservations ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 1");
+    await connection.execute(
+      "INSERT INTO score_schema_migrations (version, applied_at) VALUES (2, ?) ON CONFLICT (version) DO NOTHING",
+      [new Date().toISOString()],
+    );
   }
 
   /** Confirms the explicit PostgreSQL upgrade without running DDL from the web app. */
   async has_lyric_budget(): Promise<boolean> {
-    if (this.database_url === null) return true;
-    return this.read(async c => Boolean((await c.execute("SELECT to_regclass('lyric_reservations') AS name")).rows[0]?.name));
+    return this.read(async c => {
+      if (this.database_url !== null) {
+        const lyric = await c.execute("SELECT to_regclass(?) AS name", ["lyric_reservations"]);
+        const score = await c.execute("SELECT to_regclass(?) AS name", ["score_reservations"]);
+        const reconciliation = await c.execute("SELECT to_regclass(?) AS name", ["score_reconciliations"]);
+        const migration_table = await c.execute("SELECT to_regclass(?) AS name", ["score_schema_migrations"]);
+        const migration = migration_table.rows[0]?.name
+          ? await c.execute("SELECT version FROM score_schema_migrations WHERE version = 2")
+          : { rows: [] };
+        return Boolean(lyric.rows[0]?.name && score.rows[0]?.name && reconciliation.rows[0]?.name && migration.rows.length);
+      }
+      const lyric = await c.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'lyric_reservations'");
+      const score = await c.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'score_reservations'");
+      const reconciliation = await c.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'score_reconciliations'");
+      const migration_table = await c.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'score_schema_migrations'");
+      const migration = migration_table.rows.length
+        ? await c.execute("SELECT version FROM score_schema_migrations WHERE version = 2")
+        : { rows: [] };
+      return Boolean(lyric.rows.length && score.rows.length && reconciliation.rows.length && migration.rows.length);
+    });
   }
 
   /** Commits the full upper bound before provider calls; no attempt is automatically refunded. */
-  async reserve_lyric_action(action: PaidLyricAction, cost: Decimal, cap: Decimal, total: Decimal): Promise<void> {
+  async reserve_lyric_action(action: PaidLyricGenerationAction, cost: Decimal, cap: Decimal, total: Decimal): Promise<void> {
     if (cost.gt(cap)) throw new StorageConflict('This text action exceeds the per-action spending limit.');
     await this.write(async c => {
-      let projected = new Money(cost);
-      for (const row of (await c.execute('SELECT reserved_usd FROM lyric_reservations')).rows) {
-        const amount = new Money(String(row.reserved_usd));
-        if (!amount.isFinite() || amount.lte(0)) throw new Error('Invalid text budget reservation');
-        projected = projected.plus(amount);
-        if (projected.gt(total)) break;
-      }
-      if (projected.gt(total)) throw new StorageConflict('The chat and lyrics spending budget is exhausted.');
+      const projected = (await this.reserved_text_cost(c)).plus(cost);
+      if (projected.gt(total)) throw new StorageConflict('The shared chat, lyrics, and compose budget is exhausted.');
       await c.execute('INSERT INTO lyric_reservations VALUES (?, ?, ?, ?)',
         [randomUUID(), action, cost.toFixed(), new Date().toISOString()]);
+    });
+  }
+  private async reserved_text_cost(c: Connection): Promise<Decimal> {
+    let total = new Money(0);
+    for (const row of (await c.execute(
+      "SELECT reserved_usd FROM lyric_reservations UNION ALL SELECT reserved_usd FROM score_reservations",
+    )).rows) {
+      const amount = new Money(String(row.reserved_usd));
+      if (!amount.isFinite() || amount.lte(0)) throw new Error("Invalid shared text budget reservation");
+      total = total.plus(amount);
+    }
+    return total;
+  }
+  /** Atomically reserves one compose call and claims its unique owner/job key before provider submission. */
+  async claim_score_compose(options: ScoreReservationOptions): Promise<ScoreReservationClaim> {
+    const cost = new Money(options.cost), cap = new Money(options.cap), total = new Money(options.total);
+    if (!options.owner.trim() || !options.logical_job_id.trim() || !/^[a-f0-9]{64}$/.test(options.request_sha256)) {
+      throw new TypeError("Score reservation identity is invalid");
+    }
+    if (!cost.isFinite() || cost.lte(0) || !cap.isFinite() || cap.lte(0) || !total.isFinite() || total.lte(0)) {
+      throw new TypeError("Score reservation costs must be finite positive USD amounts");
+    }
+    return this.write(async c => {
+      const existing = (await c.execute(
+        "SELECT reservation_id, request_sha256, reserved_usd, status, score_json, provider_json, attempt_count FROM score_reservations WHERE owner = ? AND action = 'compose' AND logical_job_id = ?",
+        [options.owner, options.logical_job_id],
+      )).rows[0];
+      if (existing) {
+        if (existing.request_sha256 !== options.request_sha256) throw new StorageConflict("The compose job ID was reused with different input.");
+        const status = String(existing.status);
+        if (!is_score_reservation_status(status)) throw new Error("Score reservation has an invalid status");
+        const score_json = existing.score_json == null ? null : String(existing.score_json);
+        if (status === "committed" && score_json === null) throw new Error("Committed score reservation has no score");
+        const attempt_count = Number(existing.attempt_count);
+        if (!Number.isSafeInteger(attempt_count) || attempt_count < 1) throw new Error("Score reservation has an invalid attempt count");
+        if (status === "failed" && (await c.execute(
+          "SELECT 1 FROM score_reconciliations WHERE reservation_id = ? AND attempt_number = ?",
+          [existing.reservation_id, attempt_count],
+        )).rows.length) {
+          if (cost.gt(cap)) throw new StorageConflict("This score action exceeds the per-action spending limit.");
+          const reserved = new Money(String(existing.reserved_usd));
+          if (!reserved.isFinite() || reserved.lte(0)) throw new Error("Invalid score budget reservation");
+          const ceiling = Money.max(reserved, cost);
+          if ((await this.reserved_text_cost(c)).plus(ceiling.minus(reserved)).gt(total)) {
+            throw new StorageConflict("The shared chat, lyrics, and compose budget is exhausted.");
+          }
+          await c.execute(
+            "UPDATE score_reservations SET status = 'submitted', score_json = NULL, provider_json = NULL, reserved_usd = ?, attempt_count = attempt_count + 1, updated_at = ? WHERE reservation_id = ? AND status = 'failed'",
+            [ceiling.toFixed(), new Date().toISOString(), existing.reservation_id],
+          );
+          return {
+            reservation_id: String(existing.reservation_id), status: "submitted", score_json: null,
+            provider_json: null, attempt_count: attempt_count + 1, claimed: true,
+          };
+        }
+        return {
+          reservation_id: String(existing.reservation_id), status,
+          score_json, claimed: false,
+          provider_json: existing.provider_json == null ? null : String(existing.provider_json),
+          attempt_count,
+        };
+      }
+
+      if (cost.gt(cap)) throw new StorageConflict("This score action exceeds the per-action spending limit.");
+      const projected = await this.reserved_text_cost(c);
+      if (projected.plus(cost).gt(total)) throw new StorageConflict("The shared chat, lyrics, and compose budget is exhausted.");
+      const reservation_id = randomUUID(), now = new Date().toISOString();
+      await c.execute(
+        "INSERT INTO score_reservations (reservation_id, owner, action, logical_job_id, request_sha256, reserved_usd, status, score_json, created_at, updated_at, provider_json, attempt_count) VALUES (?, ?, 'compose', ?, ?, ?, 'submitted', NULL, ?, ?, NULL, 1)",
+        [reservation_id, options.owner, options.logical_job_id, options.request_sha256, cost.toFixed(), now, now],
+      );
+      return { reservation_id, status: "submitted", score_json: null, provider_json: null, attempt_count: 1, claimed: true };
+    });
+  }
+  /** Commits the validated score for same-key recovery without another provider call. */
+  async commit_score_compose(
+    owner: string,
+    logical_job_id: string,
+    request_sha256: string,
+    score: unknown,
+    provider?: ScoreProviderProvenance,
+    attempt_count = 1,
+  ): Promise<void> {
+    const score_json = canonical_json(score);
+    const provider_json = provider === undefined ? null : canonical_json(provider);
+    await this.write(async c => {
+      const result = await c.execute(
+        "UPDATE score_reservations SET status = 'committed', score_json = ?, provider_json = ?, updated_at = ? WHERE owner = ? AND action = 'compose' AND logical_job_id = ? AND request_sha256 = ? AND status = 'submitted' AND attempt_count = ?",
+        [score_json, provider_json, new Date().toISOString(), owner, logical_job_id, request_sha256, attempt_count],
+      );
+      if (result.rowcount !== 1) throw new StorageConflict("The compose reservation is no longer awaiting a score.");
+    });
+  }
+  /** Returns an owner-scoped reservation without creating a new budget claim. */
+  async get_score_compose(owner: string, logical_job_id: string): Promise<ScoreReservationClaim | null> {
+    return this.read(async c => {
+      const row = (await c.execute(
+        "SELECT reservation_id, status, score_json, provider_json, attempt_count FROM score_reservations WHERE owner = ? AND action = 'compose' AND logical_job_id = ?",
+        [owner, logical_job_id],
+      )).rows[0];
+      if (!row) return null;
+      const status = String(row.status);
+      if (!is_score_reservation_status(status)) throw new Error("Score reservation has an invalid status");
+      const attempt_count = Number(row.attempt_count);
+      if (!Number.isSafeInteger(attempt_count) || attempt_count < 1) throw new Error("Score reservation has an invalid attempt count");
+      const score_json = row.score_json == null ? null : String(row.score_json);
+      if (status === "committed" && score_json === null) throw new Error("Committed score reservation has no score");
+      return {
+        reservation_id: String(row.reservation_id), status, score_json,
+        provider_json: row.provider_json == null ? null : String(row.provider_json),
+        attempt_count, claimed: false,
+      };
+    });
+  }
+  /** Requires non-acceptance evidence; submitted claims also require confirmation that the original worker stopped. */
+  async reconcile_score_compose(
+    owner: string,
+    logical_job_id: string,
+    evidence_reference: string,
+    confirmed_submission_stopped = false,
+  ): Promise<void> {
+    const evidence = evidence_reference.trim();
+    if (!evidence || evidence.length > 500 || /[\u0000-\u001f\u007f]/.test(evidence)) {
+      throw new TypeError("Score reconciliation requires a bounded evidence reference");
+    }
+    await this.write(async c => {
+      const row = (await c.execute(
+        "SELECT reservation_id, status, attempt_count FROM score_reservations WHERE owner = ? AND action = 'compose' AND logical_job_id = ?",
+        [owner, logical_job_id],
+      )).rows[0];
+      if (!row) throw new StorageNotFound("Score reservation was not found");
+      if (row.status !== "outcome_unknown" && row.status !== "submitted") {
+        throw new StorageConflict("Only an uncertain score submission can be reconciled.");
+      }
+      if (row.status === "submitted" && !confirmed_submission_stopped) {
+        throw new StorageConflict("Confirm that the original score submitter has stopped before reconciling an interrupted submission.");
+      }
+      const attempt_count = Number(row.attempt_count);
+      if (!Number.isSafeInteger(attempt_count) || attempt_count < 1) throw new Error("Score reservation has an invalid attempt count");
+      await c.execute(
+        "INSERT INTO score_reconciliations (reservation_id, attempt_number, evidence_reference, reconciled_at) VALUES (?, ?, ?, ?)",
+        [row.reservation_id, attempt_count,
+          row.status === "submitted" ? `Submitter confirmed stopped; ${evidence}` : evidence,
+          new Date().toISOString()],
+      );
+      await c.execute(
+        "UPDATE score_reservations SET status = 'failed', updated_at = ? WHERE reservation_id = ? AND status = ? AND attempt_count = ?",
+        [new Date().toISOString(), row.reservation_id, row.status, attempt_count],
+      );
+    });
+  }
+  /** Prevents retry after a provider failure whose remote outcome may be uncertain. */
+  async finish_score_compose(
+    owner: string,
+    logical_job_id: string,
+    request_sha256: string,
+    status: "outcome_unknown" | "failed",
+    attempt_count = 1,
+  ): Promise<void> {
+    await this.write(async c => {
+      const result = await c.execute(
+        "UPDATE score_reservations SET status = ?, updated_at = ? WHERE owner = ? AND action = 'compose' AND logical_job_id = ? AND request_sha256 = ? AND status = 'submitted' AND attempt_count = ?",
+        [status, new Date().toISOString(), owner, logical_job_id, request_sha256, attempt_count],
+      );
+      if (result.rowcount !== 1) throw new StorageConflict("The compose reservation is no longer awaiting a provider result.");
     });
   }
   /** Additive schema used by SQLite initialization and the explicit PostgreSQL upgrade. */

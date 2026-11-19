@@ -10,7 +10,7 @@ import { LyricResult, type LyricRequest } from './lyrics.js';
 import { JingleSuggestion, type JingleAdvisor, type JingleDiscussion } from './jingle_chat.js';
 import type { LyricBackend } from './lyric_cloud.js';
 import type { CompositionRequest } from './melody.js';
-import { ScoreDuration, type Note } from './dsp.js';
+import { RenderDuration, type Note } from './dsp.js';
 
 /** Content-free tool/transport failure safe to expose through the authorized API. */
 export class JingleToolError extends Error {}
@@ -90,7 +90,7 @@ export class JingleTools {
 
   /** Read only fixed composition resources and independently verify every digest before use. */
   async artifacts(result: CompositionResult): Promise<CommittedComposition> {
-    ScoreDuration.parse(result.duration_seconds);
+    RenderDuration.parse(result.duration_seconds);
     return connected(() => melody_server(this.directory, this.options), async client => {
       const load = (name: string) => {
         const artifact = result.artifacts[name];
@@ -105,7 +105,7 @@ export class JingleTools {
         throw new JingleToolError('Composition score is invalid');
       }
       const score = Score.parse(raw);
-      if (score.some(note => note.start + note.duration > result.duration_seconds)) throw new JingleToolError('Composition score exceeds its duration');
+      if (score.some(note => note.start + note.duration > result.duration_seconds + 1e-9)) throw new JingleToolError('Composition score exceeds its duration');
       return { result, backing, midi, score };
     });
   }

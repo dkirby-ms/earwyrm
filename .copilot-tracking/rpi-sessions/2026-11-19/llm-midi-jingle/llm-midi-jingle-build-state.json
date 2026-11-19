@@ -1,0 +1,113 @@
+{
+  "task_id": "llm-midi-jingle-build",
+  "task_slug": "llm-midi-jingle-build",
+  "session_name": "LLM MIDI jingle pipeline",
+  "parent_task": {
+    "task_id": "llm-midi-jingle",
+    "task_slug": "llm-midi-jingle",
+    "state_path": ".copilot-tracking/rpi-sessions/2026-11-19/llm-midi-jingle/llm-midi-jingle-state.json"
+  },
+  "child_tasks": [],
+  "mode": "automatic",
+  "active_phase": "Follow-up",
+  "status": "completed",
+  "session_status": "stopped",
+  "artifact_paths": {
+    "research": ".copilot-tracking/research/2026-11-19/llm-midi-jingle-research.md",
+    "plan": ".copilot-tracking/plans/2026-11-19/llm-midi-jingle-build-plan.md",
+    "critique": null,
+    "changes": ".copilot-tracking/changes/2026-11-19/llm-midi-jingle-build-changes.md",
+    "review": null,
+    "refinement": null
+  },
+  "documents": {
+    "research": [
+      ".copilot-tracking/research/2026-11-19/llm-midi-jingle-research.md"
+    ],
+    "plan": [
+      ".copilot-tracking/plans/2026-11-19/llm-midi-jingle-plan.md",
+      ".copilot-tracking/plans/2026-11-19/llm-midi-jingle-build-plan.md"
+    ],
+    "critique": [
+      ".copilot-tracking/reviews/plans/2026-11-19/llm-midi-jingle-plan-critique.md"
+    ],
+    "changes": [
+      ".copilot-tracking/changes/2026-11-19/llm-midi-jingle-build-changes.md"
+    ],
+    "review": [],
+    "refinement": []
+  },
+  "confirmed_decisions": [
+    {
+      "decision": "Automatic session scope",
+      "status": "current",
+      "evidence": "Inherited from parent task llm-midi-jingle, with user-approved scope change on 2026-11-19: \"build this\". Implement the existing plan and validate the changes. Do not deploy or perform paid live inference."
+    },
+    {
+      "decision": "Automatic progression boundary",
+      "status": "through-review",
+      "evidence": "User selected Handle it end to end in the original RPI session; the latest user request authorizes implementation. Required gates and the no-deployment/no-paid-live-inference limits remain."
+    },
+    {
+      "decision": "Research decision participation",
+      "status": "agent-owned",
+      "evidence": "Inherited from the confirmed automatic session."
+    },
+    {
+      "decision": "Planning decision participation",
+      "status": "agent-owned",
+      "evidence": "Inherited from the confirmed automatic session."
+    },
+    {
+      "decision": "Review decision participation",
+      "status": "agent-owned",
+      "evidence": "Inherited from the confirmed automatic session."
+    },
+    {
+      "decision": "Follow-up decision participation",
+      "status": "agent-owned",
+      "evidence": "Inherited from the confirmed automatic session."
+    },
+    {
+      "decision": "Research disposition",
+      "status": "reused",
+      "evidence": "The parent task's research is the canonical evidence source for the implementation plan; it contains codebase evidence C1-C17 and external evidence W1-W4. Revalidate relevant code contracts during implementation, and reopen Research only if implementation discovers a material evidence gap."
+    },
+    {
+      "decision": "Plan disposition",
+      "status": "planned",
+      "evidence": "Child implementation plan .copilot-tracking/plans/2026-11-19/llm-midi-jingle-build-plan.md is complete and ready. It retains the parent plan's research, requirements, and implementation decisions; the parent plan's 12 critique findings remain resolved."
+    },
+    {
+      "decision": "Planning critique",
+      "status": "skip",
+      "evidence": "Child-task default; reuse the parent task's sole initial critique and do not start a second critique."
+    },
+    {
+      "decision": "Review step",
+      "status": "skip",
+      "evidence": "Child-task default; the user requested implementation but did not request a follow-up Review. Validate the implementation and tests; no post-implementation Review will be run in this child."
+    },
+    {
+      "decision": "Subagent use",
+      "status": "auto",
+      "evidence": "Inherited session default."
+    },
+    {
+      "decision": "Canvas",
+      "status": "current",
+      "evidence": "Reuse RPI Workflow canvas instance rpi-llm-midi-jingle; host-reported extensionId plugin:hve-core:rpi-workflow."
+    },
+    {
+      "decision": "Implementation authorization",
+      "status": "selected",
+      "evidence": "User's own words on 2026-11-19: \"build this\". This authorizes implementation of the existing plan, not deployment or paid live inference."
+    }
+  ],
+  "blockers": [],
+  "next_action": {
+    "phase": "Follow-up",
+    "action": "Parent llm-midi-jingle owns acceptance/refinement review of the completed P05-P08 implementation. Child validation is complete; no child Review, deployment, or paid live inference."
+  },
+  "prioritized_follow_ups": []
+}

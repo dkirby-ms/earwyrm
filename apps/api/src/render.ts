@@ -4,7 +4,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { Decimal } from 'decimal.js';
 import { z } from 'zod';
 import {
-  SAMPLE_RATE, ScoreDuration, compose, instrument_palette, jingle_duration, mix, musical_form, musical_plan, normalize, vocode, write_midi, write_wav,
+  SAMPLE_RATE, compose, instrument_palette, jingle_duration, mix, musical_form, musical_plan, normalize, valid_render_duration, vocode, write_midi, write_wav,
   type Note,
 } from './dsp.js';
 import { MelodyService } from './melody_service.js';
@@ -84,8 +84,9 @@ export function cost_for(text: string, evidence: Pick<SpeechEvidence, 'usd_per_m
 }
 
 /** Numeric proof gates do not establish listening quality, rights or broadcast approval. */
-export function gate(duration: number, elapsed: number, cost: number | null, expected_duration = 30): 'Pass' | 'Pending' | 'Fail' {
-  if (!ScoreDuration.safeParse(expected_duration).success || !(duration >= expected_duration - 0.5 && duration <= expected_duration) || !Number.isFinite(elapsed) || elapsed < 0 || elapsed >= 300 ||
+export function gate(duration: number, elapsed: number, cost: number | null, expected_duration = 30, tempo_bpm?: number): 'Pass' | 'Pending' | 'Fail' {
+  const expected_audio_duration = Math.round(expected_duration * SAMPLE_RATE) / SAMPLE_RATE;
+  if (!valid_render_duration(expected_duration, tempo_bpm) || !(duration >= expected_audio_duration - 0.5 && duration <= expected_audio_duration) || !Number.isFinite(elapsed) || elapsed < 0 || elapsed >= 300 ||
     (cost !== null && (!Number.isFinite(cost) || cost < 0 || cost >= 0.5))) return 'Fail';
   return cost === null ? 'Pending' : 'Pass';
 }
@@ -144,6 +145,7 @@ export async function render_brief(
   save_json(join(directory, 'brief.json'), brief);
   writeFileSync(join(directory, 'script.txt'), `${text}\n`, 'utf8');
   const committed = options.composition;
+  const tempo_bpm = committed?.result.tempo_bpm;
   const archive = options.history_dir && !committed
     ? new MelodyService(resolve(options.history_dir), { database_url: options.database_url ?? undefined }) : null;
   const minimum_duration = 10 + (text.match(/[A-Za-z]+/g)?.length ?? 0) * 0.25;
@@ -160,12 +162,12 @@ export async function render_brief(
     history: archive ? await archive.history_snapshot() : undefined,
   });
   let { notes, duration_seconds } = selected;
-  let form = musical_form(duration_seconds);
+  let form = musical_form(duration_seconds, tempo_bpm);
   let { audio: bed, ...instrumentation } = committed
     ? { audio: decode_pcm(committed.backing), palette: instrument_palette(seed), renderer: 'mcp-committed', soundfont: null }
     : await render_backing(notes, seed, duration_seconds);
-  if (bed.length !== duration_seconds * SAMPLE_RATE) throw new RangeError('Committed backing duration does not match the arrangement');
-  let outputs: Record<string, Float64Array> = { instrumental: normalize(bed) };
+  if (bed.length !== Math.round(duration_seconds * SAMPLE_RATE)) throw new RangeError('Committed backing duration does not match the arrangement');
+  let outputs: Record<string, Float64Array> = { instrumental: normalize(bed, tempo_bpm) };
   let attempt: Record<string, unknown> | null = null;
   let alignment: unknown[] = [];
   let request_cost: Decimal | null = null;
@@ -199,18 +201,22 @@ export async function render_brief(
       ({ audio: bed, ...instrumentation } = await render_backing(notes, seed, duration_seconds));
     }
     const [modulator, carrier, melody, map] = align(utterance, text, musical_plan(seed).root, {
-      melody_seed: seed, form, ...(committed ? { timing: committed.result.syllable_timing } : {}),
+      melody_seed: seed, form, tempo_bpm, ...(committed ? { timing: committed.result.syllable_timing } : {}),
     });
     if (!committed) notes.push(...melody);
     melodies.vocal = melody.map((note) => note.pitch);
     alignment = map;
-    outputs = { vocoded: mix(bed, vocode(modulator, carrier)), spoken: mix(bed, committed ? modulator : place_spoken(utterance, duration_seconds)) };
+    outputs = {
+      vocoded: mix(bed, vocode(modulator, carrier), tempo_bpm),
+      spoken: mix(bed, committed ? modulator : place_spoken(utterance, duration_seconds), tempo_bpm),
+    };
     write_wav(join(directory, 'source-speech.wav'), utterance.audio);
     write_wav(join(directory, 'aligned-speech.wav'), modulator);
   }
   const report = committed?.result.similarity ?? (archive ? await archive.record_local_output(attempt_id, melodies) : screen(melodies));
   save_json(join(directory, 'composition.json'), {
-    seed, generator_version: 'earwyrm-phrase-v2', form, similarity: report, instrumentation,
+    seed, generator_version: tempo_bpm === undefined ? 'earwyrm-phrase-v2' : 'earwyrm-score-v1',
+    ...(tempo_bpm === undefined ? {} : { tempo_bpm }), form, similarity: report, instrumentation,
     timing_granularity: provider ? (committed ? 'committed-syllable' : 'word') : null,
   });
   save_json(join(directory, 'score.json'), notes);
@@ -259,7 +265,7 @@ export async function render_brief(
   for (const row of rows) {
     row.render_seconds = elapsed;
     row.render_time_basis = 'Shared brief render, including synthesis and both mixes';
-    row.numeric_gates = gate(row.duration_seconds, elapsed, request_cost?.toNumber() ?? 0, duration_seconds);
+    row.numeric_gates = gate(row.duration_seconds, elapsed, request_cost?.toNumber() ?? 0, duration_seconds, tempo_bpm);
     if (row.numeric_gates === 'Fail') row.status = 'Fail';
   }
   save_json(join(directory, 'manifest.json'), {

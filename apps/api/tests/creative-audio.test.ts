@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { FRAMES, SAMPLE_RATE, Seed, compose, instrument_palette, jingle_duration, mix, musical_form, musical_plan, normalize, parse_seed, seeded_random, synthesize, tone, vocode, write_midi, write_wav } from "../src/dsp.js";
 import { render_backing } from "../src/backing.js";
 import { CompositionRequest, PreviewCompositionRequest, arrange, arrange_preview, preview_duration } from "../src/melody.js";
 import { KNOWN_TUNES, SimilarityError, screen, select_screened, similarity } from "../src/similarity.js";
+import { ArrangementScore, compile_score, score_lyric_timing } from "../src/score_dsl.js";
+import { JobConflict, MelodyService } from "../src/melody_service.js";
 import { align, decode_pcm, place_spoken, speech_settings, validate_utterance, type Utterance } from "../src/speech.js";
 import { JingleTools } from "../src/jingle_tools.js";
 import { load_inputs, render_brief } from "../src/render.js";
@@ -18,6 +20,17 @@ afterEach(() => {
 const request_data = () => ({
   logical_job_id: "test-version-1", product_path: "vocoded", lyrics: "Cedar Loop brings bright sound to your day", seed: 42,
   lines: [{ text: "Cedar Loop brings bright sound to your day", syllables: ["Ce", "dar", "Loop", "brings", "bright", "sound", "to", "your", "day"], start_seconds: 3, end_seconds: 7 }],
+});
+const score_data = () => ({
+  schema_version: 1, style: "retro-synth", tempo_bpm: 120, time_signature: "4/4",
+  key_root: 2, mode: "major", bars: 8, progression: [0, 5, 3, 4], hook_motif: [0, 2, 4, 2],
+  tracks: [
+    { instrument: "pad", events: [{ step: 0, degree: 0, duration_steps: 8 }] },
+    { instrument: "bass", events: [{ step: 0, degree: 0, duration_steps: 2 }, { step: 5, degree: 2, duration_steps: 1 }] },
+    { instrument: "lead", events: [{ step: 3, degree: 2, duration_steps: 1 }] },
+    { instrument: "kick", events: [{ step: 0, duration_steps: 1 }] },
+    { instrument: "hat", events: [{ step: 2, duration_steps: 1 }] },
+  ],
 });
 
 function speech(): Utterance {
@@ -49,6 +62,8 @@ describe("creative score contracts", () => {
     const tools = new JingleTools(join(directory, 'melody'));
     const input = CompositionRequest.parse(request_data());
     const result = await tools.compose(input), committed = await tools.artifacts(result);
+    await expect(tools.artifacts({ ...result, duration_seconds: result.duration_seconds - 2 }))
+      .rejects.toThrow('Composition score exceeds its duration');
     const matches = [...input.lyrics.matchAll(/[A-Za-z]+/g)];
     const audio = new Float64Array(matches.length * 0.2 * SAMPLE_RATE);
     const words = matches.map((match, index) => {
@@ -248,6 +263,199 @@ describe("creative score contracts", () => {
     expect(() => jingle_duration(42, 31)).toThrow();
     expect(() => synthesize(compose(42), { seed: 42, duration_seconds: 16 })).toThrow("Invalid note");
     expect(() => mix(new Float64Array(16 * SAMPLE_RATE), new Float64Array(18 * SAMPLE_RATE))).toThrow("equal");
+  });
+});
+
+describe("arrangement score DSL", () => {
+  it("expands versioned patterns deterministically and aligns vocal pitches to accepted lyric timing", () => {
+    const request = CompositionRequest.parse(request_data());
+    const timing = arrange(request, 42).timing;
+    const score = ArrangementScore.parse(score_data());
+    const compiled = compile_score(score, timing);
+    expect(compiled).toEqual(compile_score(score, timing));
+    expect(compiled.duration_seconds).toBe(16);
+    expect(compiled.backing).toHaveLength(8 * 6);
+    expect(compiled.backing.find(note => note.instrument === "pad")).toMatchObject({
+      start: 0, duration: 2, pitch: 50, instrument: "pad", gain: 0.04,
+    });
+    expect(compiled.chords[0]).toMatchObject({ root_midi: 50, pitches: [50, 54, 57] });
+    expect(compile_score({ ...score_data(), mode: "minor" }, timing).chords[0]).toMatchObject({ pitches: [50, 53, 57] });
+    expect(compiled.vocal.map(note => [note.start, note.duration, note.pitch]))
+      .toEqual(compiled.timing.map(row => [row.start_seconds, row.duration_seconds, row.midi_note]));
+    expect(compiled.similarity.passed).toBe(true);
+    expect(compiled.melodies).toEqual({
+      lead: [78, 86, 83, 85, 78, 86, 83, 85],
+      vocal: compiled.vocal.map(note => note.pitch),
+    });
+    expect(compiled.backing.every(note => note.start + note.duration <= compiled.duration_seconds)).toBe(true);
+    expect(() => compile_score(score, timing, { "test:prior-score": compiled.melodies.lead })).toThrow(SimilarityError);
+  });
+  it("rejects unsupported score bounds, duplicate roles, bar-crossing events, and invalid lyric timing", () => {
+    const score = score_data();
+    expect(ArrangementScore.safeParse({ ...score, tempo_bpm: 100, bars: 8 }).success).toBe(true);
+    expect(ArrangementScore.safeParse({ ...score, tempo_bpm: 140, bars: 12 }).success).toBe(true);
+    expect(ArrangementScore.safeParse({ ...score, tempo_bpm: 141 }).success).toBe(false);
+    expect(ArrangementScore.safeParse({ ...score, unknown: true }).success).toBe(false);
+    expect(ArrangementScore.safeParse({ ...score, tracks: [...score.tracks, score.tracks[0]] }).success).toBe(false);
+    const unsupported = score.tracks.map(track => track.instrument === "hat" ? { ...track, instrument: "harp" } : track);
+    expect(ArrangementScore.safeParse({ ...score, tracks: unsupported }).success).toBe(false);
+    const crossing = score.tracks.map(track => track.instrument === "lead"
+      ? { ...track, events: [{ step: 7, degree: 0, duration_steps: 2 }] }
+      : track);
+    expect(ArrangementScore.safeParse({ ...score, tracks: crossing }).success).toBe(false);
+    const timing = arrange(CompositionRequest.parse(request_data()), 42).timing.map(row => ({ ...row }));
+    expect(() => compile_score(score, timing.slice(0, 7))).toThrow();
+    timing[1] = { ...timing[1]!, start_seconds: timing[0]!.start_seconds };
+    expect(() => compile_score(score, timing)).toThrow("ordered");
+  });
+});
+
+describe("tempo-aware score rendering", () => {
+  it("uses the declared MIDI tempo and keeps fractional audio and speech buffers sample-aligned", async () => {
+    vi.stubEnv("EARWYRM_SOUNDFONT", undefined);
+    const request = CompositionRequest.parse(request_data());
+    const score = { ...score_data(), tempo_bpm: 140, bars: 12 };
+    const compiled = compile_score(score, arrange(request, 42).timing);
+    const notes = [...compiled.backing, ...compiled.vocal];
+    const frames = Math.round(compiled.duration_seconds * SAMPLE_RATE);
+    const rendered = await render_backing(notes, 42, compiled.duration_seconds, score.tempo_bpm);
+    expect(rendered.audio).toHaveLength(frames);
+    expect(normalize(rendered.audio, score.tempo_bpm)).toHaveLength(frames);
+    expect(mix(rendered.audio, new Float64Array(frames).fill(0.01), score.tempo_bpm)).toHaveLength(frames);
+    const directory = join(process.cwd(), `.creative-audio-${randomUUID()}`);
+    mkdirSync(directory); paths.push(directory);
+    expect(place_spoken({
+      audio: new Float64Array(SAMPLE_RATE).fill(0.01), words: [], result_id: "TEST-ONLY",
+    }, compiled.duration_seconds, score.tempo_bpm)).toHaveLength(frames);
+    expect(() => place_spoken({
+      audio: new Float64Array(SAMPLE_RATE).fill(0.01), words: [], result_id: "TEST-ONLY",
+    }, compiled.duration_seconds)).toThrow("whole bars");
+    const timing = [
+      { line_index: 0, syllable_index: 0, syllable: "Cedar", start_seconds: 3, duration_seconds: 0.5, midi_note: 60 },
+      { line_index: 0, syllable_index: 1, syllable: "Loop", start_seconds: 4, duration_seconds: 0.5, midi_note: 62 },
+    ];
+    const form = { duration_seconds: compiled.duration_seconds, hook_start_seconds: 8, cadence_start_seconds: compiled.duration_seconds - 2 };
+    const [modulator, carrier, vocal_notes] = align(speech(), "Cedar Loop", 60, { timing, form, tempo_bpm: score.tempo_bpm });
+    expect(modulator).toHaveLength(frames);
+    expect(carrier).toHaveLength(frames);
+    expect(vocal_notes.map(note => [note.start, note.duration, note.pitch]))
+      .toEqual(timing.map(row => [row.start_seconds, row.duration_seconds, row.midi_note]));
+    expect(() => align(speech(), "Cedar Loop", 60, { timing, form })).toThrow();
+    expect(() => normalize(rendered.audio)).toThrow("whole bars");
+    expect(() => write_midi(join(directory, "invalid.mid"), notes, compiled.duration_seconds)).toThrow("whole bars");
+    expect(CompositionRequest.safeParse({ ...request_data(), duration_seconds: 16.5 }).success).toBe(false);
+
+    const midi_path = join(directory, "tempo.mid");
+    write_midi(midi_path, notes, compiled.duration_seconds, instrument_palette(42), score.tempo_bpm);
+    const midi = readFileSync(midi_path);
+    expect(midi.subarray(22, 26)).toEqual(Buffer.from([0, 255, 81, 3]));
+    let offset = 22, ticks = 0, tempo = 0, end_tick = 0;
+    while (offset < midi.length) {
+      let delta = 0, byte: number;
+      do { byte = midi[offset++]!; delta = delta * 128 + (byte & 127); } while (byte & 128);
+      ticks += delta;
+      const status = midi[offset++]!;
+      if (status === 255) {
+        const type = midi[offset++]!, length = midi[offset++]!;
+        if (type === 81) tempo = midi[offset]! * 65536 + midi[offset + 1]! * 256 + midi[offset + 2]!;
+        offset += length;
+        if (type === 47) { end_tick = ticks; break; }
+      } else if ((status & 240) === 192) offset++;
+      else offset += 2;
+    }
+    expect(tempo).toBe(Math.round(60_000_000 / score.tempo_bpm));
+    expect(end_tick).toBe(score.bars * 1920);
+  });
+});
+
+describe("durable score render jobs", () => {
+  const request = () => {
+    const score = ArrangementScore.parse(score_data());
+    const timing = score_lyric_timing(score, ["Cedar Loop brings bright sound to your day"], {});
+    return {
+      schema_version: 1 as const, logical_job_id: "score-job", request_sha256: "a".repeat(64), product_path: "vocoded" as const,
+      score, timing, provider: { provider: "injected" as const, deployment: null },
+    };
+  };
+  function root() {
+    const directory = join(process.cwd(), `.score-render-test-${randomUUID()}`);
+    mkdirSync(directory);
+    paths.push(directory);
+    return directory;
+  }
+
+  it("recovers committed artifacts, rejects changed requests, and detects digest mismatches", async () => {
+    const service = new MelodyService(join(root(), "melody")), input = request();
+    const committed = await service.submit_score(input);
+    expect(await service.submit_score(input)).toEqual(committed);
+    expect(JSON.parse((await service.read_artifact(committed.job_id, "provenance.json")).toString()))
+      .toMatchObject({ score_schema_version: 1, provider: input.provider });
+
+    const changed = {
+      ...input,
+      score: ArrangementScore.parse({ ...score_data(), tempo_bpm: 121 }),
+    };
+    await expect(service.submit_score(changed)).rejects.toBeInstanceOf(JobConflict);
+    writeFileSync(join(service.artifact_dir, committed.job_id, "score.mid"), "tampered");
+    await expect(service.read_artifact(committed.job_id, "score.mid")).rejects.toThrow("integrity check failed");
+  });
+
+  it("cleans up a failed render so the committed score can render on retry", async () => {
+    const directory = join(root(), "melody"), input = request();
+    const failing = new MelodyService(directory, {
+      render_backing: async () => { throw new Error("test renderer failure"); },
+    });
+    await expect(failing.submit_score(input)).rejects.toThrow("test renderer failure");
+    expect(readdirSync(failing.artifact_dir)).toEqual([]);
+    const retry = new MelodyService(directory);
+    const committed = await retry.submit_score(input);
+    expect(committed.logical_job_id).toBe(input.logical_job_id);
+    expect(await retry.read_artifact(committed.job_id, "backing.wav")).toBeInstanceOf(Buffer);
+  });
+
+  it.each(["legacy", "score"] as const)("cleans up %s INSERT and COMMIT failures while preserving recovered jobs", async kind => {
+    const service = new MelodyService(join(root(), "melody"), {
+      render_backing: async (_notes, seed, duration) => ({
+        audio: new Float64Array(duration * SAMPLE_RATE).fill(0.1), palette: instrument_palette(seed), renderer: "oscillator", soundfont: null,
+      }),
+    });
+    await service.init();
+    const submit = () => kind === "legacy"
+      ? service.submit(CompositionRequest.parse(request_data()))
+      : service.submit_score(request());
+    const connect = vi.spyOn(service, "_connect");
+    try {
+      for (const phase of ["INSERT", "COMMIT"]) {
+        const connection = await service._connect();
+        const failure = new Error(`injected ${phase} failure`);
+        if (phase === "COMMIT") connection.commit = async () => { throw failure; };
+        else {
+          const execute = connection.execute.bind(connection);
+          connection.execute = async (sql, params) => {
+            if (sql.startsWith("INSERT INTO render_jobs")) throw failure;
+            return execute(sql, params);
+          };
+        }
+        connect.mockResolvedValueOnce(connection);
+        await expect(submit()).rejects.toThrow(failure.message);
+        expect(readdirSync(service.artifact_dir)).toEqual([]);
+        const check = await service._connect();
+        try { expect((await check.execute("SELECT job_id FROM render_jobs")).rows).toEqual([]); }
+        finally { await check.close(); }
+      }
+      const committed = await submit();
+      const backing = await service.read_artifact(committed.job_id, "backing.wav");
+      const connection = await service._connect();
+      connection.commit = async () => { throw new Error("injected recovery COMMIT failure"); };
+      connect.mockResolvedValueOnce(connection);
+      await expect(submit()).rejects.toThrow("injected recovery COMMIT failure");
+      expect(await submit()).toEqual(committed);
+      expect(readdirSync(service.artifact_dir)).toEqual([committed.job_id]);
+      expect(await service.read_artifact(committed.job_id, "backing.wav")).toEqual(backing);
+      const check = await service._connect();
+      try { expect((await check.execute("SELECT job_id FROM render_jobs")).rows).toEqual([{ job_id: committed.job_id }]); }
+      finally { await check.close(); }
+    } finally { connect.mockRestore(); }
   });
 });
 

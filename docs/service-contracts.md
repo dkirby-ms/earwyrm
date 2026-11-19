@@ -96,6 +96,7 @@ billable units in that request. Use metered deployments with verifiable prices.
 | Discuss | 2 | 2 |
 | Write a draft | 9 | 2 |
 | Generate 3 lyric options | 27 | 6 |
+| Compose a score | 1 | 0 |
 
 The API reserves the entire action cost before contacting either provider.
 Requests larger than 64 KiB after serialization are blocked by the web
@@ -105,11 +106,59 @@ and does not automatically reset or credit unused calls. It is an app-side
 upper-bound ledger, not Azure invoice tracking or a subscription-wide cap.
 Standalone MCP does not use this web ledger.
 
-Composition accepts only an owner-scoped, accepted, immutable lyric option.
-Its stable logical ID recovers one private music preview after a lost response,
-including partially published runs. The web preview's completed status means
-its backing is available, not that the composition queue job delivered vocals.
-That queue row stays queued; this flow consumes committed artifacts synchronously.
+The web app's deterministic `/api/arrangements` previews and `/api/chat` `compose`
+action do not call the score model. Paid score composition is separate and
+requires an owner-scoped, accepted lyric option plus literal per-request consent
+(`confirm_paid_generation: true`). The UI requires a one-shot confirmation for
+the selected option and shows the maximum model-call cost first.
+
+Each `/api/score/compose` provider attempt makes at most one structured
+score-model request. The route uses the same Foundry deployment and text budget
+settings above, reserves the full `LYRIC_MODEL_CALL_MAX_USD` ceiling before the
+provider call, and shares `LYRIC_TOTAL_BUDGET_USD` with chat and lyric
+generation. It validates the returned versioned score, screens the resulting
+melody, then compiles and renders tempo-aware MIDI and backing audio locally.
+The score, provider provenance and digest-bearing artifacts use the durable job
+store.
+
+The score job ID is stable for the accepted option. Repeating the same request
+recovers the committed score and artifacts without another model call; changed
+input under the same ID conflicts. If rendering fails after the score is
+committed, retry that same request to recover the render without another
+provider call. If the provider outcome is ambiguous, the API returns
+`provider_outcome_unknown` with `retryable: false` and blocks another attempt.
+An application administrator may use
+`POST /api/admin/score-reservations/reconcile` only after provider and billing
+evidence confirms that the request was not accepted. The API records a bounded
+evidence reference; it does not verify the external provider or billing record.
+If a process stopped while the ledger still says `submitted`, the administrator
+must stop the original submitter and additionally send
+`confirmed_submission_stopped: true`. Do not infer this from elapsed time.
+The recorded attempt number fences late result/failure writes. Reconciled
+retries recheck the current shared total and retain or increase the original
+reservation to cover the current model-call ceiling; they never refund it.
+
+Successful paid score composition publishes the same owner-scoped playable
+preview shape used by deterministic composition. The listening workspace can
+select it for vocals on the exact committed backing, MIDI and syllable timing,
+including tempo-derived fractional durations. Repeating the accepted option
+recovers its score and published preview without another model call.
+
+Score inference exposes OpenTelemetry API client spans and a duration histogram
+in seconds, with provider-reported input/output token counts when present.
+Missing counts remain unknown; they are not estimated from bytes. The runtime
+host must register the SDK, exporter, context propagator and required resource
+attributes (`service.name`, `service.version`, `deployment.environment` and
+`telemetry.sdk.*`). Without host setup this API instrumentation is a no-op;
+export has not been verified by the offline tests. Prompts, briefs, lyrics,
+contact details and raw provider output are not emitted.
+
+The `/api/chat` `compose` action accepts only an owner-scoped, accepted,
+immutable lyric option. Its stable logical ID recovers one private deterministic
+music preview after a lost response, including partially published runs. The
+web preview's completed status means its backing is available, not that the
+composition queue job delivered vocals. That queue row stays queued; this flow
+consumes committed artifacts synchronously.
 
 Paid vocal rendering selects the published job with `composition_selections`
 and its accepted option with `lyric_selections`. The existing estimate and

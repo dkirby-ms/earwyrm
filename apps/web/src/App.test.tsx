@@ -149,7 +149,15 @@ function installMocks(
               { option_id: 'unavailable-option', brief_id: 'brief-001', status: 'unavailable', output: null, reasons: ['duplicate_option'], ai_generated: true, broadcast_approval_required: true },
             ],
           }
-        : { available: Boolean(capabilities.lyrics), option_count: 3 },
+        : {
+            available: Boolean(capabilities.lyrics),
+            score_compose_max_usd: capabilities.lyrics ? '0.01' : null,
+            option_count: 3,
+          },
+      '/api/score/compose': {
+        tool: 'compose_score', job_id: 'score-job', status: 'committed',
+        score: { bars: 8, tempo_bpm: 120 },
+      },
       '/api/render-options': {
         instrumental_available: true,
         speech_status: capabilities.vocals ? 'available' : 'disabled',
@@ -879,6 +887,69 @@ describe('React workspace', () => {
       lyric_selections: [{ brief_id: 'brief-001', option_id: 'accepted-option' }],
       confirmation: { input_fingerprint: 'a'.repeat(64) },
     })
+  })
+
+  it('requires one-shot paid consent for AI scores while keeping deterministic previews available', async () => {
+    const user = userEvent.setup()
+    installDialogMock()
+    const { fetchMock } = installMocks(false, { lyrics: true, vocals: true })
+    const respond = fetchMock.getMockImplementation()!
+    let generated = false
+    const scoreOutput = {
+      ...output, output_id: 'score-output', run_id: 'score-job', variant: 'instrumental',
+      composition_source: { job_id: 'score-job', option_id: 'accepted-option' },
+      lyric_source: { option_id: 'accepted-option', hook: 'Original hook', lyrics: 'Original hook\nCall today' },
+    }
+    fetchMock.mockImplementation(async (input, init) => {
+      const path = new URL(String(input), window.location.origin).pathname
+      if (path === '/api/score/compose') {
+        generated = true
+        return Response.json({
+          tool: 'compose_score', job_id: 'score-job', status: 'committed',
+          score: { bars: 8, tempo_bpm: 120 },
+        })
+      }
+      if (generated && path === '/api/renders' && init?.method !== 'POST') {
+        return Response.json({ runs: [{ run_id: 'score-job', mode: 'instrumental', brief_ids: ['brief-001'], status: 'completed' }] })
+      }
+      if (generated && path === '/api/outputs') return Response.json({ outputs: [scoreOutput] })
+      return respond(input, init)
+    })
+    render(<App />)
+    await user.click(await screen.findByRole('button', { name: 'Sign in with Entra External ID' }))
+    await user.click(screen.getByRole('button', { name: 'Open advanced lyric tools' }))
+    await user.click(screen.getByRole('checkbox', { name: /I authorize paid Foundry/ }))
+    await user.click(screen.getByRole('button', { name: 'Generate 3 lyric options' }))
+    await user.click(await screen.findByRole('button', { name: 'Use option 1' }))
+
+    const preview = screen.getByRole('button', { name: 'Build MCP music preview' })
+    const compose = screen.getByRole('button', { name: 'Generate AI arrangement' })
+    const consent = screen.getByRole('checkbox', { name: /one paid AI arrangement request for up to \$0\.01/ })
+    expect(preview).toBeEnabled()
+    expect(compose).toBeDisabled()
+    expect(fetchMock.mock.calls.filter(([input]) =>
+      new URL(String(input), window.location.origin).pathname === '/api/score/compose')).toHaveLength(0)
+
+    await user.click(consent)
+    await user.click(compose)
+    expect(await screen.findByText('AI arrangement score generated: 8 bars at 120 BPM.')).toBeVisible()
+    const estimate = screen.getByRole('button', { name: 'Estimate vocals on this arrangement' })
+    expect(estimate).toBeEnabled()
+    await user.click(estimate)
+    const selected = fetchMock.mock.calls.find(([input, init]) =>
+      new URL(String(input), window.location.origin).pathname === '/api/renders/estimate' && init?.method === 'POST')
+    expect(JSON.parse(String(selected?.[1]?.body))).toMatchObject({
+      composition_selections: [{ brief_id: 'brief-001', job_id: 'score-job' }],
+      lyric_selections: [{ brief_id: 'brief-001', option_id: 'accepted-option' }],
+    })
+    expect(consent).not.toBeChecked()
+    const submitted = fetchMock.mock.calls.find(([input]) =>
+      new URL(String(input), window.location.origin).pathname === '/api/score/compose')
+    expect(JSON.parse(String(submitted?.[1]?.body))).toMatchObject({
+      brief_ids: ['brief-001'], option_id: 'accepted-option', confirm_paid_generation: true,
+    })
+    expect(fetchMock.mock.calls.filter(([input, init]) =>
+      new URL(String(input), window.location.origin).pathname === '/api/score/compose' && init?.method === 'POST')).toHaveLength(1)
   })
 
   it('loads protected audio from a version row and reports playback failures explicitly', async () => {
