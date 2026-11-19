@@ -83,7 +83,8 @@ application permissions. Operators can also use
    back in the third, and resolve the call to action into an instrumental tag.
    They usually run 14 to 20 seconds.
    Longer briefs can extend the music to fit the complete call to action.
-   Generating again reopens the current set; older previews remain in history.
+   Generating again reopens the current set while it is retained.
+   Unreferenced preview sets expire after seven days.
 3. Authorize **Generate 3 lyric drafts**. The writer fits the rhyming drafts to
    the selected arrangement. Choose an eligible draft to continue. If you
    change the music, only drafts fitted to the new selection are shown.
@@ -95,6 +96,36 @@ application permissions. Operators can also use
 4. Select **Estimate voice demo** and confirm the estimate to render the selected
    lyrics over the same backing. In **Listen & review**, play, download, or review
    the demo. Use **Generation history** to find earlier runs.
+
+### Arrangement preview limits
+
+The server allows 20 new arrangement requests per account in a rolling 24-hour
+window and 1 GiB of preview media per account. A request reserves 12 MiB before
+creating its three jobs, then settles to the measured melody-artifact and output
+audio bytes after all three previews are published. Failed or interrupted requests
+keep their reservation; retry the same brief to recover without another charge.
+Cached retries do not consume a new request allowance. Limits persist across
+restarts and are shared by all API instances using the store.
+
+A global 20-GiB ceiling counts all saved audio and melody artifacts, including
+orphaned media, plus outstanding preview reservations. This deliberately leaves
+headroom on the 100-GiB share; it is not a quota for other rendering workflows.
+Quota failures return HTTP 429 before new preview jobs are created.
+
+Before admitting previews, the server removes unreferenced sets older than seven
+days, including their audio, melody artifacts, job rows, and preview run records.
+Sets referenced by saved lyrics, other renders, or evaluations are preserved.
+Selecting a preview for fitted lyrics or rendering durably pins its entire set
+before artifact reads, so cleanup cannot race downstream work. Pins are
+conservative and remain even if downstream generation fails. Retained sets still
+count toward storage quotas. Expired sets disappear from history and can be
+generated again, subject to the same quotas.
+
+Existing guided-preview jobs are adopted into storage accounting on the next
+arrangement request. Unowned committed jobs count toward global media usage.
+Unrecognized orphan files are counted but are not automatically deleted.
+SQLite adds the ledger on initialization; the existing PostgreSQL additive
+upgrade path adds it without resetting data (`npm run database -- upgrade`).
 
 For JSON upload, provide one object with `name`, `offer`, `location`,
 `contact_details` (`email` and `phone`), `tone`, `approved_claims`, and `cta`.

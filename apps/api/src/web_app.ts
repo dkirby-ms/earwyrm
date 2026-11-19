@@ -15,6 +15,7 @@ import { has_cta_rhyme, LyricRequest, LyricResult, LyricRuleError, validate_draf
 import { bind_timing, digest, GuidedPreview, guided_pronunciations, known_meter, phrase_counts } from './guided_arrangement.js';
 import { PreviewCompositionRequest, preview_duration } from './melody.js';
 import { MelodyService, CompositionUnavailable } from './melody_service.js';
+import { PreviewQuotaExceeded } from './preview_quota.js';
 import { SimilarityError } from './similarity.js';
 import { ChatMessage, ChatSelection, composition_request, type JingleAdvisor } from './jingle_chat.js';
 import { JingleToolError, JingleTools } from './jingle_tools.js';
@@ -251,7 +252,8 @@ export type WebAppStorage = Pick<WebStorage,
   'has_unreconciled_paid_attempt' | 'create_run' | 'reserve_paid_run' | 'mark_attempt_submitted' |
   'save_output' | 'set_run_status' | 'finish_attempt' | 'get_run' | 'list_runs' | 'list_outputs' |
   'get_output' | 'audio_path' | 'save_evaluation' | 'reconcile_attempt' |
-  'save_lyric_option' | 'list_lyric_options' | 'get_lyric_option' | 'has_lyric_budget' | 'reserve_lyric_action'>;
+  'save_lyric_option' | 'list_lyric_options' | 'get_lyric_option' | 'has_lyric_budget' | 'reserve_lyric_action' |
+  'reserve_previews' | 'complete_previews' | 'pin_preview'>;
 /** All providers, persistence and identity fetchers remain lazy until a route needs them. */
 export interface CreateAppOptions {
   environ?: Environment;
@@ -357,6 +359,9 @@ export function create_app(options: CreateAppOptions = {}): Express {
     }
     const source = metadata.data;
     if (source.brief_sha256 !== brief_digest(selected)) throw new HttpError(409, 'Arrangement does not match the current brief');
+    const store = await storage();
+    const melody = new MelodyService(join(store.root, 'melody'), { database_url: store.database_url ?? undefined });
+    if (!await store.pin_preview(melody, job_id, owner)) throw new HttpError(404, 'Arrangement preview was not found for this brief');
     const tools = await jingle_tools();
     const committed = await tools.get(job_id);
     if (committed.artifacts['backing.wav']?.sha256 !== source.backing_sha256 ||
@@ -623,6 +628,9 @@ export function create_app(options: CreateAppOptions = {}): Express {
       const { issuer, subject: owner } = identity(response);
       const brief_sha256 = brief_digest(selected!);
       const melody = new MelodyService(join(store.root, 'melody'), { database_url: store.database_url ?? undefined });
+      const request_key = digest([issuer, owner, brief_sha256, 'guided-v3']);
+      const logical_ids = [0, 1, 2].map(index => `guided-v3-${digest([issuer, owner, brief_sha256, index])}`);
+      await store.reserve_previews(melody, owner, request_key, logical_ids);
       const arrangements = [];
       for (let index = 0; index < 3; index++) {
         const started = performance.now();
@@ -662,6 +670,7 @@ export function create_app(options: CreateAppOptions = {}): Express {
         if (run?.status !== 'completed') await store.set_run_status(job_id, 'completed');
         arrangements.push({ job_id, label, output: public_output(output) });
       }
+      await store.complete_previews(melody, request_key);
       response.json({ arrangements });
     } catch (error) {
       if (!(error instanceof SimilarityError || error instanceof CompositionUnavailable)) throw error;
@@ -1071,6 +1080,7 @@ export function create_app(options: CreateAppOptions = {}): Express {
       response.status(422).json({ detail: error.issues.map(issue => issue.message).join('; ') }); return;
     }
     if (error instanceof StorageAccessDenied) { response.status(403).json({ detail: error.message }); return; }
+    if (error instanceof PreviewQuotaExceeded) { response.status(429).json({ detail: error.message }); return; }
     if (error instanceof StorageConflict) { response.status(409).json({ detail: error.message }); return; }
     if (error instanceof JingleToolError) { response.status(503).json({ detail: 'Composition artifacts are unavailable' }); return; }
     if (error instanceof StoreNotInitialized || is_storage_error(error)) {

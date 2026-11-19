@@ -1,22 +1,23 @@
 import { randomUUID, createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { afterEach, describe, expect, it } from "vitest";
-import { CompositionRequest } from "../src/melody.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { CompositionRequest, PreviewCompositionRequest } from "../src/melody.js";
 import { CompositionResult, CompositionUnavailable, JobConflict, JobNotFound, MelodyService } from "../src/melody_service.js";
 import { SimilarityError } from "../src/similarity.js";
 import { parse_seed_json } from "../src/persistence.js";
 import { canonical_json, STATIC_ROOT, StorageAccessDenied, StorageConflict, StorageNotFound, WebStorage, type PaidRunOptions } from "../src/web_storage.js";
 import { main } from "../src/bootstrap_database.js";
+import { media_bytes, PREVIEW_GLOBAL_BYTES, PREVIEW_OWNER_BYTES, PREVIEW_REQUEST_BYTES, PreviewQuotaExceeded } from "../src/preview_quota.js";
 
 const directories: string[] = [];
 function directory(): string {
   const root = join(process.cwd(), `.storage-test-${randomUUID()}`);
   mkdirSync(root, { mode: 0o700 }); directories.push(root); return root;
 }
-afterEach(() => { for (const root of directories.splice(0)) rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { vi.restoreAllMocks(); for (const root of directories.splice(0)) rmSync(root, { recursive: true, force: true }); });
 const issuer = "https://identity.example.test/tenant";
 const permissions = { enabled: true, admin: true, paid_speech: true };
 function reservation(suffix: string): PaidRunOptions {
@@ -33,10 +34,11 @@ async function output(store: WebStorage) {
   return store.save_output({ run_id: "run", owner: "owner", manifest: { brief_id: "brief", variant: "instrumental" }, audio: Buffer.from("private audio") });
 }
 /** Starts two independent runtimes at a shared barrier, exercising actual SQLite locking rather than the JS mutex. */
-async function concurrent_processes(root: string, mode: "paid" | "evaluation" | "job", output_id = ""): Promise<unknown[]> {
+async function concurrent_processes(root: string, mode: "paid" | "evaluation" | "job" | "preview", output_id = ""): Promise<unknown[]> {
   const script = `
     import {WebStorage,StorageConflict} from "./src/web_storage.ts";
     import {MelodyService} from "./src/melody_service.ts";
+    import {PreviewQuotaExceeded} from "./src/preview_quota.ts";
     const [root,mode,output_id,suffix,request]=JSON.parse(process.env.EARWYRM_CONCURRENCY_INPUT);
     const store=new WebStorage(root),melody=new MelodyService(root+"/melody");
     await store.init();await melody.init();
@@ -45,6 +47,9 @@ async function concurrent_processes(root: string, mode: "paid" | "evaluation" | 
     if(mode==="paid"){
       try{await store.reserve_paid_run({run_id:suffix,attempt_id:suffix,owner:"owner",brief_ids:["brief"],per_brief_estimates:{brief:"0.01"},estimated_cost_usd:"0.01",submitted_characters:1,total_budget_usd:"1",evidence:{}});result="reserved";}
       catch(error){if(!(error instanceof StorageConflict))throw error;result="blocked";}
+    }else if(mode==="preview"){
+      try{await store.reserve_previews(melody,"owner",suffix,["guided-v3-"+(suffix==="a"?"a":"b").repeat(64)]);result="reserved";}
+      catch(error){if(!(error instanceof PreviewQuotaExceeded))throw error;result="blocked";}
     }else if(mode==="evaluation"){
       result=await store.save_evaluation({output_id,owner:"owner",brand_transcription:suffix,cta_transcription:"cta",self_rating:"usable",brand_match:true,cta_match:true});
     }else{result=(await melody.submit(request)).job_id;}
@@ -76,6 +81,157 @@ async function concurrent_processes(root: string, mode: "paid" | "evaluation" | 
   try { return await Promise.all(results); }
   finally { for (const child of children) if (child.exitCode === null) child.kill("SIGTERM"); }
 }
+
+describe("durable arrangement preview quotas", () => {
+  const logical_id = (key: string) => `guided-v3-${createHash("sha256").update(key).digest("hex")}`;
+
+  /** Publishes one real guided job so retention checks cover both stores and media trees. */
+  async function saved_preview(store: WebStorage, melody: MelodyService) {
+    const logical = logical_id("retention");
+    await store.reserve_previews(melody, "owner", "retention", [logical]);
+    const job = await melody.submit(PreviewCompositionRequest.parse({
+      logical_job_id: logical, product_path: "vocoded", duration_seconds: 20,
+      syllables_per_line: [10, 10, 10, 8], seed: 42,
+    }));
+    await store.create_run(job.job_id, "owner", "instrumental", ["brief"]);
+    const output = await store.save_output({
+      run_id: job.job_id, owner: "owner", audio: await melody.read_artifact(job.job_id, "backing.wav"),
+      manifest: { brief_id: "brief", variant: "instrumental", composition_source: { kind: "guided-preview", job_id: job.job_id } },
+    });
+    await store.complete_previews(melody, "retention");
+    return { job, output };
+  }
+
+  it("persists the rolling request cap, permits cache retries, and arbitrates independent processes", async () => {
+    const root = directory(), store = new WebStorage(root), melody = new MelodyService(join(root, "melody"));
+    for (let index = 0; index < 19; index++) await store.reserve_previews(melody, "owner", String(index), [logical_id(String(index))]);
+    expect((await concurrent_processes(root, "preview")).sort()).toEqual(["blocked", "reserved"]);
+    const reopened = new WebStorage(root);
+    await expect(reopened.reserve_previews(melody, "owner", "21", [logical_id("21")])).rejects.toBeInstanceOf(PreviewQuotaExceeded);
+    await reopened.reserve_previews(melody, "owner", "0", [logical_id("0")]);
+    await reopened.reserve_previews(melody, "other", "other", [logical_id("other")]);
+    const db = new DatabaseSync(store.database_path);
+    try {
+      expect(db.prepare("SELECT count(*) AS n FROM preview_reservations WHERE owner = 'owner'").get()?.n).toBe(20);
+      db.prepare("UPDATE preview_reservations SET created_at = ? WHERE request_key = '0'")
+        .run(new Date(Date.now() - 24 * 60 * 60 * 1000 - 1000).toISOString());
+    } finally { db.close(); }
+    await reopened.reserve_previews(melody, "owner", "next-day", [logical_id("next-day")]);
+    expect(await melody.preview_jobs()).toEqual([]);
+  });
+
+  it("reserves the exact owner-storage boundary before allowing any job creation", async () => {
+    const root = directory(), store = new WebStorage(root), melody = new MelodyService(join(root, "melody"));
+    await store.reserve_previews(melody, "owner", "existing", [logical_id("existing")]);
+    const db = new DatabaseSync(store.database_path);
+    try {
+      db.prepare("UPDATE preview_reservations SET reserved_bytes = ?").run(PREVIEW_OWNER_BYTES - PREVIEW_REQUEST_BYTES);
+    } finally { db.close(); }
+    await store.reserve_previews(melody, "owner", "at-limit", [logical_id("at-limit")]);
+    await expect(store.reserve_previews(melody, "owner", "over-limit", [logical_id("over-limit")])).rejects.toThrow("1 GiB");
+    await store.reserve_previews(melody, "other", "other", [logical_id("other")]);
+    expect(await melody.preview_jobs()).toEqual([]);
+  });
+
+  it("counts orphaned media and outstanding reservations at the exact global boundary", async () => {
+    const root = directory(), store = new WebStorage(root), melody = new MelodyService(join(root, "melody"));
+    await store.init();
+    const orphan = join(store.audio_dir, "orphan.wav");
+    writeFileSync(orphan, "");
+    truncateSync(orphan, PREVIEW_GLOBAL_BYTES - PREVIEW_REQUEST_BYTES);
+    await store.reserve_previews(melody, "owner", "last", [logical_id("last")]);
+    await expect(store.reserve_previews(melody, "other", "full", [logical_id("full")])).rejects.toThrow("storage is full");
+    await new WebStorage(root).reserve_previews(melody, "owner", "last", [logical_id("last")]);
+    expect(await melody.preview_jobs()).toEqual([]);
+    expect(statSync(orphan).size).toBe(PREVIEW_GLOBAL_BYTES - PREVIEW_REQUEST_BYTES);
+    truncateSync(orphan, PREVIEW_GLOBAL_BYTES);
+    await expect(store.reserve_previews(melody, "owner", "last", [logical_id("last")])).rejects.toThrow("storage is full");
+  });
+
+  it.each(["none", "lyrics", "render", "evaluation", "pin"] as const)(
+    "expires old artifacts and output rows only without saved references (%s)", async protection => {
+      const root = directory(), store = new WebStorage(root), melody = new MelodyService(join(root, "melody"));
+      const { job, output } = await saved_preview(store, melody);
+      if (protection === "pin") expect(await store.pin_preview(melody, job.job_id, "owner")).toBe(true);
+      expect(await store.pin_preview(melody, job.job_id, "other")).toBe(false);
+      if (protection === "render") {
+        await store.create_run("render", "owner", "instrumental", ["brief"]);
+        await store.save_output({ run_id: "render", owner: "owner", audio: Buffer.from("render"),
+          manifest: { brief_id: "brief", variant: "instrumental", composition_source: { job_id: job.job_id } } });
+      }
+      if (protection === "evaluation") {
+        await store.save_evaluation({ output_id: output.output_id, owner: "owner", brand_transcription: "brand",
+          cta_transcription: "cta", self_rating: "usable", brand_match: true, cta_match: true });
+      }
+      const db = new DatabaseSync(store.database_path);
+      try {
+        const row = db.prepare("SELECT reserved_bytes FROM preview_reservations").get()!;
+        expect(row.reserved_bytes).toBe(media_bytes(melody.artifact_dir) + media_bytes(store.audio_dir) - (protection === "render" ? 6 : 0));
+        expect(Number(row.reserved_bytes)).toBeLessThan(PREVIEW_REQUEST_BYTES);
+        db.prepare("UPDATE preview_reservations SET created_at = ?").run(new Date(Date.now() - 8 * 86400000).toISOString());
+        if (protection === "lyrics") db.prepare("INSERT INTO lyric_options VALUES (?, ?, ?, ?, ?, ?)")
+          .run(randomUUID(), "owner", "brief", JSON.stringify({ arrangement: { job_id: job.job_id } }), "{}", new Date().toISOString());
+      } finally { db.close(); }
+      await new WebStorage(root).reserve_previews(melody, "owner", "new", [logical_id("new")]);
+      if (protection === "none") {
+        expect(await store.get_run(job.job_id, "owner")).toBeNull();
+        await expect(melody.get_job(job.job_id)).rejects.toBeInstanceOf(JobNotFound);
+        expect(existsSync(join(melody.artifact_dir, job.job_id))).toBe(false);
+        expect(existsSync(join(store.audio_dir, output.file))).toBe(false);
+      } else {
+        expect(await store.get_output(output.output_id, "owner")).not.toBeNull();
+        expect(await melody.read_artifact(job.job_id, "backing.wav")).toEqual(readFileSync(join(store.audio_dir, output.file)));
+      }
+    },
+  );
+
+  it("keeps failed cleanup charged and recovers after files were partially removed", async () => {
+    const root = directory(), store = new WebStorage(root), melody = new MelodyService(join(root, "melody"));
+    const { job, output } = await saved_preview(store, melody);
+    const db = new DatabaseSync(store.database_path);
+    try { db.prepare("UPDATE preview_reservations SET created_at = ?").run(new Date(Date.now() - 8 * 86400000).toISOString()); }
+    finally { db.close(); }
+    const failure = new Error("storage deletion failed");
+    vi.spyOn(melody, "expire_preview").mockRejectedValueOnce(failure);
+    await expect(store.reserve_previews(melody, "owner", "new", [logical_id("new")])).rejects.toBe(failure);
+    expect(await store.get_output(output.output_id, "owner")).not.toBeNull();
+    await store.reserve_previews(melody, "owner", "new", [logical_id("new")]);
+    expect(await store.get_run(job.job_id, "owner")).toBeNull();
+    expect(await melody.preview_jobs()).toEqual([]);
+  });
+
+  it("commits expiry even when admission subsequently fails its request limit", async () => {
+    const root = directory(), store = new WebStorage(root), melody = new MelodyService(join(root, "melody"));
+    const { job } = await saved_preview(store, melody);
+    const db = new DatabaseSync(store.database_path);
+    try {
+      db.prepare("UPDATE preview_reservations SET created_at = ?").run(new Date(Date.now() - 8 * 86400000).toISOString());
+      const insert = db.prepare("INSERT INTO preview_reservations VALUES (?, 'limited', ?, ?, 0, 0, ?)");
+      for (let index = 0; index < 20; index++) insert.run(String(index), JSON.stringify([logical_id(String(index))]), PREVIEW_REQUEST_BYTES, new Date().toISOString());
+    } finally { db.close(); }
+    await expect(store.reserve_previews(melody, "limited", "new", [logical_id("new")])).rejects.toBeInstanceOf(PreviewQuotaExceeded);
+    expect(await store.get_run(job.job_id, "owner")).toBeNull();
+    expect(await melody.preview_jobs()).toEqual([]);
+  });
+
+  it("adopts and pins a pre-upgrade preview before downstream artifact reads", async () => {
+    const root = directory(), store = new WebStorage(root), melody = new MelodyService(join(root, "melody"));
+    const { job, output } = await saved_preview(store, melody);
+    const db = new DatabaseSync(store.database_path);
+    try { db.exec("DELETE FROM preview_reservations"); } finally { db.close(); }
+    expect(await store.pin_preview(melody, job.job_id, "owner")).toBe(true);
+    const reopened = new DatabaseSync(store.database_path);
+    try {
+      expect(reopened.prepare("SELECT owner, pinned, reserved_bytes FROM preview_reservations").get()).toMatchObject({
+        owner: "owner", pinned: 1, reserved_bytes: media_bytes(melody.artifact_dir) + media_bytes(store.audio_dir),
+      });
+      reopened.prepare("UPDATE preview_reservations SET created_at = ?").run(new Date(Date.now() - 8 * 86400000).toISOString());
+    } finally { reopened.close(); }
+    await store.reserve_previews(melody, "owner", "new", [logical_id("new")]);
+    expect(await store.get_output(output.output_id, "owner")).not.toBeNull();
+    expect((await melody.get_job(job.job_id)).job_id).toBe(job.job_id);
+  });
+});
 
 describe("SQLite authorization and paid ledger", () => {
   it("arbitrates competing bootstraps and binds exact issuer plus subject", async () => {

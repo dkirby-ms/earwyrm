@@ -8,6 +8,7 @@ import { z } from "zod";
 import { ARTIFACT_TYPES, CompositionResult, MelodyService } from "./melody_service.js";
 import { database_url_from_environment, is_storage_error, parse_seed_json, PostgresConnection, REQUIRED_TABLES, SqliteConnection, transaction, validate_postgres_store, type Connection } from "./persistence.js";
 import { StorageAccessDenied, StorageConflict, WebStorage } from "./web_storage.js";
+import { create_preview_schema } from "./preview_quota.js";
 
 export const WEB_TABLE_COLUMNS: Record<string, readonly string[]> = {
   runs: ["run_id", "owner", "mode", "brief_ids_json", "status", "created_at"],
@@ -19,6 +20,7 @@ export const WEB_TABLE_COLUMNS: Record<string, readonly string[]> = {
   access_requests: ["request_id", "issuer", "subject", "status", "created_at", "updated_at", "email"],
   lyric_options: ["option_id", "owner", "brief_id", "request_json", "result_json", "created_at"],
   lyric_reservations: ["reservation_id", "action", "reserved_usd", "created_at"],
+  preview_reservations: ["request_key", "owner", "logical_ids_json", "reserved_bytes", "completed", "pinned", "created_at"],
 };
 export const MELODY_TABLE_COLUMNS: Record<string, readonly string[]> = {
   render_jobs: ["job_id", "logical_job_id", "request_json", "result_json", "melodies_json", "status", "created_at"],
@@ -32,6 +34,7 @@ export const JSON_COLUMN_TYPES: [string, string, "array" | "object"][] = [
   ["outputs", "manifest_json", "object"], ["render_jobs", "request_json", "object"],
   ["render_jobs", "result_json", "object"], ["render_jobs", "melodies_json", "object"], ["local_outputs", "melodies_json", "object"],
   ["lyric_options", "request_json", "object"], ["lyric_options", "result_json", "object"],
+  ["preview_reservations", "logical_ids_json", "array"],
 ];
 /** The caller owns the returned release function; the lock interoperates with Python flock writers. */
 export function acquire_writer_lock(root: string): () => void {
@@ -56,7 +59,7 @@ function require_root(root: string): string {
   return realpathSync(root);
 }
 const RESET_TABLES = [
-  "lyric_reservations", "lyric_options", "access_requests", "application_users", "application_identity", "evaluations", "outputs", "paid_attempts",
+  "preview_reservations", "lyric_reservations", "lyric_options", "access_requests", "application_users", "application_identity", "evaluations", "outputs", "paid_attempts",
   "runs", "local_outputs", "render_jobs", "earwyrm_store_metadata",
 ] as const;
 const RESET_DATA_ENTRIES = ["audio", "work", "melody", "earwyrm.sqlite3", ".earwyrm-initialized"] as const;
@@ -107,7 +110,7 @@ export async function initialize_fresh(directory: string, database_url: string, 
       await WebStorage._create_schema(c);
       await WebStorage._bootstrap_owner(c, owner.issuer, owner.subject);
       await MelodyService._create_schema(c);
-      const tables = [...REQUIRED_TABLES, "lyric_reservations"];
+      const tables = [...REQUIRED_TABLES, "lyric_reservations", "preview_reservations"];
       const count = (await c.execute(`SELECT count(*) AS table_count FROM pg_catalog.pg_class
         WHERE relnamespace = current_schema()::regnamespace AND relkind IN ('r', 'p')
         AND relname IN (${tables.map(() => "?").join(",")})`, tables)).rows[0];
@@ -219,7 +222,7 @@ export async function import_sqlite(directory: string, database_url: string): Pr
     web = new SqliteConnection(webPath, true);
     melody = new SqliteConnection(melodyPath, true);
     const sourceColumns = { ...WEB_TABLE_COLUMNS };
-    for (const table of ["access_requests", "lyric_options", "lyric_reservations"]) {
+    for (const table of ["access_requests", "lyric_options", "lyric_reservations", "preview_reservations"]) {
       if (!(await web.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", [table])).rows.length) delete sourceColumns[table];
     }
     if (sourceColumns.access_requests &&
@@ -262,6 +265,7 @@ export async function upgrade_postgres_store(
       if (!(await c.execute("SELECT to_regclass(?) AS name", [table])).rows[0]?.name) throw new TypeError("Upgrade requires a complete existing store");
     }
     await WebStorage._create_access_request_schema(c);
+    await create_preview_schema(c);
     if (include_lyrics) {
       await WebStorage._create_lyric_schema(c);
       await WebStorage._create_lyric_budget_schema(c);

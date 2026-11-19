@@ -104,6 +104,45 @@ describe('same-origin Express API', () => {
     cta: 'Call Bright Bike to plan your next ride',
   };
 
+  it('rejects new arrangements at the durable quota before composing or publishing outputs', async () => {
+    const { app, store, access_token } = await fixture();
+    const db = new DatabaseSync(store.database_path);
+    try {
+      const insert = db.prepare("INSERT INTO preview_reservations VALUES (?, ?, ?, ?, 0, 0, ?)");
+      for (let index = 0; index < 20; index++) insert.run(
+        `prior-${index}`, 'user-a', JSON.stringify([`guided-v3-${createHash('sha256').update(String(index)).digest('hex')}`]),
+        12 * 1024 * 1024, new Date().toISOString(),
+      );
+    } finally { db.close(); }
+    const submit = vi.spyOn(MelodyService.prototype, 'submit');
+    const result = await request(app).post('/api/arrangements').auth(access_token, { type: 'bearer' }).send({ brief_ids: ['brief-001'] });
+    expect(result.status).toBe(429);
+    expect(result.body.detail).toContain('20 new requests');
+    expect(submit).not.toHaveBeenCalled();
+    expect(await store.list_runs('user-a')).toEqual([]);
+  });
+
+  it('recovers partially published pre-upgrade previews without double-charging later cache hits', async () => {
+    const { app, store, access_token } = await fixture();
+    const post = () => request(app).post('/api/arrangements').auth(access_token, { type: 'bearer' }).send({ brief_ids: ['brief-001'] });
+    const original = await post();
+    expect(original.status).toBe(200);
+    const missing = await store.get_output(original.body.arrangements[2].output.output_id, 'user-a');
+    const db = new DatabaseSync(store.database_path);
+    try {
+      db.exec('DELETE FROM preview_reservations');
+      db.prepare('DELETE FROM outputs WHERE output_id = ?').run(missing!.output_id);
+    } finally { db.close(); }
+    unlinkSync(join(store.audio_dir, missing!.audio_filename));
+    const recovered = await post();
+    expect(recovered.status).toBe(200);
+    expect(recovered.body.arrangements.map((item: { job_id: string }) => item.job_id))
+      .toEqual(original.body.arrangements.map((item: { job_id: string }) => item.job_id));
+    expect((await post()).body).toEqual(recovered.body);
+    const ledger = new DatabaseSync(store.database_path);
+    try { expect(ledger.prepare('SELECT count(*) AS n FROM preview_reservations').get()?.n).toBe(1); } finally { ledger.close(); }
+  });
+
   it('resumes lyric-free previews and fits screened rhymes to the exact selected custom arrangement', async () => {
     const root = root_dir();
     const hook = 'Bright Bike can help you plan a tune up right';
@@ -175,6 +214,11 @@ describe('same-origin Express API', () => {
     expect(generate.mock.calls[2][1]).toEqual(['arrangement_meter']);
     const resumed = await fixture(options, false);
     expect((await post('/api/arrangements', selection, resumed.access_token, resumed.app)).body).toEqual(previews.body);
+    const legacy = new DatabaseSync(store.database_path);
+    try { legacy.exec('DELETE FROM preview_reservations'); } finally { legacy.close(); }
+    expect((await post('/api/arrangements', selection, resumed.access_token, resumed.app)).body).toEqual(previews.body);
+    const adopted = new DatabaseSync(store.database_path);
+    try { expect(adopted.prepare('SELECT count(*) AS n FROM preview_reservations').get()?.n).toBe(1); } finally { adopted.close(); }
     expect((await request(resumed.app).get('/api/lyrics/options').auth(resumed.access_token, { type: 'bearer' })).body.options).toContainEqual(option);
 
     const body = { ...selection, lyric_selections: [{ brief_id: brief.brief_id, option_id: option.option_id }] };

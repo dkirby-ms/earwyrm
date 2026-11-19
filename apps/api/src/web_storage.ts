@@ -8,6 +8,8 @@ import { prepare_database_file } from "./sqlite_files.js";
 import { STATIC_ROOT } from "./paths.js";
 import type { LyricRequest, LyricResult } from "./lyrics.js";
 import type { PaidLyricAction } from "./lyric_budget.js";
+import type { MelodyService } from "./melody_service.js";
+import { complete_preview, create_preview_schema, pin_preview, prune_previews, reserve_preview } from "./preview_quota.js";
 
 const Money = Decimal.clone({ precision: 28 });
 export { STATIC_ROOT };
@@ -169,6 +171,7 @@ export class WebStorage {
     await WebStorage._create_access_request_schema(connection);
     await WebStorage._create_lyric_schema(connection);
     await WebStorage._create_lyric_budget_schema(connection);
+    await create_preview_schema(connection);
   }
 
   /** Adds the current access-request record without changing existing permissions. */
@@ -267,6 +270,20 @@ export class WebStorage {
   private async write<T>(operation: (connection: Connection) => Promise<T>): Promise<T> {
     await this.initialized();
     return serialized(this.database_path, async () => transaction(await this._connect(), operation));
+  }
+  /** Reserves all three previews before generation; failed/incomplete batches remain charged. */
+  async reserve_previews(melody: MelodyService, owner: string, key: string, logical_ids: string[]): Promise<void> {
+    const expired = await this.write(c => prune_previews(c, this.root, melody));
+    for (const job_id of expired) await melody.expire_preview(job_id);
+    await this.write(c => reserve_preview(c, this.root, melody, owner, key, logical_ids));
+  }
+  /** Settles a fully published batch to its measured durable media bytes. */
+  async complete_previews(melody: MelodyService, key: string): Promise<void> {
+    await this.write(c => complete_preview(c, this.root, melody, key));
+  }
+  /** Protects a selected batch from expiry before any downstream artifact reads. */
+  async pin_preview(melody: MelodyService, job_id: string, owner: string): Promise<boolean> {
+    return this.write(c => pin_preview(c, this.root, melody, job_id, owner));
   }
   private static validate_identity(issuer: string, subject: string): void {
     if ([issuer, subject].some(v => !v || v !== v.trim() || [...v].length > 1024)) throw new TypeError("Issuer and subject must be nonempty exact values");
@@ -471,6 +488,9 @@ export class WebStorage {
   /** Writes private media and removes it if insertion fails; mutates the manifest with its opaque ID. */
   async save_output(options: { run_id: string; owner: string; manifest: Manifest; audio: Uint8Array; attempt_id?: string | null }): Promise<Manifest & { output_id: string; file: string }> {
     const { run_id, owner, manifest, audio, attempt_id } = options;
+    if (typeof manifest.composition_source === "object" && manifest.composition_source !== null &&
+        "kind" in manifest.composition_source && manifest.composition_source.kind === "guided-preview" &&
+        audio.byteLength > 1.5 * 1024 * 1024) throw new RangeError("Preview audio exceeds its storage reservation");
     const output_id = randomUUID(), filename = `${output_id}.wav`, path = join(this.audio_dir, filename);
     const result = Object.assign(manifest, { output_id, file: filename });
     if (attempt_id != null) {

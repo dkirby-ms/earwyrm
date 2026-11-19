@@ -9,6 +9,7 @@ import { is_storage_error, parse_seed_json, PostgresConnection, serialized, Sqli
 import { screen, select_screened, SimilarityReport } from "./similarity.js";
 import { prepare_database_file } from "./sqlite_files.js";
 import { canonical_json, private_root, type StorageOptions } from "./web_storage.js";
+import { media_bytes } from "./preview_quota.js";
 
 export const ARTIFACT_TYPES = {
   "score.mid": "audio/midi", "score.json": "application/json", "timing.json": "application/json",
@@ -143,6 +144,9 @@ export class MelodyService {
             writeFileSync(join(directory, "timing.json"), canonical_json(arrangement.timing), { mode: 0o600 });
             write_wav(join(directory, "backing.wav"), normalize(audio));
             writeFileSync(join(directory, "provenance.json"), canonical_json({ ai_generated: true, seed, generator_version: "syllables_per_line" in request ? "earwyrm-guided-hook-v3" : "earwyrm-phrase-v2", duration_seconds: request.duration_seconds, instrumentation, components, similarity: report }), { mode: 0o600 });
+            if ("syllables_per_line" in request && media_bytes(directory) > 2.5 * 1024 * 1024) {
+              throw new CompositionUnavailable("Preview artifacts exceed their storage reservation");
+            }
             const artifacts: Record<string, Artifact> = {};
             for (const [name, media_type] of Object.entries(ARTIFACT_TYPES)) {
               chmodSync(join(directory, name), 0o600);
@@ -168,6 +172,35 @@ export class MelodyService {
       if (!is_storage_error(error)) throw error;
       throw new CompositionUnavailable("Composition storage is unavailable; retry the same logical job ID", { cause: error });
     }
+  }
+  /** Lists guided-preview identities and media sizes, including incomplete publications. */
+  async preview_jobs(): Promise<{ job_id: string; logical_job_id: string; created_at: string; bytes: number }[]> {
+    await this.initialized();
+    const c = await this._connect();
+    try {
+      return (await c.execute("SELECT job_id, logical_job_id, created_at FROM render_jobs WHERE logical_job_id LIKE 'guided-v3-%'")).rows.map(row => {
+        const job_id = z.uuid().parse(row.job_id);
+        const logical_job_id = z.string().regex(/^guided-v3-[a-f0-9]{64}$/).parse(row.logical_job_id);
+        return { job_id, logical_job_id, created_at: String(row.created_at), bytes: media_bytes(join(this.artifact_dir, job_id)) };
+      });
+    } finally { await c.close(); }
+  }
+  /**
+   * Removes only guided-preview artifacts, tolerating missing files for interrupted-cleanup recovery.
+   * Set delete_record=false until the web-store deletion commits, so a rollback can retry cleanup.
+   */
+  async expire_preview(job_id: string, delete_record = true): Promise<void> {
+    z.uuid().parse(job_id);
+    await this.initialized();
+    await serialized(this.database_path, async () => transaction(await this._connect(), async c => {
+      const row = (await c.execute("SELECT logical_job_id FROM render_jobs WHERE job_id = ?", [job_id])).rows[0];
+      if (!row) return;
+      if (!/^guided-v3-[a-f0-9]{64}$/.test(String(row.logical_job_id))) throw new TypeError("Only guided previews can expire");
+      const path = join(this.artifact_dir, job_id);
+      media_bytes(path);
+      rmSync(path, { recursive: true, force: true });
+      if (delete_record) await c.execute("DELETE FROM render_jobs WHERE job_id = ?", [job_id]);
+    }));
   }
   /** Screens and archives a local output atomically without enqueuing a second job. */
   async record_local_output(output_id: string, melodies: Melodies): Promise<SimilarityReport> {
