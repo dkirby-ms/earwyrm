@@ -8,6 +8,9 @@ description: Configure local sign-in, preview music, and review jingle versions.
 Use the web workspace to create and compare versions for one advertiser.
 Start the API and client using the [README quickstart](../../README.md#open-the-web-workspace).
 For hosted setup and database maintenance, use the [Azure runbook](../azure-deployment.md).
+In the signed-in workspace, select **How it works** for an overview of the
+application flow and its representative Azure architecture. Keep that overview
+aligned with the application and infrastructure when those change.
 
 ## Set up local sign-in
 
@@ -96,6 +99,20 @@ application permissions. Operators can also use
 4. Select **Estimate voice demo** and confirm the estimate to render the selected
    lyrics over the same backing. In **Listen & review**, play, download, or review
    the demo. Use **Generation history** to find earlier runs.
+
+### Generate an AI-composed arrangement
+
+The three music-first previews are generated locally, not by Foundry. For music
+composed by the model, select **Start AI arrangement** on the **Choose the music**
+screen. This opens the lyrics-first tools without making a paid request.
+
+Authorize lyric generation, generate options, and choose an accepted draft with
+**Use option**. On the selected option, authorize the separately priced arrangement
+request and select **Generate AI arrangement**. Foundry returns a structured score;
+the app compiles its MIDI and renders a playable backing locally. Repeating the
+same accepted option recovers the saved score rather than calling the model again.
+Use **Listen & review** to hear it and estimate vocals on that exact arrangement.
+Paid lyric/model availability and server budget configuration are still required.
 
 ### Arrangement preview limits
 

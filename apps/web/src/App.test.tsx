@@ -411,6 +411,28 @@ describe('React workspace', () => {
     )
   })
 
+  it('opens the architecture view for a non-admin and preserves workspace selections', async () => {
+    const user = userEvent.setup()
+    installMocks(false, {}, 'none', false)
+    render(<App />)
+
+    await user.click(await screen.findByRole('button', { name: 'Sign in with Entra External ID' }))
+    await user.click(await screen.findByText('Batch tools', { selector: 'summary' }))
+    const briefCheckbox = screen.getByRole('checkbox', { name: /Cedar Loop Bike Repair/ })
+    await user.click(briefCheckbox)
+
+    await user.click(screen.getByRole('button', { name: 'How it works' }))
+    const heading = screen.getByRole('heading', { name: 'How it works' })
+    await vi.waitFor(() => expect(heading).toHaveFocus())
+    expect(screen.getByRole('figure', { name: /Logical architecture/ })).toHaveTextContent('Application API')
+    expect(screen.getByRole('figure', { name: /Cloud architecture/ })).toHaveTextContent('Azure Database for PostgreSQL')
+    expect(screen.queryByRole('button', { name: 'Manage access' })).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Workspace' }))
+    expect(briefCheckbox).toBeVisible()
+    expect(briefCheckbox).toBeChecked()
+  })
+
   it('shows a request action instead of identity details when application access is denied', async () => {
     const user = userEvent.setup()
     installMocks(true)
@@ -419,6 +441,7 @@ describe('React workspace', () => {
     await user.click(await screen.findByRole('button', { name: 'Sign in with Entra External ID' }))
     expect(await screen.findByRole('heading', { name: 'Request access' })).toBeVisible()
     expect(screen.getByRole('button', { name: 'Request access' })).toBeEnabled()
+    expect(screen.queryByRole('button', { name: 'How it works' })).not.toBeInTheDocument()
     expect(screen.queryByText('current-user')).not.toBeInTheDocument()
     expect(screen.queryByText('https://identity.example.test/tenant/v2.0')).not.toBeInTheDocument()
   })
@@ -917,7 +940,11 @@ describe('React workspace', () => {
     })
     render(<App />)
     await user.click(await screen.findByRole('button', { name: 'Sign in with Entra External ID' }))
-    await user.click(screen.getByRole('button', { name: 'Open advanced lyric tools' }))
+    await user.click(screen.getByRole('button', { name: 'Continue to music' }))
+    expect(screen.getByRole('button', { name: 'Generate 3 arrangements' })).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Start AI arrangement' }))
+    expect(screen.getByRole('heading', { name: 'Find your hook.' })).toHaveFocus()
+    expect(screen.getByText(/For AI-composed music, generate and select an accepted lyric option/)).toBeVisible()
     await user.click(screen.getByRole('checkbox', { name: /I authorize paid Foundry/ }))
     await user.click(screen.getByRole('button', { name: 'Generate 3 lyric options' }))
     await user.click(await screen.findByRole('button', { name: 'Use option 1' }))

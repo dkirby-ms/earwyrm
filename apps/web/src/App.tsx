@@ -3,6 +3,7 @@ import type { IPublicClientApplication } from '@azure/msal-browser'
 import { ApiError, apiBlob, apiJson } from './api'
 import { initializeAuth } from './auth'
 import BriefEditor from './BriefEditor'
+import HowItWorks from './HowItWorks'
 import type {
   Access,
   AccessRequestStatus,
@@ -28,7 +29,7 @@ const apiScopes = {
   output: 'outputs.read',
 } as const
 
-type WorkspaceView = 'workspace-view' | 'admin-view'
+type WorkspaceView = 'workspace-view' | 'admin-view' | 'how-it-works-view'
 const creationSteps = [
   ['brief', 'Brief'],
   ['arrangements', 'Music'],
@@ -224,8 +225,10 @@ function App() {
   const busyRef = useRef(false)
   const estimateDialog = useRef<HTMLDialogElement>(null)
   const adminHeading = useRef<HTMLHeadingElement>(null)
+  const howItWorksHeading = useRef<HTMLHeadingElement>(null)
   const comparisonHeading = useRef<HTMLHeadingElement>(null)
   const stepHeading = useRef<HTMLHeadingElement>(null)
+  const lyricHeading = useRef<HTMLHeadingElement>(null)
   const evaluationHeading = useRef<HTMLHeadingElement>(null)
   const audioElements = useRef(new Map<string, HTMLAudioElement>())
   const audioUrls = useRef(new Map<string, { url: string; timer: number }>())
@@ -587,6 +590,9 @@ function App() {
 
   function handleViewChange(nextView: WorkspaceView): void {
     setView(nextView)
+    if (nextView === 'how-it-works-view') {
+      window.setTimeout(() => howItWorksHeading.current?.focus(), 0)
+    }
     if (nextView !== 'admin-view' || !access?.admin) return
 
     window.setTimeout(() => adminHeading.current?.focus(), 0)
@@ -681,11 +687,11 @@ function App() {
     setAnnouncement('Brief loaded. Continue to music.')
   }
 
-  function goToStep(step: CreationStep): void {
+  function goToStep(step: CreationStep | 'lyrics'): void {
     for (const audio of audioElements.current.values()) audio.pause()
     setLyricConsent(false)
     setSection(step)
-    window.setTimeout(() => stepHeading.current?.focus(), 0)
+    window.setTimeout(() => (step === 'lyrics' ? lyricHeading : stepHeading).current?.focus(), 0)
   }
 
   async function generateArrangements(): Promise<void> {
@@ -1138,6 +1144,7 @@ function App() {
           <div className="session-panel">
             <nav className="workspace-nav" aria-label="Workspace sections">
               <button className="workspace-nav-button" type="button" aria-pressed={view === 'workspace-view'} disabled={busy} onClick={() => handleViewChange('workspace-view')}>Workspace</button>
+              {access && workspaceReady && <button className="workspace-nav-button" type="button" aria-pressed={view === 'how-it-works-view'} disabled={busy} onClick={() => handleViewChange('how-it-works-view')}>How it works</button>}
               {access?.admin && <button className="workspace-nav-button" type="button" aria-pressed={view === 'admin-view'} disabled={busy} onClick={() => handleViewChange('admin-view')}>Manage access</button>}
             </nav>
             <span>{accountName}</span>
@@ -1315,7 +1322,7 @@ function App() {
                   </div>
                 </div>
                 <nav className="workspace-nav detail-nav" aria-label="Active brief sections" hidden={editingBrief || !activeBrief}>
-                  <button className="workspace-nav-button" type="button" disabled={busy} aria-pressed={currentStep >= 0} onClick={() => goToStep('brief')}>Create</button>
+                  <button className="workspace-nav-button" type="button" disabled={busy} aria-pressed={section !== 'variants'} onClick={() => goToStep('brief')}>Create</button>
                   <button className="workspace-nav-button" type="button" disabled={busy} aria-pressed={section === 'variants'} onClick={() => { for (const audio of audioElements.current.values()) audio.pause(); setSection('variants') }}>Listen &amp; review</button>
                 </nav>
                 <div className="work-content">
@@ -1365,7 +1372,7 @@ function App() {
                   {section === 'arrangements' && activeBrief && (
                     <section className="guided-step" aria-labelledby="music-step-heading">
                       <h2 id="music-step-heading" ref={stepHeading} tabIndex={-1}>Choose the music</h2>
-                      <p className="muted">Listen to three instrumental arrangements, then pick the one you want to write lyrics for.</p>
+                      <p className="muted">Listen to three locally generated instrumental arrangements, then pick the one you want to write lyrics for. These previews do not call Foundry.</p>
                       {!arrangements.length ? (
                         <button className="button button-primary" type="button" disabled={busy || !options?.instrumental_available} onClick={() => void generateArrangements()}>Generate 3 arrangements</button>
                       ) : (
@@ -1398,6 +1405,13 @@ function App() {
                           ))}
                         </fieldset>
                       )}
+                      <section className="brief-selection" aria-labelledby="ai-music-heading">
+                        <h3 id="ai-music-heading">AI-composed music</h3>
+                        <p className="muted">Start with lyrics, then have Foundry compose an arrangement for your accepted draft. Each paid generation requires your consent.</p>
+                        <div className="button-row">
+                          <button className="button button-secondary" type="button" disabled={busy} onClick={() => goToStep('lyrics')}>Start AI arrangement</button>
+                        </div>
+                      </section>
                       <div className="step-actions">
                         <button className="button button-secondary" type="button" disabled={busy} onClick={() => goToStep('brief')}>Back to brief</button>
                         {arrangements.length > 0 && <button className="button button-primary" type="button" disabled={busy || !selectedArrangement} onClick={() => goToStep('fitted-lyrics')}>Continue to lyrics</button>}
@@ -1455,14 +1469,15 @@ function App() {
                   )}
                   {section === 'brief' && !editingBrief && activeBrief && (
                     <div className="legacy-entry">
-                      <button className="workspace-nav-button" type="button" disabled={busy} onClick={() => setSection('lyrics')}>Open advanced lyric tools</button>
+                      <button className="workspace-nav-button" type="button" disabled={busy} onClick={() => goToStep('lyrics')}>Open advanced lyric tools</button>
                     </div>
                   )}
                   <section className="create-section" hidden={editingBrief || section !== 'lyrics' || !activeBrief} aria-labelledby="lyrics-heading">
                     <div className="section-heading">
-                      <div><h2 id="lyrics-heading">Find your hook.</h2><p className="muted">Choose the words, then bring them to life.</p></div>
+                      <div><h2 id="lyrics-heading" ref={lyricHeading} tabIndex={-1}>Find your hook.</h2><p className="muted">Choose the words, then bring them to life.</p></div>
                       <button className="button button-secondary" type="button" disabled={busy || !activeBrief || !options?.instrumental_available} onClick={() => void renderOffline(activeBrief ? [activeBrief] : [])}>Preview music only</button>
                     </div>
+                    <p className="notice">For AI-composed music, generate and select an accepted lyric option below. Then authorize and select Generate AI arrangement on that option.</p>
                     <section className="jingle-chat" aria-labelledby="chat-heading" aria-busy={busy}>
                       <h3 id="chat-heading">Make it together.</h3>
                       <p className="muted">Talk through a direction, write a screened draft, then build its music with MCP. Each paid action needs your consent.</p>
@@ -1902,6 +1917,16 @@ function App() {
                 </div>
               </details>
             </div>
+
+            <section
+              id="how-it-works-view"
+              className="panel workspace-view architecture-view"
+              aria-labelledby="how-it-works-heading"
+              hidden={view !== 'how-it-works-view'}
+            >
+              <h2 id="how-it-works-heading" ref={howItWorksHeading} tabIndex={-1}>How it works</h2>
+              <HowItWorks />
+            </section>
 
             <section
               id="admin-view"

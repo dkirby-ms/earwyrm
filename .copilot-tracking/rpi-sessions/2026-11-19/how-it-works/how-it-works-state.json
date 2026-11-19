@@ -1,0 +1,45 @@
+{
+  "task_id": "how-it-works",
+  "task_slug": "how-it-works",
+  "session_name": "How it works",
+  "parent_task": null,
+  "child_tasks": [],
+  "mode": "automatic",
+  "active_phase": "Follow-up",
+  "status": "completed",
+  "session_status": "stopped",
+  "artifact_paths": {
+    "research": ".copilot-tracking/research/2026-11-19/how-it-works-research.md",
+    "plan": ".copilot-tracking/plans/2026-11-19/how-it-works-plan.md",
+    "critique": ".copilot-tracking/reviews/plans/2026-11-19/how-it-works-plan-critique.md",
+    "changes": ".copilot-tracking/changes/2026-11-19/how-it-works-changes.md",
+    "review": ".copilot-tracking/reviews/logs/2026-11-19/how-it-works-review.md",
+    "refinement": ".copilot-tracking/reviews/logs/2026-11-19/how-it-works-refinement.md"
+  },
+  "documents": {
+    "research": [".copilot-tracking/research/2026-11-19/how-it-works-research.md"],
+    "plan": [".copilot-tracking/plans/2026-11-19/how-it-works-plan.md"],
+    "critique": [".copilot-tracking/reviews/plans/2026-11-19/how-it-works-plan-critique.md"],
+    "changes": [".copilot-tracking/changes/2026-11-19/how-it-works-changes.md"],
+    "review": [".copilot-tracking/reviews/logs/2026-11-19/how-it-works-review.md"],
+    "refinement": [".copilot-tracking/reviews/logs/2026-11-19/how-it-works-refinement.md"]
+  },
+  "confirmed_decisions": [
+    { "decision": "Automatic session scope", "status": "current", "evidence": "User request 2026-11-19: add a How it works page to the existing web app with logical and cloud architecture diagrams and concise helpful explainers; write boundary is the repository and task tracking; exclude deployment and unrelated changes. Acceptance: accessible navigation and truthful, readable diagrams and explanations aligned with the actual solution, with validation." },
+    { "decision": "Automatic progression boundary", "status": "through-review", "evidence": "User selected Handle it end to end on 2026-11-19." },
+    { "decision": "Research decision participation", "status": "agent-owned", "evidence": "User selected Handle it end to end." },
+    { "decision": "Planning decision participation", "status": "agent-owned", "evidence": "User selected Handle it end to end." },
+    { "decision": "Review decision participation", "status": "agent-owned", "evidence": "User selected Handle it end to end." },
+    { "decision": "Follow-up decision participation", "status": "agent-owned", "evidence": "User selected Handle it end to end." },
+    { "decision": "Subagent use", "status": "auto", "evidence": "Default; host instructions prefer direct work unless substantial independent context warrants delegation." },
+    { "decision": "Planning critique", "status": "standard", "evidence": "Initial-pass default." },
+    { "decision": "Review step", "status": "run", "evidence": "Initial-pass default: acceptance review and refinement." },
+    { "decision": "Canvas", "status": "current", "evidence": "instance rpi-how-it-works, handle SDG0, extensionId plugin:hve-core:rpi-workflow" },
+    { "decision": "Research disposition", "status": "executed", "evidence": "Research C1-C9; Planning Readiness Ready in .copilot-tracking/research/2026-11-19/how-it-works-research.md" },
+    { "decision": "Plan disposition", "status": "planned", "evidence": "Plan drafted in this session from user request and research C1-C9." },
+    { "decision": "Review disposition", "status": "executed", "evidence": "Initial acceptance and refinement reviews in the current session." }
+  ],
+  "blockers": [],
+  "next_action": { "phase": "Follow-up", "action": "Complete; no user action required." },
+  "prioritized_follow_ups": []
+}

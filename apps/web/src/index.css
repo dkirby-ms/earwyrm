@@ -179,6 +179,27 @@ audio { display: block; width: 100%; min-width: 0; height: 2.6rem; margin-top: 0
 .batch-content p { font-size: 0.9rem; }
 .workspace-view { padding: 2rem clamp(1.5rem, 5vw, 5rem); }
 .workspace-view form { max-width: 44rem; }
+.architecture-view { max-width: 90rem; }
+.architecture-intro { font-size: 1.1rem; }
+.architecture-section { margin-top: 3rem; padding-top: 2rem; border-top: 1px solid var(--line); }
+.architecture-section > p { color: var(--muted); }
+.architecture-figure { margin: 1.5rem 0; padding: 1.5rem; border: 1px solid var(--line); background: var(--paper); }
+.architecture-figure figcaption { margin-bottom: 1.25rem; font-size: 0.9rem; font-weight: 700; }
+.architecture-flow { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1.5rem; margin: 0; padding: 0; list-style: none; counter-reset: architecture-step; }
+.architecture-flow li { position: relative; min-width: 0; padding: 1rem; border: 1px solid var(--line); background: var(--surface); counter-increment: architecture-step; }
+.architecture-flow li::before { content: counter(architecture-step, decimal-leading-zero); display: block; margin-bottom: 0.75rem; color: var(--accent-strong); font-size: 0.8rem; font-weight: 700; }
+.architecture-flow li:not(:last-child)::after { content: ""; position: absolute; top: 50%; left: 100%; width: 1.5rem; border-top: 2px solid var(--accent); }
+.architecture-flow strong, .architecture-flow span, .architecture-node strong, .architecture-node span, .cloud-services li strong, .cloud-services li span { display: block; }
+.architecture-flow span, .architecture-node span, .cloud-services li span { margin-top: 0.4rem; font-size: 0.9rem; }
+.cloud-architecture { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 1.4fr); gap: 2rem; align-items: start; }
+.cloud-entry, .cloud-app { position: relative; }
+.cloud-entry::after, .cloud-app::after { content: ""; position: absolute; top: 2.5rem; left: 100%; width: 2rem; border-top: 2px solid var(--accent); }
+.architecture-node { padding: 1rem; border: 1px solid var(--accent); background: var(--surface); }
+.cloud-entry p, .cloud-app p, .cloud-services > p { margin: 0.75rem 0; font-size: 0.9rem; }
+.cloud-services > p { margin-top: 0; font-weight: 700; }
+.cloud-services ul { display: grid; gap: 0; padding: 0 0 0 1rem; margin: 0; list-style: none; border-left: 2px solid var(--accent); }
+.cloud-services li { position: relative; padding: 0.75rem 0; border-bottom: 1px solid var(--line); }
+.cloud-services li::before { content: ""; position: absolute; top: 1.5rem; right: 100%; width: 1rem; border-top: 2px solid var(--accent); }
 .stack { display: grid; gap: 1rem; padding: 0; list-style: none; }
 .stack li { padding-block: 1rem; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
 .stack li button { margin-left: 1rem; }
@@ -225,6 +246,10 @@ footer p { margin: 0; }
   .render-choice { align-items: start; flex-direction: column; gap: 0.75rem; }
 }
 @media (max-width: 48rem) {
+  .architecture-flow, .cloud-architecture { grid-template-columns: minmax(0, 1fr); gap: 1rem; }
+  .architecture-flow li:not(:last-child)::after { top: 100%; left: 1.5rem; width: 0; height: 1rem; border-top: 0; border-left: 2px solid var(--accent); }
+  .cloud-entry::after, .cloud-app::after { top: 100%; left: 1.5rem; width: 0; height: 1rem; border-top: 0; border-left: 2px solid var(--accent); }
+  .architecture-figure { padding: 1rem; }
   .site-header { grid-template-columns: 1fr; }
   .wordmark { padding: 1rem 1.25rem; }
   .wordmark span { display: none; }
