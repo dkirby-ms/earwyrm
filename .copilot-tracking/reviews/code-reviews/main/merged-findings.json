@@ -1,0 +1,150 @@
+{
+  "summary": "Whole-repository baseline audit at 6f4ec3b85bcf4899f8c0a8eaa185de17b53abb8c. Two high-severity issues affect OIDC credential isolation and unbounded durable storage; four medium issues affect paid-render edge handling, an unreachable status state, accessibility contrast, and deployment validation.",
+  "verdict": "request_changes",
+  "severity_counts": {
+    "critical": 0,
+    "high": 2,
+    "medium": 4,
+    "low": 0
+  },
+  "changed_files": [],
+  "findings": [
+    {
+      "number": 1,
+      "title": "Dependency installation runs with Azure OIDC permission",
+      "severity": "High",
+      "category": "Supply chain / deployment credentials",
+      "skill": "code-review-security",
+      "file": ".github/workflows/deploy-web.yml",
+      "lines": "18, 59; bootstrap-web.yml:42, 83",
+      "problem": "Both workflows grant id-token: write to jobs that execute npm ci. npm installation may run dependency lifecycle scripts, and the OIDC request capability is available within a job with this permission. A compromised install-time dependency could request a GitHub OIDC token and attempt to exchange it for the federated Azure identity before the deployment gates run.",
+      "current_code": "permissions: contents: read; id-token: write. The privileged jobs run npm ci --no-audit --no-fund.",
+      "suggested_fix": "Run dependency installation/build in a job without id-token: write and pass a verified immutable artifact to a narrowly scoped Azure job that does not execute dependency lifecycle scripts. Apply the same separation to bootstrap."
+    },
+    {
+      "number": 2,
+      "title": "Unique arrangement previews can grow persistent storage without a bound",
+      "severity": "High",
+      "category": "Resource consumption / persistence",
+      "skill": "code-review-security",
+      "file": "apps/api/src/web_app.ts",
+      "lines": "613-635, 649-658",
+      "problem": "An enabled user with renders.write can submit distinct custom briefs; each new brief digest yields three new arrangement identities, durable melody artifacts, and output audio. The render_active guard only limits concurrency, and no cumulative quota or application pruning path was found. The Azure Files share is capped at 100 GiB, so filling it can make persistent writes fail service-wide.",
+      "current_code": "The /api/arrangements route loops three times, calls melody.submit for each derived logical ID, and persists each resulting audio output.",
+      "suggested_fix": "Enforce per-owner request and durable-storage quotas before creating jobs and define retention or approved deletion for expired artifacts and outputs."
+    },
+    {
+      "number": 3,
+      "title": "A valid long custom script fails after its paid attempt is marked submitted",
+      "severity": "Medium",
+      "category": "Functional edge case / paid-operation recovery",
+      "skill": "code-review-functional",
+      "file": "apps/api/src/render.ts",
+      "lines": "149-151",
+      "problem": "Custom scripts may contain up to 400 characters without a word-count bound. At 81 words, the renderer computes a 30.25-second minimum that exceeds the 30-second duration limit. The paid route marks the attempt submitted before local rendering reaches this check, so it records failed_or_unknown even though no Speech request was made.",
+      "current_code": "const minimum_duration = 10 + (text.match(/[A-Za-z]+/g)?.length ?? 0) * 0.25; const duration_seconds = jingle_duration(seed, minimum_duration);",
+      "suggested_fix": "Reject scripts whose computed minimum duration exceeds the supported maximum during validation or estimate/preflight, before reservation and submission."
+    },
+    {
+      "number": 4,
+      "title": "The output Pass state is unreachable through supported application flows",
+      "severity": "Medium",
+      "category": "Contract / workflow completeness",
+      "skill": "code-review-functional",
+      "file": "apps/api/src/web_app.ts",
+      "lines": "202-214",
+      "problem": "output_status requires every component status to equal Pass. Component creation only produces pending or human-review-required statuses, and the API exposes no component-review transition. Evaluation and cost reconciliation therefore cannot produce Pass or a passing POC rollup through supported workflows.",
+      "current_code": "components.some((item) => item.status !== 'Pass') returns Pending.",
+      "suggested_fix": "Align the status contract with the intended review model by adding an auditable component-review action or by revising the rollup to use reachable states, without equating technical acceptance with broadcast approval."
+    },
+    {
+      "number": 5,
+      "title": "Default secondary-button borders do not meet non-text contrast",
+      "severity": "Medium",
+      "category": "Accessibility / perceivable controls",
+      "skill": "code-review-accessibility",
+      "file": "apps/web/src/index.css",
+      "lines": "102",
+      "problem": "The #aaa09e default border against white has a measured contrast ratio of 2.551:1, below the 3:1 threshold for visual information needed to identify a UI component.",
+      "current_code": ".button-secondary { color: var(--ink); border-color: #aaa09e; background: white; }",
+      "suggested_fix": "Darken the default border to maintain at least 3:1 contrast against the button fill and surrounding surface."
+    },
+    {
+      "number": 6,
+      "title": "The approved deployment path does not run the available test suites",
+      "severity": "Medium",
+      "category": "Validation evidence / release readiness",
+      "skill": "code-review-readiness",
+      "file": ".github/workflows/deploy-web.yml",
+      "lines": "58-123",
+      "problem": "The workflow reaches Azure writer quiescence, provisioning, and deployment without running npm test. The Docker build compiles/type-checks workspaces but does not run the API and web suites, so test failures do not block the approved deployment path.",
+      "current_code": "The workflow installs dependencies, then runs deployment-gate and azd commands; no npm test step is present.",
+      "suggested_fix": "Run npm test before the first Azure mutation or require an equivalent passing CI gate before deployment."
+    }
+  ],
+  "positive_changes": [
+    "API identity and owner scoping are enforced across major routes and storage operations.",
+    "Paid actions use explicit consent, server-side estimates, and budget reservations.",
+    "Operational docs explain backup, recovery, private-network, and destructive-reset limitations.",
+    "The documented platform scaffold and legacy SQLite/Python compatibility paths were not treated as stale."
+  ],
+  "testing_recommendations": [
+    "Add regression tests for custom scripts whose computed duration exceeds 30 seconds and ensure they fail before paid submission.",
+    "Test per-owner storage quotas and retention for arrangement artifacts and outputs.",
+    "Test an explicit, auditable component-review transition or assert the intended terminal status if Pass is deliberately unavailable.",
+    "Add workflow checks that keep dependency installation out of OIDC-enabled jobs and gate deployment on the API/web test suites.",
+    "Recheck the default secondary-button border in both its default and hover states."
+  ],
+  "recommended_actions": [
+    "Isolate dependency lifecycle execution from OIDC-enabled deployment and bootstrap jobs.",
+    "Bound cumulative preview storage and define a retention/deletion path.",
+    "Validate render duration before paid reservation/submission.",
+    "Align output status with reachable user workflows.",
+    "Gate deployment on passing test suites.",
+    "Fix the secondary-button border contrast."
+  ],
+  "out_of_scope_observations": [
+    {
+      "file": "Azure runtime",
+      "observation": "No live deployment or Azure data-plane validation was run; Bicep compilation succeeded."
+    },
+    {
+      "file": "Standards perspective",
+      "observation": "A repository-specific convention review was unavailable because no matching coding-standards skill was present; no standards clearance is implied."
+    },
+    {
+      "file": "Pull request metadata",
+      "observation": "PR-specific checks do not apply to the whole-repository baseline target."
+    }
+  ],
+  "recommended_specialist_reviews": [
+    {
+      "concern": "Supply chain",
+      "signals_matched": [
+        "Dependency installation occurs in GitHub OIDC-enabled deployment jobs."
+      ],
+      "backing": "hve-core:supply-chain-skill-assessor",
+      "availability": "available",
+      "action": "Optional focused assessment of dependency provenance and OIDC job isolation."
+    },
+    {
+      "concern": "Responsible AI",
+      "signals_matched": [
+        "Paid model inference, prompt, and content-safety code are present."
+      ],
+      "backing": "hve-core:rai-skill-assessor",
+      "availability": "available",
+      "action": "Optional framework-specific follow-up beyond this code review."
+    },
+    {
+      "concern": "Privacy",
+      "signals_matched": [
+        "User identities, transcripts, lyrics, and audio are persisted."
+      ],
+      "backing": "Manual review",
+      "availability": "manual",
+      "action": "Consider a focused privacy and retention assessment."
+    }
+  ],
+  "risk_assessment": "High overall because two findings concern deployment identity exposure and unbounded persistent storage; four Medium findings affect paid-operation recovery, status workflow, accessibility, and deployment validation."
+}

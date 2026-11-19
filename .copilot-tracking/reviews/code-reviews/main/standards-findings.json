@@ -1,0 +1,17 @@
+{
+  "summary": "Review conducted without a matching skill catalog. No available coding-standards skill matches the repository's TypeScript/TSX, Bicep, YAML, JSON, or Markdown file groups, so no standards findings can be attributed to a loaded coding-standards skill.",
+  "verdict": "approve",
+  "severity_counts": {
+    "critical": 0,
+    "high": 0,
+    "medium": 0,
+    "low": 0
+  },
+  "changed_files": [],
+  "findings": [],
+  "positive_changes": [],
+  "testing_recommendations": [],
+  "recommended_actions": [],
+  "out_of_scope_observations": [],
+  "risk_assessment": "Not assessed: the standards lane requires findings to be backed by an available coding-standards skill, and no matching skill was available."
+}

@@ -1,0 +1,158 @@
+{
+  "reviewTarget": {
+    "kind": "whole_repository",
+    "provider": "local",
+    "branch": "main",
+    "headSha": "6f4ec3b85bcf4899f8c0a8eaa185de17b53abb8c"
+  },
+  "reviewProfile": "full",
+  "recommendedPerspectives": [
+    "functional",
+    "standards",
+    "accessibility",
+    "security",
+    "readiness"
+  ],
+  "selectedPerspectives": [
+    "functional",
+    "standards",
+    "accessibility",
+    "security",
+    "readiness"
+  ],
+  "recommendedDepth": "comprehensive",
+  "depthTier": "comprehensive",
+  "phaseGates": {
+    "orientationConfirmed": true,
+    "humanAccepted": true,
+    "walkbackComplete": true,
+    "emissionReady": false
+  },
+  "currentPhase": "complete",
+  "nextActions": [
+    {
+      "id": "human-review-report",
+      "kind": "human-review",
+      "target": ".copilot-tracking/reviews/code-reviews/main/review.md",
+      "reason": "Review and validate the findings before deciding what to remediate."
+    }
+  ],
+  "boardItems": [
+    {
+      "id": "auth-api",
+      "area": "authentication and API",
+      "status": "complete",
+      "register": "register-2",
+      "summary": "Trace identity validation, route authorization, access requests, and browser API behavior.",
+      "preliminarySignal": "The browser app and API share a token-based boundary and the app includes owner-scoped workflows.",
+      "links": [
+        "apps/api/src/web_auth.ts",
+        "apps/api/src/web_app.ts",
+        "apps/web/src/auth.ts",
+        "apps/web/src/api.ts"
+      ],
+      "selectableSymbols": [
+        "createWebAuth",
+        "requireUser",
+        "registerWebRoutes"
+      ]
+    },
+    {
+      "id": "paid-ai",
+      "area": "paid generation and budgets",
+      "status": "complete",
+      "register": "register-2",
+      "summary": "Verify paid-action consent, entitlement checks, reservations, provider calls, and output selection.",
+      "preliminarySignal": "Speech and lyric/chat share deployment infrastructure but have separate configuration and app-side budget paths.",
+      "links": [
+        "apps/api/src/lyric_budget.ts",
+        "apps/api/src/lyric_service.ts",
+        "apps/api/src/speech.ts",
+        "apps/api/src/jingle_chat.ts",
+        "apps/web/src/App.tsx"
+      ],
+      "selectableSymbols": [
+        "reserveLyricBudget",
+        "renderSpeech",
+        "handleChatAction"
+      ]
+    },
+    {
+      "id": "data",
+      "area": "persistence and migration",
+      "status": "complete",
+      "register": "register-2",
+      "summary": "Check store selection, schema upgrades, import/reset behavior, ownership, idempotency, and media references.",
+      "preliminarySignal": "SQLite source stores and PostgreSQL runtime storage coexist, while Azure Files retains media and migration sources.",
+      "links": [
+        "apps/api/src/persistence.ts",
+        "apps/api/src/cloud_web.ts",
+        "apps/api/src/web_storage.ts",
+        "apps/api/src/sqlite_files.ts",
+        "apps/api/src/bootstrap_database.ts"
+      ],
+      "selectableSymbols": [
+        "createStore",
+        "initializeDatabase",
+        "importSqlite"
+      ]
+    },
+    {
+      "id": "deployment",
+      "area": "Azure deployment",
+      "status": "complete",
+      "register": "register-2",
+      "summary": "Cross-check azd inputs, Bicep resources, workflow gates, bootstrap actions, and documented operations.",
+      "preliminarySignal": "Provisioning spans private PostgreSQL, managed-identity Azure Files, Key Vault, and optionally shared Foundry services.",
+      "links": [
+        ".github/workflows/deploy-web.yml",
+        ".github/workflows/bootstrap-web.yml",
+        "infra/main.bicep",
+        "infra/platform.bicep",
+        "scripts/deployment_gate.ts",
+        "docs/azure-deployment.md"
+      ],
+      "selectableSymbols": [
+        "deployment_target",
+        "verify_private_network",
+        "initialize_deployment"
+      ]
+    },
+    {
+      "id": "integration",
+      "area": "frontend/API and service integration",
+      "status": "complete",
+      "register": "register-2",
+      "summary": "Find stale surfaces and contract mismatches among React, web API, MCP services, CLI, and platform scaffold.",
+      "preliminarySignal": "The repository retains both browser generation flows and separate MCP/CLI entry points with documented differences.",
+      "links": [
+        "apps/web/src/App.tsx",
+        "apps/api/src/web_app.ts",
+        "apps/api/src/platform_service.ts",
+        "apps/api/src/lyric_mcp.ts",
+        "apps/api/src/melody_mcp.ts",
+        "docs/service-contracts.md"
+      ],
+      "selectableSymbols": [
+        "serve_mcp",
+        "registerWebRoutes",
+        "composeArrangement"
+      ]
+    },
+    {
+      "id": "validation",
+      "area": "tests and delivery readiness",
+      "status": "complete",
+      "register": "register-2",
+      "summary": "Run the existing validation commands and assess whether tests exercise the cross-boundary invariants.",
+      "preliminarySignal": "The repository has unit/integration suites for core domains but no declared coverage reporting.",
+      "links": [
+        "package.json",
+        "apps/api/vitest.config.ts",
+        "apps/web/package.json",
+        ".github/workflows/deploy-web.yml"
+      ],
+      "selectableSymbols": []
+    }
+  ]
+}

@@ -39,20 +39,33 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 concurrency:
   group: earwyrm-web-deployment
   cancel-in-progress: false
 
 jobs:
+  prepare:
+    if: >-
+      (inputs.action == 'credentials' && inputs.bootstrap_approved) ||
+      (inputs.action == 'initialize-database' &&
+       inputs.database_initialization_approved && inputs.data_reset_approved &&
+       inputs.maintenance_approved && inputs.other_writers_stopped)
+    uses: ./.github/workflows/prepare-deployment.yml
+    with:
+      build_image: ${{ inputs.action == 'initialize-database' }}
+
   bootstrap:
+    needs: prepare
     if: >-
       (inputs.action == 'credentials' && inputs.bootstrap_approved) ||
       (inputs.action == 'initialize-database' &&
        inputs.database_initialization_approved && inputs.data_reset_approved &&
        inputs.maintenance_approved && inputs.other_writers_stopped)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     timeout-minutes: 45
     environment: earwyrm-web
     env:
@@ -75,12 +88,25 @@ jobs:
       EARWYRM_BOOTSTRAP_OWNER_SUBJECT: ${{ inputs.owner_subject }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-          cache: npm
-      - name: Install locked tooling
-        run: npm ci --no-audit --no-fund
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ needs.prepare.outputs.artifact_id }}
+          path: payload
+          merge-multiple: true
+      - name: Verify payload before extracting or executing it
+        env:
+          EXPECTED_SHA256: ${{ needs.prepare.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          printf '%s  payload/deployment.tar\n' "$EXPECTED_SHA256" | sha256sum --check --strict
+          mkdir .deployment
+          tar -xf payload/deployment.tar -C .deployment
       - name: GitHub OIDC login for Azure CLI
         uses: azure/login@v2
         with:
@@ -89,10 +115,10 @@ jobs:
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       - name: Bootstrap credential prerequisites without rotating passwords
         if: inputs.action == 'credentials'
-        run: npm run bootstrap-deployment
+        run: node .deployment/tooling/bootstrap_deployment.js
       - name: Install Container Apps CLI for initialization inventory
         if: inputs.action == 'initialize-database'
         run: az extension add --name containerapp --upgrade
       - name: Reset and initialize the PostgreSQL store over the private network
         if: inputs.action == 'initialize-database'
-        run: npm run initialize-deployment
+        run: node .deployment/tooling/initialize_deployment.js

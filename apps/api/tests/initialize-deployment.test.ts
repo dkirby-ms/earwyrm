@@ -1,11 +1,12 @@
-import { access, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { delimiter, join } from 'node:path';
+import { access, readFile, stat } from 'node:fs/promises';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { initialize_deployment } from '../../../scripts/initialize_deployment.js';
 import {
-  azure as execute_azure, deployment_target, DeploymentGateError, run, verify_private_network, type Azure,
+  deployment_target, DeploymentGateError, run, verify_private_network, type Azure,
 } from '../../../scripts/deployment_gate.js';
+import { publish_deployment_image } from '../../../scripts/publish_deployment_image.js';
+
+vi.mock('../../../scripts/publish_deployment_image.js', () => ({ publish_deployment_image: vi.fn() }));
 
 vi.mock('../../../scripts/deployment_gate.js', async importOriginal => ({
   ...await importOriginal<typeof import('../../../scripts/deployment_gate.js')>(),
@@ -60,10 +61,16 @@ function fixture() {
   const state = {
     jobs: [] as { id: string; name: string; tags: Record<string, string> }[],
     path: '', body: {} as Record<string, unknown>, mode: 0,
-    build: 'Succeeded', provisioning: 'Succeeded', execution: 'Succeeded',
+    provisioning: 'Succeeded', execution: 'Succeeded',
     delete_fails: false, create_fails: false, start_fails: false, pagination: null as string | null,
   };
   const calls: string[][] = [], order: string[] = [];
+  vi.mocked(publish_deployment_image).mockImplementation(async (subscription, registry) => {
+    expect(subscription).toBe('subscription');
+    expect(registry).toBe('registry.azurecr.io');
+    order.push('publish');
+    return `registry.azurecr.io/earwyrm/web@sha256:${'a'.repeat(64)}`;
+  });
   vi.mocked(deployment_target).mockResolvedValue([subscription, group, target]);
   vi.mocked(verify_private_network).mockImplementation(async () => { order.push('network'); });
   vi.mocked(run).mockImplementation(async action => { order.push(action); });
@@ -72,8 +79,6 @@ function fixture() {
     calls.push(args);
     const command = args.slice(0, args.findIndex(argument => argument.startsWith('--'))).join(' ');
     if (command === 'acr show') return { id: `${group_id}/providers/Microsoft.ContainerRegistry/registries/registry`, loginServer: 'registry.azurecr.io' };
-    if (command === 'acr build') { order.push('build'); return { status: state.build }; }
-    if (command === 'acr repository show') return `sha256:${'a'.repeat(64)}`;
     if (command === 'postgres flexible-server list') return [{
       id: `${group_id}/providers/Microsoft.DBforPostgreSQL/flexibleServers/postgres`, name: 'postgres',
       fullyQualifiedDomainName: 'postgres.postgres.database.azure.com', tags: { 'azd-env-name': 'test' },
@@ -119,10 +124,10 @@ afterEach(() => {
 });
 
 describe('private database bootstrap without Azure access', () => {
-  it('builds in the existing registry, runs one private initializer and cleans up without resuming the app', async () => {
+  it('publishes the prepared image, runs one private initializer and cleans up without resuming the app', async () => {
     const test = fixture();
     await initialize_deployment(test);
-    expect(test.order).toEqual(['network', 'quiesce', 'build', 'create', 'verify', 'start', 'delete']);
+    expect(test.order).toEqual(['network', 'quiesce', 'publish', 'create', 'verify', 'start', 'delete']);
     expect(test.state.body).toMatchObject({
       identity: { type: 'UserAssigned', userAssignedIdentities: { [test.identity]: {} } },
       properties: {
@@ -135,7 +140,7 @@ describe('private database bootstrap without Azure access', () => {
         template: {
           containers: [{
             command: ['node'], args: ['apps/api/dist/bootstrap_database.js', 'initialize-fresh'],
-            image: `registry.azurecr.io/earwyrm/database-bootstrap@sha256:${'a'.repeat(64)}`,
+            image: `registry.azurecr.io/earwyrm/web@sha256:${'a'.repeat(64)}`,
             env: expect.arrayContaining([
               { name: 'EARWYRM_DATABASE_PASSWORD', secretRef: 'postgres-password' },
               { name: 'EARWYRM_DATA_DIR', value: '/mnt/earwyrm' },
@@ -154,7 +159,8 @@ describe('private database bootstrap without Azure access', () => {
     expect(JSON.stringify(test.state.body)).not.toContain('do-not-copy');
     expect(JSON.stringify(test.log.mock.calls)).not.toContain('do-not-copy');
     expect(JSON.stringify(test.log.mock.calls)).not.toContain('verified-subject');
-    expect(test.calls.some(args => args.includes('list-secrets') || args.includes('secret') || args.includes('firewall-rule'))).toBe(false);
+    expect(test.calls.some(args => args.includes('list-secrets') || args.includes('secret') ||
+      args.includes('firewall-rule') || args.includes('build'))).toBe(false);
     await expect(access(test.state.path)).rejects.toMatchObject({ code: 'ENOENT' });
     expect(JSON.stringify(test.log.mock.calls)).toContain('PostgreSQL initialized and validated');
   });
@@ -250,11 +256,12 @@ describe('private database bootstrap without Azure access', () => {
     await expect(access(test.state.path)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
-  it.each(['Failed', 'Running'])('does not create a job when the build result is %s', async status => {
+  it('does not create a job when image publishing fails', async () => {
     const test = fixture();
-    test.state.build = status;
-    await expect(initialize_deployment(test)).rejects.toThrow('image build failed');
-    expect(test.order).toEqual(['network', 'quiesce', 'build']);
+    vi.mocked(publish_deployment_image).mockRejectedValue(new DeploymentGateError('Image publishing failed'));
+    await expect(initialize_deployment(test)).rejects.toThrow('Image publishing failed');
+    expect(test.order).toEqual(['network', 'quiesce']);
+    expect(test.state.jobs).toEqual([]);
   });
 
   it('waits through asynchronous provisioning and initially absent execution results', async () => {
@@ -271,28 +278,6 @@ describe('private database bootstrap without Azure access', () => {
     };
     await initialize_deployment({ ...test, azure });
     expect(test.sleep).toHaveBeenCalledTimes(2);
-    expect(test.order).toEqual(['network', 'quiesce', 'build', 'create', 'verify', 'start', 'delete']);
-  });
-
-  it('uses the real CLI wrapper with no-wait output suppression reproduced by a fake az', async () => {
-    const test = fixture();
-    const directory = await mkdtemp(join(tmpdir(), 'earwyrm-acr-cli-'));
-    try {
-      await writeFile(join(directory, 'az'), `#!${process.execPath}
-const args = process.argv.slice(2);
-if (args[0] !== 'acr' || args[1] !== 'build') process.exit(99);
-if (args.includes('--no-wait')) process.exit(0);
-if (!args.includes('--no-logs') || args[args.indexOf('--timeout') + 1] !== '600') process.exit(98);
-process.stderr.write('do-not-log-build-output');
-process.stdout.write(JSON.stringify({ status: 'Succeeded' }));
-`, { mode: 0o700 });
-      vi.stubEnv('PATH', `${directory}${delimiter}${process.env.PATH ?? ''}`);
-      const azure: Azure = async (subscription, ...args) => args[0] === 'acr' && args[1] === 'build'
-        ? execute_azure(subscription, ...args) : test.azure(subscription, ...args);
-      await initialize_deployment({ ...test, azure });
-      expect(test.order).toContain('start');
-      expect(JSON.stringify(test.log.mock.calls)).not.toContain('do-not-log-build-output');
-      expect(JSON.stringify(test.log.mock.calls)).toContain('PostgreSQL initialized and validated');
-    } finally { await rm(directory, { recursive: true, force: true }); }
+    expect(test.order).toEqual(['network', 'quiesce', 'publish', 'create', 'verify', 'start', 'delete']);
   });
 });

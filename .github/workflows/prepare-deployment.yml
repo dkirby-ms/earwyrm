@@ -1,0 +1,61 @@
+name: Prepare deployment artifact without Azure credentials
+
+on:
+  workflow_call:
+    inputs:
+      build_image:
+        type: boolean
+        required: true
+    outputs:
+      artifact_id:
+        value: ${{ jobs.prepare.outputs.artifact_id }}
+      sha256:
+        value: ${{ jobs.prepare.outputs.sha256 }}
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      sha256: ${{ steps.package.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install locked tooling without OIDC permission
+        run: npm ci --no-audit --no-fund
+      - name: Compile deployment tooling
+        run: |
+          set -euo pipefail
+          npm exec -- tsc -p tsconfig.json
+          mkdir -p staging/tooling/node_modules
+          cp dist/scripts/*.js staging/tooling/
+          cp package.json staging/tooling/
+          cp -R node_modules/zod staging/tooling/node_modules/
+      - name: Build web image without Azure credentials
+        if: inputs.build_image
+        run: |
+          set -euo pipefail
+          docker build --file Dockerfile.web --tag earwyrm-web:build .
+          docker save --output staging/web-image.tar earwyrm-web:build
+      - name: Package immutable deployment payload
+        id: package
+        run: |
+          set -euo pipefail
+          tar -cf deployment.tar -C staging .
+          echo "sha256=$(sha256sum deployment.tar | cut -d ' ' -f1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        id: upload
+        with:
+          name: deployment-${{ github.run_id }}-${{ github.run_attempt }}
+          path: deployment.tar
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1

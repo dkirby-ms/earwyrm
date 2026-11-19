@@ -1,0 +1,35 @@
+{
+  "summary": "Whole-repository readiness audit at 6f4ec3b85bcf4899f8c0a8eaa185de17b53abb8c. One medium validation-readiness gap: the approved deployment path does not run the repository test suites before Azure changes and deployment. Twelve current product/operational documents were reviewed; no PR context applies.",
+  "verdict": "approve_with_comments",
+  "severity_counts": {
+    "critical": 0,
+    "high": 0,
+    "medium": 1,
+    "low": 0
+  },
+  "findings": [
+    {
+      "number": 1,
+      "title": "Deployment does not gate on the defined test suites",
+      "severity": "Medium",
+      "category": "Validation Evidence",
+      "skill": "code-review",
+      "file": ".github/workflows/deploy-web.yml",
+      "lines": "58-59, 107-123",
+      "problem": "The only deployment workflow is manually dispatched, installs dependencies, then proceeds through writer quiescence and provisioning to deployment without running `npm test`. The Docker build performs package builds, but does not run the API or browser test suites. Those suites are available through the root `test` script (`package.json:11-13`) and are recommended for checking the work at `README.md:57`, but a failing regression can therefore reach the approved deployment path without a test gate. Add the test command before the workflow's first Azure mutation, or provide an equivalent required CI gate.",
+      "current_code": "run: npm ci --no-audit --no-fund\nrun: npm run deployment-gate -- quiesce\nrun: azd deploy web --no-prompt",
+      "suggested_fix": "Run `npm test` in the workflow before the first Azure mutation (and preferably add a pull-request CI job using the root validation scripts), so API and browser tests must pass before maintenance or deployment begins."
+    }
+  ],
+  "positive_changes": [
+    "The Azure runbook explicitly documents the destructive initialization boundary, writer-exclusion limits, backup/restore expectations, and that live Azure acceptance remains unvalidated.",
+    "The repository exposes root typecheck, build, and API/web test commands, and the deployment image builds both workspaces."
+  ],
+  "testing_recommendations": [
+    "Before deployment, run `npm run typecheck`, `npm test`, and `npm run build` from the repository root as documented in README.md:57."
+  ],
+  "recommended_actions": [
+    "Add an automated test gate before deployment workflow mutations, or require equivalent passing CI checks before an approved deployment can proceed."
+  ],
+  "risk_assessment": "Medium readiness risk: tests are defined and documented, but the approved deployment workflow does not execute them before it can modify Azure resources or publish the app."
+}

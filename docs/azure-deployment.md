@@ -71,7 +71,7 @@ maintenance procedure below even when the lock appears to work.
   secret for Bicep and inspect its version. The app's user-assigned identity
   receives `Key Vault Secrets User` only at that secret's scope.
 * Review pricing and obtain billing approval before provisioning. The app keeps
-  one replica running; PostgreSQL, Container Apps, Azure Files, ACR builds and
+  one replica running; PostgreSQL, Container Apps, Azure Files, registry images and
   storage, Log Analytics, and networking can incur charges. The initial
   PostgreSQL candidate is Burstable B2s with 32 GiB storage, seven-day local
   backups, and no geo-redundant backup. B2s has two vCores and 4 GiB of memory;
@@ -145,11 +145,28 @@ federation to a dedicated deployment service principal. Interactive `az login`
 or `azd auth login`, client secrets, and automatic push-triggered deployments
 are not supported. This does not change how browser users sign in to External ID.
 
-Remote image builds use the root [.dockerignore](../.dockerignore). Keep
+Image builds use the root [.dockerignore](../.dockerignore). Keep
 `**/node_modules` after the directory inclusion rules so workspace dependencies
 and their npm symlinks stay out of the uploaded context. Otherwise azd packaging
 can fail with `archive/tar: write too long`. The Dockerfile installs dependencies
 from the lockfile inside the build stages.
+
+Both deployment workflows call
+[prepare-deployment.yml](../.github/workflows/prepare-deployment.yml) on a
+separate GitHub-hosted runner with only `contents: read`, no environment,
+and no Azure credentials or OIDC permission. That job installs dependencies,
+compiles the deployment tooling, and builds the application image when needed.
+It uploads a single immutable v4 artifact and exports its ID and payload SHA-256.
+The environment-protected Azure job downloads that exact artifact ID from the
+same run and fails on a missing or mismatched checksum before extraction or
+Azure login. It runs the compiled tooling with Node, not npm or tsx, and only
+loads and pushes the prebuilt image. No dependency lifecycle scripts or builds
+run in the OIDC-enabled job. Only the required runtime dependency (Zod) travels
+with the tooling; no build tools or full dependency tree are restored there.
+The checksum protects the handoff, not the trustworthiness of dependencies:
+review lockfile updates and protect the workflow and deployment-script sources.
+The azd hooks require this verified payload and therefore run through the
+approved workflow, not an unprepared local checkout.
 
 After separate owner approval, create a GitHub environment named `earwyrm-web`
 with required reviewers and restrict it to your approved deployment branch.
@@ -244,18 +261,16 @@ rejects an issuer that does not match the app's configured External ID issuer.
 The action verifies the isolated target, private PostgreSQL networking, app
 database settings, managed identity, Key Vault reference, registry and media
 mount. It stops the app and verifies zero replicas across all revisions. It
-then builds the selected checkout's `Dockerfile.web` in the existing ACR and
-pins the resulting digest in a temporary Container Apps Job. Building the
+then publishes the verified, prebuilt image to the existing ACR and pins its
+registry digest in a temporary Container Apps Job. Preparing the
 initializer allows this action to run while the app still uses the temporary
 nginx image after provisioning; no application-image deployment is required first.
 The selected checkout must match the application version you intend to deploy.
 The initializer creates the enabled administrator with paid Speech entitlement
 in the same transaction as the new schemas. It does not enable Speech spending.
 Do not provide an access token.
-The build waits with `--no-logs`, a ten-minute server build timeout and a
-twelve-minute CLI timeout. The action requires its final status to be
-`Succeeded` before resolving the image digest. It does not use `--no-wait`,
-which suppresses the CLI's JSON result.
+Publishing fails if image loading, tagging, registry login, pushing, or digest
+resolution fails. It never runs the image on the Azure-credentialed runner.
 
 If an older run failed with `az acr build returned invalid JSON` before the
 temporary-job creation line, that action did not run the reset. The ACR build
@@ -287,11 +302,11 @@ state, verify all executions have stopped, and remove the leftover job before
 retrying. Never infer that a failed workflow means the schema transaction did
 not commit, and never delete data to make a retry pass.
 
-The deployment principal needs permission to queue/read ACR Tasks builds,
+The deployment principal needs permission to push registry images,
 read image metadata, use the existing managed identity, manage and execute jobs,
 and stop/inventory the app, in addition to the deployment gate's existing
-permissions. No new role assignments are created by this action. Builds, job
-execution and retained registry images incur charges; the uniquely tagged
+permissions. No new role assignments are created by this action. Job
+execution and retained registry images incur charges; the run-and-attempt-tagged
 bootstrap image remains in ACR and requires separately approved retention or
 cleanup. The private network and managed-identity share mount still require
 validation in your Azure environment.
@@ -363,8 +378,9 @@ In the workflow, `azd env get-values` shows `WEB_ENDPOINT`, `AZURE_RESOURCE_GROU
 `AZURE_POSTGRESQL_HOST`, `AZURE_POSTGRESQL_DATABASE` and
 `AZURE_VIRTUAL_NETWORK_NAME`.
 
-The first provision uses a temporary nginx image until `azd deploy` publishes
-the web image. `azd provision` alone does not deploy the application and may
+The first provision uses a temporary nginx image until the workflow publishes
+the prebuilt web image and updates the app to its registry digest with
+`az containerapp update --image`. `azd provision` alone does not deploy the application and may
 reset an existing app to the bootstrap image. The approved workflow stops this
 revision before returning from `provision`. Do not treat bootstrap health as
 application readiness. If the mount fails, inspect Container Apps system logs,
@@ -510,7 +526,7 @@ locking is not assumed. The workflow's `resume` action requires exactly one
 replica; this is not proof of application readiness or successful SMB mounting.
 
 After provisioning and the second writer-quiescence check, the approved
-workflow runs `npm run deployment-gate -- verify-network`. The gate requires
+workflow runs `node .deployment/tooling/deployment_gate.js verify-network`. The gate requires
 exactly one tagged Flexible Server in `Ready` state with public network access
 disabled. It checks that the app's environment uses a VNet in the isolated
 resource group, exactly one approved endpoint targets that PostgreSQL server

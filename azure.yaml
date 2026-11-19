@@ -6,12 +6,12 @@ infra:
 hooks:
   preprovision:
     shell: sh
-    run: npm run deployment-gate -- verify
+    run: node .deployment/tooling/deployment_gate.js verify
     continueOnError: false
     interactive: false
   predeploy:
     shell: sh
-    run: npm run deployment-gate -- verify
+    run: node .deployment/tooling/deployment_gate.js verify
     continueOnError: false
     interactive: false
 services:

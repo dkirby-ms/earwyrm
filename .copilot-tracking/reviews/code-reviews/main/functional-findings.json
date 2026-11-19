@@ -1,0 +1,47 @@
+{
+  "summary": "Comprehensive functional baseline audit of the confirmed repository scope; this was not a diff review. Two medium-impact contract and edge-case defects were identified.",
+  "verdict": "approve_with_comments",
+  "severity_counts": {
+    "critical": 0,
+    "high": 0,
+    "medium": 2,
+    "low": 0
+  },
+  "findings": [
+    {
+      "number": 1,
+      "title": "Long but valid custom scripts fail after the paid attempt is marked submitted",
+      "severity": "Medium",
+      "category": "Edge Cases",
+      "skill": null,
+      "file": "apps/api/src/render.ts",
+      "lines": "149-151",
+      "problem": "Custom brief validation permits up to 400 script characters but does not limit word count. More than 80 words makes minimum_duration exceed the renderer's 30-second maximum, so jingle_duration throws before Speech synthesis (and also breaks offline rendering). For paid renders the route has already marked the attempt submitted, then records failed_or_unknown; the user must reconcile an attempt for which no provider request was made and cannot retry until then.",
+      "current_code": "const minimum_duration = 10 + (text.match(/[A-Za-z]+/g)?.length ?? 0) * 0.25;\nconst candidate = (seed: NonNullable<CompositionRequest['seed']>): [{ notes: Note[]; duration_seconds: number }, Record<string, number[]>] => {\n  const duration_seconds = jingle_duration(seed, minimum_duration), notes = compose(seed, duration_seconds);",
+      "suggested_fix": "Reject or otherwise handle scripts whose required duration exceeds 30 seconds during brief validation or estimate/preflight, before reserving and marking a paid attempt submitted."
+    },
+    {
+      "number": 2,
+      "title": "The output Pass state cannot be reached through supported application flows",
+      "severity": "Medium",
+      "category": "Contract",
+      "skill": null,
+      "file": "apps/api/src/web_app.ts",
+      "lines": "210-214",
+      "problem": "output_status returns Pending unless every component status is exactly Pass. Rendered components are always created as Pending or Recorded basis; human review required (see apps/api/src/render.ts:97-109 and the composition component records), and no application route or UI action records a component review. Consequently, even after a successful evaluation, metering reconciliation, and numeric gates, users cannot make an output or the overall rollup reach Pass using supported flows; the documented completion status is effectively dead.",
+      "current_code": "const components = manifest.components;\nif (!Array.isArray(components) || !components.length || components.some((item: unknown) =>\n  typeof item !== 'object' || item === null || !('status' in item) || item.status !== 'Pass')) return 'Pending';\nif (!cost) return 'Pending';\nreturn cost.div(2).gte('0.50') ? 'Fail' : 'Pass';",
+      "suggested_fix": "Add a supported, auditable human component-review action that persists the review disposition and evidence as Pass only after approval, so the existing rollup gate can be satisfied."
+    }
+  ],
+  "positive_changes": [],
+  "testing_recommendations": [
+    "Add a custom-brief regression test with a valid script exceeding 80 words; verify it is rejected before a paid attempt is reserved or marked submitted.",
+    "Add an end-to-end status test proving how reviewed component evidence can transition an otherwise passing output and rollup from Pending to Pass."
+  ],
+  "recommended_actions": [
+    "Validate custom-render duration requirements before paid reservation.",
+    "Define and implement the supported component-review transition used by output status."
+  ],
+  "out_of_scope_observations": [],
+  "risk_assessment": "Medium: the identified issues affect valid custom rendering and prevent supported completion of the output status contract; no Critical or High functional findings were identified."
+}

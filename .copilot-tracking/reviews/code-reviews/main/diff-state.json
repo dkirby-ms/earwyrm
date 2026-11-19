@@ -1,0 +1,103 @@
+{
+  "reviewTarget": {
+    "kind": "whole_repository",
+    "provider": "local",
+    "repository": "dkirby-ms/earwyrm",
+    "branch": "main",
+    "headSha": "6f4ec3b85bcf4899f8c0a8eaa185de17b53abb8c",
+    "workingTree": "clean"
+  },
+  "reviewProfile": "full",
+  "scope": {
+    "origin": "human-confirmed",
+    "description": "Baseline audit of current application source, tests, frontend, API, infrastructure, deployment workflows/scripts, and directly related documentation/configuration.",
+    "excluded": [
+      "Generated render outputs",
+      "Installed dependencies and build outputs",
+      "Historical .copilot-tracking plans, research, and prior review records as primary review targets"
+    ]
+  },
+  "changeBrief": "The working tree is clean, so this is a human-approved whole-repository baseline audit rather than a diff review. The system combines a React workspace, an authenticated TypeScript API, paid lyric/chat and Speech capabilities, SQLite/PostgreSQL persistence, MCP tools, and Azure deployment automation. Review attention is on cross-boundary behavior, stale or conflicting integration paths, and validation gaps.",
+  "diff": {
+    "available": false,
+    "reason": "The working tree is clean on main and the user confirmed a whole-repository baseline audit.",
+    "headSha": "6f4ec3b85bcf4899f8c0a8eaa185de17b53abb8c",
+    "filesChanged": []
+  },
+  "changeRiskEvidence": [
+    {
+      "signal": "change-scope",
+      "availability": "observed",
+      "evidence": "Baseline review spans 57 application, test, infrastructure, workflow, and deployment-script files, with related product and operator documentation."
+    },
+    {
+      "signal": "path-criticality",
+      "availability": "qualitative",
+      "evidence": "The reviewed system includes authentication, authorization, paid-provider budgets, persistence, deployment credentials, and networked infrastructure."
+    },
+    {
+      "signal": "history",
+      "availability": "observed",
+      "evidence": "Git history is available; recent commits show tightly coupled feature, deployment, authorization, and UX integration work through 2026-11-19."
+    },
+    {
+      "signal": "test-presence",
+      "availability": "observed",
+      "evidence": "The repository has API tests for auth, web routes, storage, deployment, and creative flows, plus a React App test and root test scripts."
+    },
+    {
+      "signal": "coverage",
+      "availability": "unavailable",
+      "evidence": "No coverage configuration or coverage report was found in the package scripts/configuration."
+    },
+    {
+      "signal": "rollback",
+      "availability": "qualitative",
+      "evidence": "Operator documentation describes backups, SQLite import, and explicit reset gates, but deployment and data cutover span private Azure services and require maintenance coordination."
+    }
+  ],
+  "recommendedDepth": "comprehensive",
+  "depthTier": "comprehensive",
+  "depthRationale": "Human-confirmed after reviewing the broad system boundary and critical persistence, identity, paid-provider, and deployment surfaces.",
+  "reviewStateProvenance": {
+    "scope": "human-confirmed",
+    "changeRiskEvidence": "automation-derived",
+    "recommendedDepth": "automation-derived",
+    "depthTier": "human-confirmed",
+    "depthRationale": "human-confirmed"
+  },
+  "hotspots": [
+    "Authentication, authorization, and API routes",
+    "Paid lyric/chat/Speech flows, consent, budget, and provider wiring",
+    "Persistence, migrations, idempotency, and SQLite/PostgreSQL boundaries",
+    "Bicep, Azure workflows, deployment scripts, and operator documentation",
+    "Frontend/API contracts, MCP/platform services, and stale or unused code",
+    "Build, tests, and CI validation coverage"
+  ],
+  "specialistSignals": [
+    "security",
+    "responsible-ai",
+    "accessibility",
+    "privacy",
+    "supply-chain"
+  ],
+  "task": {
+    "kind": "completed",
+    "outputPath": ".copilot-tracking/reviews/code-reviews/main/review.md"
+  },
+  "reviewOutcome": {
+    "verdict": "request_changes",
+    "severityCounts": {
+      "critical": 0,
+      "high": 2,
+      "medium": 4,
+      "low": 0
+    },
+    "validation": [
+      "npm run build passed",
+      "npm test passed: API 427 passed/1 skipped; web 26 passed",
+      "Bicep compilation of infra/main.bicep succeeded"
+    ],
+    "externalEmission": "none"
+  }
+}

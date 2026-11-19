@@ -1,0 +1,46 @@
+{
+  "summary": "Comprehensive security audit of the confirmed whole-repository baseline identified two reachable high-severity issues in deployment credential isolation and persistent resource consumption.",
+  "verdict": "request_changes",
+  "severity_counts": {
+    "critical": 0,
+    "high": 2,
+    "medium": 0,
+    "low": 0
+  },
+  "changed_files": [],
+  "findings": [
+    {
+      "number": 1,
+      "title": "OIDC-enabled workflows run npm dependency scripts in the privileged job",
+      "severity": "High",
+      "category": "Dependency & Data Handling",
+      "skill": "OWASP A03:2025 Software Supply Chain Failures",
+      "file": ".github/workflows/deploy-web.yml",
+      "lines": "16-18, 59",
+      "problem": "The workflow grants id-token: write to the job that runs npm ci; the same pattern appears in .github/workflows/bootstrap-web.yml:40-42,83. npm ci runs package lifecycle scripts, and the job has access to GitHub's OIDC request endpoint. A compromised or malicious dependency install hook can request a token for the approved earwyrm-web environment and exchange it for the configured Azure service principal, then perform control-plane operations with that principal's privileges. This gives dependency code access to deployment authority before the reviewed deployment gates run.",
+      "current_code": "permissions:\n  contents: read\n  id-token: write\n\n        run: npm ci --no-audit --no-fund",
+      "suggested_fix": "Separate dependency installation/build from cloud deployment and bootstrap into jobs that do not have id-token: write. Pass only a verified build artifact to a narrowly scoped privileged job, and ensure that job does not run npm install or other dependency lifecycle scripts. Apply the same isolation to both workflows while retaining their environment and approval gates."
+    },
+    {
+      "number": 2,
+      "title": "Authorized users can exhaust persistent storage through unique arrangement previews",
+      "severity": "High",
+      "category": "Dependency & Data Handling",
+      "skill": "OWASP API4:2023 Unrestricted Resource Consumption",
+      "file": "apps/api/src/web_app.ts",
+      "lines": "613-635, 649-658",
+      "problem": "Any enabled user with renders.write can repeatedly submit valid custom briefs with distinct contents to POST /api/arrangements. The brief digest creates three new logical job IDs for each unique brief; MelodyService.submit persists each job's artifact files, and save_output also stores its backing audio in the shared data volume. The render_active flag only serializes concurrent requests and resets after each call; there is no cumulative per-owner storage or request quota, and this instrumental path does not consume the paid-operation budget. Repetition can fill the configured 100-GB Azure Files share (infra/platform.bicep:282), causing persistent writes and service operations to fail for all users.",
+      "current_code": "app.post('/api/arrangements', ...authorized('renders.write'), async (request, response) => {\n    const selection = parse(ChatSelection, request.body);\n    const [selected] = selected_inputs(selection.brief_ids, selection.custom_briefs);\n    const cta = brief_cta(selected!), overrides = guided_pronunciations(selected!.brief);\n    const cta_count = Math.min(44, known_meter(cta, overrides) ?? 12);\n    const verse_count = Math.min(44, Math.max(10, (known_meter(selected!.brief.name, overrides) ?? 9) + 3));\n    if (render_active) throw new HttpError(409, 'A render or composition is already active');\n    render_active = true;\n    try {\n      const store = await storage();\n      const { issuer, subject: owner } = identity(response);\n      const brief_sha256 = brief_digest(selected!);\n      const melody = new MelodyService(join(store.root, 'melody'), { database_url: store.database_url ?? undefined });\n      const arrangements = [];\n      for (let index = 0; index < 3; index++) {\n        const started = performance.now();\n        const syllables_per_line = [verse_count, Math.min(44, verse_count + index), verse_count, cta_count];\n        const key = digest([issuer, owner, brief_sha256, index]);",
+      "suggested_fix": "Enforce server-side per-owner request and durable-storage quotas before creating jobs, and add retention/pruning for expired preview jobs, artifacts, and outputs. Reject requests when a quota would be exceeded; a concurrency guard alone does not bound cumulative writes."
+    }
+  ],
+  "testing_recommendations": [
+    "Add a workflow validation check that fails if dependency installation or lifecycle scripts run in a job with id-token: write.",
+    "Add API/storage tests showing that unique custom arrangement requests stop at the enforced per-owner quota and that retention removes expired preview artifacts and outputs."
+  ],
+  "recommended_actions": [
+    "Isolate dependency execution from OIDC-enabled Azure deployment and bootstrap jobs.",
+    "Add enforceable quotas and lifecycle management for persisted arrangement previews."
+  ],
+  "risk_assessment": "The identity and owner-scoping controls examined provide a strong application boundary, but the two findings permit Azure deployment-identity exposure through dependency execution and service-wide storage exhaustion by an enabled user."
+}

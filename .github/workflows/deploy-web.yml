@@ -15,16 +15,25 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 concurrency:
   group: earwyrm-web-deployment
   cancel-in-progress: false
 
 jobs:
+  prepare:
+    if: inputs.maintenance_approved
+    uses: ./.github/workflows/prepare-deployment.yml
+    with:
+      build_image: ${{ inputs.action == 'deploy' }}
+
   deploy:
+    needs: prepare
     if: inputs.maintenance_approved
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     environment: earwyrm-web
     env:
       AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
@@ -50,13 +59,26 @@ jobs:
       EARWYRM_OTHER_WRITERS_STOPPED: "true"
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: Azure/setup-azd@v2.3.0
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-          cache: npm
-      - name: Install locked tooling
-        run: npm ci --no-audit --no-fund
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ needs.prepare.outputs.artifact_id }}
+          path: payload
+          merge-multiple: true
+      - name: Verify payload before extracting or executing it
+        env:
+          EXPECTED_SHA256: ${{ needs.prepare.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          printf '%s  payload/deployment.tar\n' "$EXPECTED_SHA256" | sha256sum --check --strict
+          mkdir .deployment
+          tar -xf payload/deployment.tar -C .deployment
       - name: GitHub OIDC login for Azure CLI
         uses: azure/login@v2
         with:
@@ -105,7 +127,7 @@ jobs:
           azd env set EARWYRM_LYRIC_SETTINGS_ENCODED "$(printf '%s' "$lyric_settings" | base64 -w0)"
           azd env set EARWYRM_AI_LOCATION "${EARWYRM_AI_LOCATION:-$AZURE_LOCATION}"
       - name: Stop and verify existing writers
-        run: npm run deployment-gate -- quiesce
+        run: node .deployment/tooling/deployment_gate.js quiesce
       - name: Preview resources
         if: inputs.action == 'preview'
         run: azd provision --preview --no-prompt
@@ -114,13 +136,19 @@ jobs:
         run: azd provision --no-prompt
       - name: Stop and verify bootstrap or replacement writers
         if: inputs.action == 'provision' || inputs.action == 'deploy'
-        run: npm run deployment-gate -- quiesce
+        run: node .deployment/tooling/deployment_gate.js quiesce
       - name: Verify private PostgreSQL networking
         if: inputs.action == 'provision' || inputs.action == 'deploy'
-        run: npm run deployment-gate -- verify-network
+        run: node .deployment/tooling/deployment_gate.js verify-network
       - name: Deploy approved web image
         if: inputs.action == 'deploy'
-        run: azd deploy web --no-prompt
+        run: |
+          set -euo pipefail
+          node .deployment/tooling/deployment_gate.js verify
+          image=$(node .deployment/tooling/publish_deployment_image.js "$(azd env get-value AZURE_CONTAINER_REGISTRY_ENDPOINT)")
+          az containerapp update --subscription "$AZURE_SUBSCRIPTION_ID" \
+            --resource-group "$(azd env get-value AZURE_RESOURCE_GROUP)" \
+            --name "$(azd env get-value AZURE_CONTAINER_APP_NAME)" --image "$image" --output none
       - name: Resume and check replica count
         if: inputs.action == 'deploy'
-        run: npm run deployment-gate -- resume
+        run: node .deployment/tooling/deployment_gate.js resume

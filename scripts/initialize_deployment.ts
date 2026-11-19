@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import { z } from 'zod';
+import { publish_deployment_image } from './publish_deployment_image.js';
 import {
   azure, deployment_error_detail, deployment_target, DeploymentGateError,
   required_setting, run, verify_private_network, type Azure,
@@ -138,14 +139,8 @@ export async function initialize_deployment(options: {
     }
   };
   const suffix = randomUUID();
-  const image_tag = `earwyrm/database-bootstrap:${suffix}`;
-  console.error('INFO: Building the selected checkout for private database initialization');
-  const build = z.object({ status: z.enum(['Queued', 'Started', 'Running', 'Succeeded', 'Failed', 'Canceled', 'Error', 'Timeout']) }).parse(await call(subscription,
-    'acr', 'build', '--registry', registry_name, '--image', image_tag, '--file', 'Dockerfile.web',
-    '--no-logs', '--timeout', '600', '.'));
-  if (build.status !== 'Succeeded') throw new DeploymentGateError('Initialization image build failed or did not finish; raw build output withheld');
-  const digest = z.string().regex(/^sha256:[0-9a-f]{64}$/).parse(await call(subscription,
-    'acr', 'repository', 'show', '--name', registry_name, '--image', image_tag, '--query', 'digest'));
+  console.error('INFO: Publishing the verified workflow image for private database initialization');
+  const image = await publish_deployment_image(subscription, registry.server, { environ, azure: call });
   const job_name = `db-init-${suffix.slice(0, 8)}`;
   const job_id = `${group_id}/providers/Microsoft.App/jobs/${job_name}`;
   const body = {
@@ -163,7 +158,7 @@ export async function initialize_deployment(options: {
       },
       template: {
         containers: [{
-          name: 'main', image: `${registry.server}/earwyrm/database-bootstrap@${digest}`,
+          name: 'main', image,
           command: ['node'], args: ['apps/api/dist/bootstrap_database.js', 'initialize-fresh'],
           env: [
             ...env,

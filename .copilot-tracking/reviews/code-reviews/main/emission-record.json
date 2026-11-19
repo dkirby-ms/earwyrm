@@ -1,0 +1,6 @@
+{
+  "mode": "canonical",
+  "target": "review_artifact",
+  "status": "completed",
+  "summary": "Persisted the human-reviewable whole-repository findings report and supporting metadata. No PR, comment, or external review was targeted or posted."
+}

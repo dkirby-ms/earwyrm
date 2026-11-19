@@ -1,0 +1,29 @@
+{
+  "schema_version": "1",
+  "branch": "main",
+  "head_commit": "6f4ec3b85bcf4899f8c0a8eaa185de17b53abb8c",
+  "reviewed_at": "2026-11-19T15:43:41Z",
+  "verdict": "request_changes",
+  "files_changed": [],
+  "findings_count": {
+    "critical": 0,
+    "high": 2,
+    "medium": 4,
+    "low": 0
+  },
+  "reviewer": "code-review",
+  "artifacts": {
+    "dispatch_manifest": "dispatch-manifest.json",
+    "dispatch_board": "dispatch-board.md",
+    "walkthrough": "walkthrough.md",
+    "emission_record": "emission-record.json",
+    "perspective_findings": [
+      "functional-findings.json",
+      "standards-findings.json",
+      "accessibility-findings.json",
+      "security-findings.json",
+      "readiness-findings.json"
+    ],
+    "merged_findings": "merged-findings.json"
+  }
+}
