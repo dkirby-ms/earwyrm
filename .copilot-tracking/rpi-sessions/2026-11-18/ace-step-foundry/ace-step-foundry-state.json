@@ -1,0 +1,41 @@
+{
+  "task_id": "ace-step-foundry",
+  "task_slug": "ace-step-foundry",
+  "session_name": "ACE-Step Foundry investigation",
+  "parent_task": null,
+  "child_tasks": [{"task_id":"ace-step-foundry-templates","task_slug":"ace-step-foundry-templates","state_path":".copilot-tracking/rpi-sessions/2026-11-18/ace-step-foundry/ace-step-foundry-templates-state.json"}],
+  "mode": "automatic",
+  "active_phase": "Research",
+  "status": "completed",
+  "session_status": "stopped",
+  "artifact_paths": {
+    "research": ".copilot-tracking/research/2026-11-18/ace-step-foundry-research.md",
+    "plan": null,
+    "critique": null,
+    "changes": null,
+    "review": null
+  },
+  "documents": {
+    "research": [".copilot-tracking/research/2026-11-18/ace-step-foundry-research.md"],
+    "plan": [],
+    "critique": [],
+    "changes": [],
+    "review": []
+  },
+  "confirmed_decisions": [
+    {"decision": "Automatic session scope", "status": "current", "evidence": "User asks to investigate Foundry managed compute support for deploying ACE-Step; root task ace-step-foundry. Deliver a sourced feasibility investigation and Earwyrm implications. Writes limited to research and required workflow state; no application changes, resource provisioning, paid tests, or deployment."},
+    {"decision": "Automatic progression boundary", "status": "through-review", "evidence": "User selected Handle it end to end. Progress only through phases applicable to the investigation; research-only scope does not authorize deployment."},
+    {"decision": "Research decision participation", "status": "agent-owned", "evidence": "Handle it end to end selection."},
+    {"decision": "Planning decision participation", "status": "agent-owned", "evidence": "Automatic mode default."},
+    {"decision": "Review decision participation", "status": "agent-owned", "evidence": "Automatic mode default."},
+    {"decision": "Follow-up decision participation", "status": "agent-owned", "evidence": "Automatic mode default."},
+    {"decision": "Canvas", "status": "current", "evidence": "instanceId rpi-ace-step-foundry; handle YEYB; extensionId plugin:hve-core:rpi-workflow"},
+    {"decision": "Planning critique", "status": "standard", "evidence": "Default if a Plan phase becomes applicable; investigation has no implementation handoff."},
+    {"decision": "Review step", "status": "run", "evidence": "Default if implementation becomes applicable; no deployment or implementation requested."},
+    {"decision": "Research disposition", "status": "executed", "evidence": "Primary research artifact records wider, deeper, contrarian waves, C1-C3/W1-W19 evidence, and source/artifact self-check. No implementation handoff: research-only investigation complete."},
+    {"decision": "Investigation acceptance", "status": "satisfied", "evidence": "Public-source feasibility answered; documented lookup returns 404 for primary 1.5, native XL Diffusers, and original ACE-Step IDs with a 200 control. Native Diffusers counter-evidence verified. AML custom-container alternative, costs/quota mechanics, Earwyrm implications, and unverified live-deployment limits recorded. No production changes or Azure resources created."}
+  ],
+  "blockers": [],
+  "next_action": {"phase": "Research", "action": "Child ace-step-foundry-templates completed research-only discovery. See its report for 153 model containers/1446 template records, API qualifications, and unsubmitted onboarding request. No further automatic work or deployment authorized."},
+  "prioritized_follow_ups": []
+}

@@ -1,0 +1,30 @@
+{
+  "task_id":"ace-step-foundry-templates",
+  "task_slug":"ace-step-foundry-templates",
+  "session_name":"ACE-Step Foundry investigation",
+  "parent_task":{"task_id":"ace-step-foundry","task_slug":"ace-step-foundry","state_path":".copilot-tracking/rpi-sessions/2026-11-18/ace-step-foundry/ace-step-foundry-state.json"},
+  "child_tasks":[],
+  "mode":"automatic",
+  "active_phase":"Research",
+  "status":"completed",
+  "session_status":"stopped",
+  "artifact_paths":{"research":".copilot-tracking/research/2026-11-18/ace-step-foundry-templates-research.md","plan":null,"critique":null,"changes":null,"review":null},
+  "documents":{"research":[".copilot-tracking/research/2026-11-18/ace-step-foundry-templates-research.md"],"plan":[],"critique":[],"changes":[],"review":[]},
+  "confirmed_decisions":[
+    {"decision":"Automatic session scope","status":"current","evidence":"Inherited research-only Foundry/ACE-Step investigation; user now narrows follow-up to model/template discovery, publication, and onboarding. No deployment, source changes, paid inference, or external posts."},
+    {"decision":"Automatic progression boundary","status":"through-review","evidence":"Inherited Handle it end to end; research-only boundary retained."},
+    {"decision":"Research decision participation","status":"agent-owned","evidence":"Inherited automatic mode."},
+    {"decision":"Planning decision participation","status":"agent-owned","evidence":"Inherited automatic mode."},
+    {"decision":"Review decision participation","status":"agent-owned","evidence":"Inherited automatic mode."},
+    {"decision":"Follow-up decision participation","status":"agent-owned","evidence":"Inherited automatic mode."},
+    {"decision":"Planning critique","status":"skip","evidence":"Child default; no implementation handoff."},
+    {"decision":"Review step","status":"skip","evidence":"Child default; research-only."},
+    {"decision":"Canvas","status":"current","evidence":"instanceId rpi-ace-step-foundry; handle YEYB; extensionId plugin:hve-core:rpi-workflow"},
+    {"decision":"Research disposition","status":"executed","evidence":"Child report completes Cycle 2 Wider/Deeper/Contrarian and F7-F12/W20-W34. Research-only; Planning Readiness not applicable and no Plan/Implement handoff."},
+    {"decision":"Investigation acceptance","status":"satisfied","evidence":"Fully paginated accessible registry discovery: 153 model containers and 1446 template records, no ACE-Step name matches. Exact native checkpoint absent. Broader ARM optional-template/generic-registry semantics documented without inferring admission. Runtime-specific onboarding request drafted but not submitted. Remaining platform admission and inference validation are explicitly unverified, not research completion claims."},
+    {"decision":"Research closeout","status":"stopped-at-evidence-boundary","evidence":"No more automatic work in the research-only scope. Re-entry requires a service-owner-provided model/template pair, customer-template admission guide, or confirmed VmManagedCompute onboarding procedure. No deployment, uploads, inference, or external posts authorized."}
+  ],
+  "blockers":[],
+  "next_action":{"phase":"Research","action":"Research complete. If the user pursues onboarding, obtain service-owner answers to the report's unsubmitted ACE-Step runtime/model/template request. Do not deploy or submit requests without new authorization."},
+  "prioritized_follow_ups":[]
+}
