@@ -138,6 +138,38 @@ describe("SQLite authorization and paid ledger", () => {
     expect(await store.get_run("run-revoked", "owner")).toBeNull();
     expect(await store.has_unreconciled_paid_attempt()).toBe(false);
   });
+  it("preserves pending request identity while refreshing email and retains it across restarts", async () => {
+    const root = directory(), store = new WebStorage(root);
+    await store.bootstrap_owner(issuer, "owner");
+    const first = await store.request_access(issuer, "requester");
+    if (first.status !== "pending") throw new Error("Expected a pending request");
+    expect(first.request.email).toBeNull();
+    const refreshed = await store.request_access(issuer, "requester", "requester@example.test");
+    expect(refreshed).toEqual({ status: "pending", request: { ...first.request, email: "requester@example.test" } });
+    expect(await store.request_access(issuer, "requester")).toEqual(refreshed);
+    const reopened = new WebStorage(root);
+    expect(await reopened.list_access_requests_as_admin(issuer, "owner")).toEqual([
+      { ...first.request, email: "requester@example.test" },
+    ]);
+    await reopened.decide_access_request_as_admin(issuer, "owner", first.request.request_id, "denied");
+    const retry = await reopened.request_access(issuer, "requester", "updated@example.test");
+    expect(retry).toMatchObject({ status: "pending", request: { email: "updated@example.test" } });
+  });
+  it("adds nullable email to an existing SQLite queue without losing requests or permissions", async () => {
+    const root = directory(), store = new WebStorage(root);
+    await store.bootstrap_owner(issuer, "owner");
+    const queued = await store.request_access(issuer, "requester");
+    const db = new DatabaseSync(store.database_path);
+    db.exec("ALTER TABLE access_requests DROP COLUMN email");
+    db.close();
+    const upgraded = new WebStorage(root);
+    await upgraded.init();
+    expect(await upgraded.get_access_request(issuer, "requester")).toEqual(
+      queued.status === "pending" ? queued.request : null,
+    );
+    expect(await upgraded.get_user(issuer, "owner")).toMatchObject({ enabled: 1, admin: 1 });
+    await new WebStorage(root).init();
+  });
   it("permits one concurrent reservation, reconciles once, and enforces exact cumulative decimal budgets", async () => {
     const root = directory(), first = new WebStorage(root), second = new WebStorage(root);
     const results = await Promise.allSettled([first.reserve_paid_run(reservation("a")), second.reserve_paid_run(reservation("b"))]);

@@ -28,7 +28,7 @@ export interface UserRecord extends Row {
 /** A single current access request; resubmission rotates its ID and refreshes its timestamps. */
 export interface AccessRequestRecord extends Row {
   request_id: string; issuer: string; subject: string; status: "pending" | "approved" | "denied";
-  created_at: string; updated_at: string;
+  created_at: string; updated_at: string; email: string | null;
 }
 /** Request submission never grants permissions; enabled users are not queued. */
 export type AccessRequestSubmission =
@@ -182,6 +182,12 @@ export class WebStorage {
         UNIQUE (issuer, subject));
       CREATE INDEX IF NOT EXISTS access_requests_status_created ON access_requests(status, created_at, request_id);
     `);
+    const columns = connection instanceof SqliteConnection
+      ? (await connection.execute("PRAGMA table_info(access_requests)")).rows.map(row => row.name)
+      : (await connection.execute(
+        "SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'access_requests'",
+      )).rows.map(row => row.column_name);
+    if (!columns.includes("email")) await connection.execute("ALTER TABLE access_requests ADD COLUMN email TEXT");
   }
 
   /** Adds content-free, cumulative reservations without resetting existing spend. */
@@ -309,9 +315,10 @@ export class WebStorage {
   /**
    * Queues an exact identity once, returning `already_enabled` without creating a request for enabled users.
    *
-   * @returns The existing record for a pending request, or a new pending record after a decision.
+   * Email is display-only token metadata. Pending submissions refresh available email without changing queue order.
+   * @returns The current pending record, or a new pending record after a decision.
    */
-  async request_access(issuer: string, subject: string): Promise<AccessRequestSubmission> {
+  async request_access(issuer: string, subject: string, email: string | null = null): Promise<AccessRequestSubmission> {
     WebStorage.validate_identity(issuer, subject);
     return this.write(async c => {
       const user = (await c.execute(
@@ -322,23 +329,29 @@ export class WebStorage {
       const existing = (await c.execute(
         "SELECT * FROM access_requests WHERE issuer = ? AND subject = ?", [issuer, subject],
       )).rows[0] as AccessRequestRecord | undefined;
-      if (existing?.status === "pending") return { status: "pending", request: existing };
+      if (existing?.status === "pending") {
+        if (email !== null && email !== existing.email) {
+          await c.execute("UPDATE access_requests SET email = ? WHERE request_id = ?", [email, existing.request_id]);
+          existing.email = email;
+        }
+        return { status: "pending", request: existing };
+      }
 
       const request_id = randomUUID(), now = new Date().toISOString();
       if (existing) {
         await c.execute(
-          "UPDATE access_requests SET request_id = ?, status = 'pending', created_at = ?, updated_at = ? WHERE issuer = ? AND subject = ?",
-          [request_id, now, now, issuer, subject],
+          "UPDATE access_requests SET request_id = ?, status = 'pending', created_at = ?, updated_at = ?, email = ? WHERE issuer = ? AND subject = ?",
+          [request_id, now, now, email, issuer, subject],
         );
       } else {
         await c.execute(
-          "INSERT INTO access_requests (request_id, issuer, subject, status, created_at, updated_at) VALUES (?, ?, ?, 'pending', ?, ?)",
-          [request_id, issuer, subject, now, now],
+          "INSERT INTO access_requests (request_id, issuer, subject, status, created_at, updated_at, email) VALUES (?, ?, ?, 'pending', ?, ?, ?)",
+          [request_id, issuer, subject, now, now, email],
         );
       }
       return {
         status: "pending",
-        request: { request_id, issuer, subject, status: "pending", created_at: now, updated_at: now },
+        request: { request_id, issuer, subject, status: "pending", created_at: now, updated_at: now, email },
       };
     });
   }

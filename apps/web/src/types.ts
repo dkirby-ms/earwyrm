@@ -48,6 +48,8 @@ export type AccessRequestStatus = 'none' | 'pending' | 'approved' | 'denied'
 export interface AdminAccessRequest {
   readonly request_id: string
   readonly subject: string
+  /** Display metadata only; older requests and tokens without email have no value. */
+  readonly email: string | null
   readonly created_at: string
 }
 

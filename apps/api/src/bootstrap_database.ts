@@ -16,7 +16,7 @@ export const WEB_TABLE_COLUMNS: Record<string, readonly string[]> = {
   evaluations: ["output_id", "owner", "brand_transcription", "cta_transcription", "self_rating", "brand_match", "cta_match", "created_at"],
   application_identity: ["singleton", "issuer"],
   application_users: ["issuer", "subject", "enabled", "admin", "paid_speech", "created_at"],
-  access_requests: ["request_id", "issuer", "subject", "status", "created_at", "updated_at"],
+  access_requests: ["request_id", "issuer", "subject", "status", "created_at", "updated_at", "email"],
   lyric_options: ["option_id", "owner", "brief_id", "request_json", "result_json", "created_at"],
   lyric_reservations: ["reservation_id", "action", "reserved_usd", "created_at"],
 };
@@ -192,7 +192,9 @@ async function validate_melody(c: Connection, root: string): Promise<void> {
 /** Copies a validated table using explicit columns; the caller owns the target transaction. */
 export async function _copy_sqlite_table(source: Connection, target: Connection, table: string, columns: readonly string[]): Promise<number> {
   const supported = WEB_TABLE_COLUMNS[table] ?? MELODY_TABLE_COLUMNS[table];
-  if (!supported || JSON.stringify(columns) !== JSON.stringify(supported)) throw new TypeError("Unsupported import table");
+  const legacy = table === "access_requests" ? supported?.filter(column => column !== "email") : undefined;
+  if (!supported || (JSON.stringify(columns) !== JSON.stringify(supported) &&
+      (!legacy || JSON.stringify(columns) !== JSON.stringify(legacy)))) throw new TypeError("Unsupported import table");
   const names = columns.join(", "), sql = `INSERT INTO ${table} (${names}) VALUES (${columns.map(() => "?").join(", ")})`;
   let count = 0;
   // Iterate SQLite statements directly to avoid retaining an entire historical table.
@@ -220,12 +222,16 @@ export async function import_sqlite(directory: string, database_url: string): Pr
     for (const table of ["access_requests", "lyric_options", "lyric_reservations"]) {
       if (!(await web.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", [table])).rows.length) delete sourceColumns[table];
     }
+    if (sourceColumns.access_requests &&
+        !(await web.execute("PRAGMA table_info(access_requests)")).rows.some(row => row.name === "email")) {
+      sourceColumns.access_requests = sourceColumns.access_requests.filter(column => column !== "email");
+    }
     const webTables = await validate_source(web, sourceColumns, new Set(["application_identity", "application_users", "access_requests"]));
     await validate_source(melody, MELODY_TABLE_COLUMNS);
     await validate_web(web, root, webTables);
     await validate_melody(melody, root);
     const counts: Record<string, number> = {};
-    const sources = [[web, WEB_TABLE_COLUMNS, webTables], [melody, MELODY_TABLE_COLUMNS, new Set(MELODY_IMPORT_ORDER)]] as const;
+    const sources = [[web, sourceColumns, webTables], [melody, MELODY_TABLE_COLUMNS, new Set(MELODY_IMPORT_ORDER)]] as const;
     await transaction(new PostgresConnection(database_url, 0x4557524d01), async target => {
       await require_empty_target(target);
       await WebStorage._create_schema(target);

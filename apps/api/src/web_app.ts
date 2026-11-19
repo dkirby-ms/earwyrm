@@ -543,16 +543,21 @@ export function create_app(options: CreateAppOptions = {}): Express {
   app.post('/api/access-requests', require_scope('briefs.read'), async (request, response) => {
     parse(AccessRequestBody, request.body ?? {});
     const { issuer, subject } = identity(response);
+    const claims: Claims = response.locals.claims;
+    const candidates: unknown[] = [claims.email, ...(Array.isArray(claims.emails) ? claims.emails : [])];
+    const email = candidates.find((value): value is string =>
+      typeof value === 'string' && z.email().safeParse(value.trim()).success,
+    )?.trim() ?? null;
     let result: AccessRequestSubmission;
-    try { result = await (await storage()).request_access(issuer, subject); }
+    try { result = await (await storage()).request_access(issuer, subject, email); }
     catch (error) { if (error instanceof TypeError || error instanceof RangeError) throw new HttpError(422, error.message); throw error; }
     response.json({ status: result.status });
   });
   app.get('/api/admin/access-requests', ...authorized('renders.read'), async (_request, response) => {
     const { issuer, subject } = identity(response);
     const requests = await (await storage()).list_access_requests_as_admin(issuer, subject);
-    response.json({ requests: requests.map(({ request_id, subject: requester, created_at }) => ({
-      request_id, subject: requester, created_at,
+    response.json({ requests: requests.map(({ request_id, subject: requester, created_at, email }) => ({
+      request_id, subject: requester, created_at, email,
     })) });
   });
   app.post('/api/admin/access-requests/:request_id/decision', ...authorized('renders.write'), async (request, response) => {

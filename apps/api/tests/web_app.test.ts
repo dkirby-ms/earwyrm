@@ -594,13 +594,29 @@ describe('same-origin Express API', () => {
     const adminList = await request(app).get('/api/admin/access-requests').auth(await token(), { type: 'bearer' });
     expect(adminList.status).toBe(200);
     expect(adminList.body.requests).toEqual([
-      expect.objectContaining({ subject: 'applicant', created_at: expect.any(String), request_id: expect.any(String) }),
+      expect.objectContaining({ subject: 'applicant', email: null, created_at: expect.any(String), request_id: expect.any(String) }),
     ]);
     expect(adminList.text).not.toContain(issuer);
     const id = adminList.body.requests[0].request_id as string;
     expect((await request(app).post(`/api/admin/access-requests/${id}/decision`).auth(
       await token('user-a', { scp: 'renders.read' }), { type: 'bearer' },
     ).send({ decision: 'denied' })).status).toBe(403);
+  });
+  it.each([
+    [{ email: ' applicant@example.test ' }, 'applicant@example.test'],
+    [{ emails: [null, 42, 'not-an-email', 'alternate@example.test'] }, 'alternate@example.test'],
+    [{ email: 42, emails: 'not-an-array', preferred_username: 'not-an-email' }, null],
+  ])('lists only email metadata from verified claims: %j', async (claims, email) => {
+    const { app, store, access_token } = await fixture();
+    const bearer = await token('applicant', claims);
+    await request(app).post('/api/access-requests').auth(bearer, { type: 'bearer' }).expect(200);
+    const queued = await request(app).get('/api/admin/access-requests').auth(access_token, { type: 'bearer' });
+    expect(queued.body.requests).toEqual([
+      expect.objectContaining({ subject: 'applicant', email }),
+    ]);
+    expect(await store.get_user(issuer, 'applicant')).toBeNull();
+    await request(app).post('/api/access-requests').auth(bearer, { type: 'bearer' })
+      .send({ email: 'spoofed@example.test', subject: 'someone-else' }).expect(422);
   });
 
   it('grants baseline access to new and previously disabled identities', async () => {

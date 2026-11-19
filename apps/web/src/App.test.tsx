@@ -43,12 +43,14 @@ function installMocks(
   initialAccessRequestStatus: AccessRequestStatus = 'none',
   isAdmin = true,
   failAccessDecision = false,
+  requesterEmail: string | null = 'requester@example.test',
 ) {
   let accessDenied = denyAccess
   let accessRequestStatus = initialAccessRequestStatus
   let pendingRequests = [{
     request_id: 'request-1',
     subject: 'requester-1',
+    email: requesterEmail,
     created_at: '2026-11-18T12:00:00.000Z',
   }]
   const adminUsers = [
@@ -492,10 +494,25 @@ describe('React workspace', () => {
     await user.click(await screen.findByRole('button', { name: 'Manage access' }))
 
     const queue = await screen.findByRole('region', { name: 'Pending access requests' })
+    expect(within(queue).getByText('Email: requester@example.test')).toBeVisible()
     expect(within(queue).getByText('requester-1')).toBeVisible()
     expect(within(queue).getByRole('button', { name: 'Grant access to requester-1' })).toBeVisible()
     expect(within(queue).getByRole('button', { name: 'Deny request from requester-1' })).toBeVisible()
     expect(within(queue).queryByLabelText('Verified subject')).not.toBeInTheDocument()
+  })
+
+  it('keeps requests actionable when requester email is unavailable', async () => {
+    const user = userEvent.setup()
+    installMocks(false, {}, 'none', true, false, null)
+    render(<App />)
+
+    await user.click(await screen.findByRole('button', { name: 'Sign in with Entra External ID' }))
+    await user.click(await screen.findByRole('button', { name: 'Manage access' }))
+
+    const queue = await screen.findByRole('region', { name: 'Pending access requests' })
+    expect(within(queue).getByText('Email unavailable')).toBeVisible()
+    expect(within(queue).getByText('requester-1')).toBeVisible()
+    expect(within(queue).getByRole('button', { name: 'Grant access to requester-1' })).toBeEnabled()
   })
 
   it('grants baseline access by keyboard and announces the decision', async () => {

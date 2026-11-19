@@ -95,6 +95,9 @@ function postgres_target(fail_on?: string): DatabaseSync {
       if (statement.includes("table_count")) return { rows: [{ table_count: db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table'").get()!.n as number }], rowcount: 0 };
       return { rows: db.prepare("SELECT 1 FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' LIMIT 1").all() as Row[], rowcount: 0 };
     }
+    if (statement.includes("information_schema.columns")) {
+      return { rows: db.prepare("SELECT name AS column_name FROM pragma_table_info('access_requests')").all() as Row[], rowcount: 0 };
+    }
     const prepared = db.prepare(statement);
     if (prepared.columns().length) return { rows: prepared.all(...parameters) as Row[], rowcount: 0 };
     return { rows: [], rowcount: Number(prepared.run(...parameters).changes) };
@@ -214,10 +217,17 @@ describe("operator transactions and read-only import", () => {
     });
   });
   it.each([
-    [true, true], [true, false], [false, true], [false, false],
-  ])("imports compatible records without modifying source data (lyrics: %s, access requests: %s)", async (hasLyrics, hasAccessRequests) => {
+    [true, true, true], [true, true, false], [true, false, false], [false, true, true], [false, false, false],
+  ])("imports compatible records without modifying source data (lyrics: %s, access requests: %s, email: %s)", async (hasLyrics, hasAccessRequests, hasEmail) => {
     const root = directory(), { web, melody, output, job, request } = await source(root, "9223372036854775807");
-    if (hasAccessRequests) await web.request_access("issuer", "requester");
+    if (hasAccessRequests) {
+      await web.request_access("issuer", "requester", "requester@example.test");
+      if (!hasEmail) {
+        const sourceDb = new DatabaseSync(web.database_path);
+        sourceDb.exec("ALTER TABLE access_requests DROP COLUMN email");
+        sourceDb.close();
+      }
+    }
     if (!hasLyrics) {
       const sourceDb = new DatabaseSync(web.database_path);
       sourceDb.exec("DROP TABLE lyric_options; DROP TABLE lyric_reservations");
@@ -233,7 +243,8 @@ describe("operator transactions and read-only import", () => {
     const audio = readFileSync(join(web.audio_dir, output.file)), wav = readFileSync(join(melody.artifact_dir, job.job_id, "backing.wav"));
     const db = postgres_target();
     expect(await import_sqlite(root, local)).toEqual({ runs: 1, paid_attempts: 0, outputs: 1, evaluations: 0, application_identity: 1, application_users: 1, ...(hasAccessRequests ? { access_requests: 1 } : {}), ...(hasLyrics ? { lyric_options: 0, lyric_reservations: 1 } : {}), render_jobs: 1, local_outputs: 0 });
-    if (hasAccessRequests) expect(db.prepare("SELECT subject, status FROM access_requests").get()).toEqual({ subject: "requester", status: "pending" });
+    if (hasAccessRequests) expect(db.prepare("SELECT subject, status, email FROM access_requests").get())
+      .toEqual({ subject: "requester", status: "pending", email: hasEmail ? "requester@example.test" : null });
     if (hasLyrics) expect(db.prepare("SELECT reserved_usd FROM lyric_reservations").get()?.reserved_usd).toBe("0.001");
     expect(db.prepare("SELECT job_id FROM render_jobs").get()!.job_id).toBe(job.job_id);
     const original = new DatabaseSync(melody.database_path, { readOnly: true });
@@ -268,6 +279,14 @@ describe("operator transactions and read-only import", () => {
     await expect(validate_postgres_store(local)).rejects.toThrow("explicit database upgrade");
     await prepare_databases(root, { database_url: local, upgrade_postgres: false });
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'access_requests'").get()).toBeDefined();
+    await store.request_access("issuer", "requester");
+    db.exec("ALTER TABLE access_requests DROP COLUMN email");
+    await prepare_databases(root, { database_url: local, upgrade_postgres: false });
+    expect(await store.get_access_request("issuer", "requester")).toMatchObject({ subject: "requester", email: null });
+    await store.request_access("issuer", "requester", "requester@example.test");
+    expect(await store.list_access_requests_as_admin("issuer", "owner")).toEqual([
+      expect.objectContaining({ subject: "requester", email: "requester@example.test" }),
+    ]);
     await store.reserve_lyric_action("discuss", new Decimal(1), new Decimal(1), new Decimal(1));
     db.exec("DROP TABLE lyric_options; DROP TABLE lyric_reservations");
     expect(await store.has_lyric_budget()).toBe(false);

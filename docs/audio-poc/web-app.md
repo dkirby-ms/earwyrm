@@ -49,6 +49,14 @@ baseline application access only. Administrator and paid Speech permissions
 remain off; use the existing permission editor to assign those separately.
 These changes do not modify External ID accounts.
 
+Pending requests show the requester's email alongside their subject. Email comes
+from the validated access token's `email` or `emails` claim and is display
+information only; access remains tied to issuer and subject. Requests without an
+email claim, including older requests, show **Email unavailable**. Submitting the
+request again with an email-bearing token refreshes a pending request's email
+without changing its place in the queue. SQLite adds this field on initialization;
+PostgreSQL adds it through the existing additive database upgrade path.
+
 For local SQLite, start the API once to create the store. With the same
 `ENTRA_EXPECTED_ISSUER` and private data directory configured for the operator
 shell, bootstrap the first administrator:

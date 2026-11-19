@@ -1,0 +1,30 @@
+{
+  "task_id": "admin-request-email",
+  "task_slug": "admin-request-email",
+  "session_name": "Admin request email",
+  "parent_task": null,
+  "child_tasks": [],
+  "mode": "automatic",
+  "active_phase": "Follow-up",
+  "status": "completed",
+  "session_status": "stopped",
+  "artifact_paths": {"research": ".copilot-tracking/research/2026-11-19/admin-request-email-research.md", "plan": ".copilot-tracking/plans/2026-11-19/admin-request-email-plan.md", "critique": ".copilot-tracking/reviews/plans/2026-11-19/admin-request-email-plan-critique.md", "changes": ".copilot-tracking/changes/2026-11-19/admin-request-email-changes.md", "review": ".copilot-tracking/reviews/logs/2026-11-19/admin-request-email-review.md"},
+  "documents": {"research": [".copilot-tracking/research/2026-11-19/admin-request-email-research.md"], "plan": [".copilot-tracking/plans/2026-11-19/admin-request-email-plan.md"], "critique": [".copilot-tracking/reviews/plans/2026-11-19/admin-request-email-plan-critique.md"], "changes": [".copilot-tracking/changes/2026-11-19/admin-request-email-changes.md"], "review": [".copilot-tracking/reviews/logs/2026-11-19/admin-request-email-review.md"]},
+  "confirmed_decisions": [
+    {"decision": "Automatic session scope", "status": "current", "evidence": "Show requester email alongside subject in admin grant flow; preserve subject-based authorization. Local source, tests and related documentation only; no deployment."},
+    {"decision": "Automatic progression boundary", "status": "through-review", "evidence": "User selected end-to-end."},
+    {"decision": "Research decision participation", "status": "agent-owned", "evidence": "end-to-end"},
+    {"decision": "Planning decision participation", "status": "agent-owned", "evidence": "end-to-end"},
+    {"decision": "Review decision participation", "status": "agent-owned", "evidence": "end-to-end"},
+    {"decision": "Follow-up decision participation", "status": "agent-owned", "evidence": "end-to-end"},
+    {"decision": "Planning critique", "status": "standard", "evidence": "Default"},
+    {"decision": "Review step", "status": "run", "evidence": "Default"},
+    {"decision": "Research disposition", "status": "executed", "evidence": "C1-C4; Ready"},
+    {"decision": "Plan disposition", "status": "planned", "evidence": "P01 complete; standard critique passed"},
+    {"decision": "Canvas", "status": "current", "evidence": "rpi-admin-request-email; ZB7Z; plugin:hve-core:rpi-workflow"},
+    {"decision": "Session acceptance", "status": "complete", "evidence": "Review Complete and Conformant; 135 API tests and 26 frontend tests pass, typecheck passes; synthetic mobile/desktop verified. No deployment requested or performed."}
+  ],
+  "blockers": [],
+  "next_action": null,
+  "prioritized_follow_ups": []
+}

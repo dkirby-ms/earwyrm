@@ -1873,7 +1873,8 @@ function App() {
                   <ul className="stack">
                     {adminAccessRequests.map((request) => (
                       <li key={request.request_id}>
-                        <p><code>{request.subject}</code></p>
+                        <p>{request.email ? <>Email: {request.email}</> : 'Email unavailable'}</p>
+                        <p>Subject: <code>{request.subject}</code></p>
                         <p className="muted">
                           Requested <time dateTime={request.created_at}>{new Date(request.created_at).toLocaleString()}</time>
                         </p>
