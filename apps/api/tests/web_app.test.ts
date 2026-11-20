@@ -1025,6 +1025,10 @@ describe('one-page AI jingles', () => {
     const cta = script.split(/(?<=[.!?])\s+/).at(-1)!;
     const hook = `${brief.name}, a tune up for your ride`;
     const render = vi.fn(fake_render);
+    let mark_entered!: () => void;
+    let release!: () => void;
+    const entered = new Promise<void>(resolve => { mark_entered = resolve; });
+    const released = new Promise<void>(resolve => { release = resolve; });
     const { app, access_token, speech_factory } = await fixture({
       data_dir: root,
       environ: { ...speech_environment(root, { SPEECH_TOTAL_BUDGET_USD: '2' }), ...lyric_limits, LYRIC_ENABLED: 'true' },
@@ -1035,11 +1039,26 @@ describe('one-page AI jingles', () => {
         assess: async () => ({ english: true, grounded: true, risky_claims: false }),
         screen: async () => ({ moderation_passed: true, protected_material_detected: false }),
       },
-      score_composer: { compose: async () => { throw new Error('test provider failed'); } },
+      score_composer: { compose: async () => {
+        mark_entered();
+        await released;
+        throw new Error('test provider failed');
+      } },
       render,
     });
-    const result = await request(app).post('/api/jingles').auth(access_token, { type: 'bearer' })
-      .send({ description: `Write an upbeat jingle for ${brief.name}, with tune ups. End with "${cta}"` });
+    const id = 'a08940a6-6b20-42b0-98ab-66b98b51e013';
+    const progress = `/api/jingles/${id}/progress`;
+    const generation = request(app).post('/api/jingles').auth(access_token, { type: 'bearer' })
+      .send({ description: `Write an upbeat jingle for ${brief.name}, with tune ups. End with "${cta}"`, progress_id: id })
+      .then(response => response);
+    try {
+      await Promise.race([entered, generation.then(res => { throw new Error(`Score was not reached: ${res.status}`); })]);
+      expect((await request(app).get(progress).auth(access_token, { type: 'bearer' })).body).toEqual({ stage: 'score' });
+      expect((await request(app).get(progress).auth(await token('user-b'), { type: 'bearer' })).body).toEqual({ stage: null });
+      expect((await request(app).get(progress)).status).toBe(401);
+    } finally { release(); }
+    const result = await generation;
+    expect((await request(app).get(progress).auth(access_token, { type: 'bearer' })).body).toEqual({ stage: null });
     expect(result.status).toBe(503);
     expect(render).not.toHaveBeenCalled();
     expect(speech_factory).not.toHaveBeenCalled();

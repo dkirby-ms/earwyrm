@@ -82,7 +82,10 @@ application permissions. Operators can also use
    paid request without a separate confirmation. The server screens the lyrics,
    uses Foundry to compose the score, and mixes Azure Speech with that score.
    It does not substitute seeded music if a stage fails.
-3. Listen and review the demo on the same page. Generation is not broadcast
+3. Follow the generation timeline. It highlights the current step as the
+   server reports it; short steps may pass between updates. If updates become
+   unavailable, the page still waits for the original generation request.
+4. Listen and review the demo on the same page. Generation is not broadcast
    approval. If the connection drops, check the page for a result before making
    another request. A failed generation can still incur provider charges.
 

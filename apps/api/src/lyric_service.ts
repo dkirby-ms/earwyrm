@@ -27,16 +27,16 @@ function brief_text(request: LyricRequest): string {
 export class LyricWriter {
   constructor(readonly backend: LyricBackend) {}
 
-  /** Resolve to screened lyrics or an explicit safe outcome; unknown programming errors reject. */
-  async write(request: LyricRequest): Promise<LyricResult> {
+  /** Resolve to screened lyrics or an explicit safe outcome; notify immediately before external safety checks. */
+  async write(request: LyricRequest, on_screen?: () => void): Promise<LyricResult> {
     request = LyricRequest.parse(request);
     return TRACER.startActiveSpan("create.lyrics", { kind: SpanKind.SERVER }, async span => {
-      try { return await this.write_candidate(request); }
+      try { return await this.write_candidate(request, on_screen); }
       finally { span.end(); }
     });
   }
 
-  private async write_candidate(request: LyricRequest): Promise<LyricResult> {
+  private async write_candidate(request: LyricRequest, on_screen?: () => void): Promise<LyricResult> {
     let attempts = 0, feedback: string[] = [], pronunciation_line: number | undefined;
     const text = brief_text(request);
     const result = (status: LyricResult["status"], reasons: string[], output: LyricDraft | null = null): LyricResult => LyricResult.parse({ status, attempts, reasons, output });
@@ -68,6 +68,7 @@ export class LyricWriter {
         const assessment = parse_evidence(Assessment, await this.backend.assess(request, draft), "malformed_assessment");
         if (!assessment.english) return result("rejected", ["unsupported_output_language"]);
         if (!assessment.grounded) { feedback = ["unsupported_claims"]; continue; }
+        on_screen?.();
         const screening = parse_evidence(Screening, await this.backend.screen(draft.lyrics), "malformed_safety_response");
         const reasons: string[] = [];
         if (!screening.moderation_passed) reasons.push("moderation_rejected");

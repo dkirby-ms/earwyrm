@@ -5,6 +5,8 @@ import type { PublicConfig } from './types'
 interface ApiRequestOptions {
   readonly method?: string
   readonly body?: unknown
+  readonly signal?: AbortSignal
+  readonly interactive?: boolean
 }
 
 /** An HTTP error response, including the status needed to handle specific API outcomes. */
@@ -34,13 +36,15 @@ async function requestApi(
     throw new Error('Refusing to send an API token outside this origin.')
   }
 
-  const accessToken = await getAccessToken(client, config, scopeSuffix)
+  const accessToken = await getAccessToken(client, config, scopeSuffix, options.interactive)
+  options.signal?.throwIfAborted()
   const headers = new Headers({ Authorization: `Bearer ${accessToken}` })
   const request: RequestInit = {
     method: options.method ?? 'GET',
     headers,
     credentials: 'same-origin',
     cache: 'no-store',
+    ...(options.signal ? { signal: options.signal } : {}),
   }
 
   if (options.body !== undefined) {

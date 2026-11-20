@@ -200,8 +200,11 @@ function identity(response: Response): { issuer: string; subject: string } {
   if (typeof claims?.iss !== 'string' || !claims.iss.trim() || typeof claims.sub !== 'string' || !claims.sub.trim()) {
     throw new HttpError(401, 'Invalid access token');
   }
+
   return { issuer: claims.iss, subject: claims.sub };
 }
+
+type JingleStage = 'brief' | 'lyrics' | 'safety' | 'score' | 'backing' | 'voice' | 'mix';
 
 function actual_request_cost(output: OutputRecord): Decimal | null {
   const attempt = output.attempt;
@@ -314,6 +317,7 @@ export function create_app(options: CreateAppOptions = {}): Express {
   let storage_pending: Promise<WebAppStorage> | undefined;
   let render_active = false;
   let jingle_active = false;
+  let jingle_progress: { id: string; issuer: string; subject: string; stage: JingleStage } | null = null;
   const render = options.render ?? render_brief;
   const speech_factory = options.speech_factory ?? options.speech_provider_factory ?? (() => new AzureSpeech(speech_settings(source)));
   let lyrics_active = false;
@@ -556,6 +560,7 @@ export function create_app(options: CreateAppOptions = {}): Express {
     [/^\/api\/access-requests$/, ['GET', 'POST']],
     [/^\/api\/briefs\/validate$/, ['POST']],
     [/^\/api\/jingles$/, ['GET', 'POST']],
+    [/^\/api\/jingles\/[^/]+\/progress$/, ['GET']],
     [/^\/api\/arrangements$/, ['POST']],
     [/^\/api\/lyrics\/options$/, ['GET', 'POST']],
     [/^\/api\/chat$/, ['GET', 'POST']],
@@ -823,7 +828,7 @@ export function create_app(options: CreateAppOptions = {}): Express {
   const score_selection = BriefSelection.extend({
     option_id: z.uuid(), confirm_paid_generation: z.literal(true),
   });
-  async function compose_score(payload: z.infer<typeof score_selection>, response: Response, jingle = false) {
+  async function compose_score(payload: z.infer<typeof score_selection>, response: Response, jingle = false, on_backing?: () => void) {
     const started = performance.now();
     if (payload.brief_ids.length !== 1) throw new HttpError(422, 'Compose a score for one active brief at a time');
     if (payload.lyric_selections?.length || payload.composition_selections?.length) {
@@ -905,6 +910,7 @@ export function create_app(options: CreateAppOptions = {}): Express {
 
     let composition;
     try {
+      on_backing?.();
       const timing = score_lyric_timing(score, result.output.lyrics.split('\n'), lyric_request.pronunciations);
       const melody = new MelodyService(join(store.root, 'melody'), { database_url: store.database_url ?? undefined });
       composition = await melody.submit_score({
@@ -1015,7 +1021,7 @@ export function create_app(options: CreateAppOptions = {}): Express {
       ...(payload.composition_selections?.length ? { composition_selections: payload.composition_selections } : {}),
     });
   });
-  async function render_selection(payload: RenderRequest, response: Response, jingle_estimate?: JingleEstimate) {
+  async function render_selection(payload: RenderRequest, response: Response, jingle_estimate?: JingleEstimate, on_stage?: (stage: 'voice' | 'mix') => void) {
     if (payload.mode === 'instrumental' && payload.lyric_selections?.length) {
       throw new HttpError(422, 'Instrumental previews do not render selected lyrics');
     }
@@ -1075,6 +1081,7 @@ export function create_app(options: CreateAppOptions = {}): Express {
           const rows = await render(directory, brief, text, index, provider, evidence, {
             history_dir: join(store.root, 'melody'), database_url: store.database_url,
             ...(composition ? { composition } : {}),
+            ...(on_stage ? { on_stage } : {}),
           });
           for (const row of rows) {
             if (custom) {
@@ -1174,14 +1181,27 @@ export function create_app(options: CreateAppOptions = {}): Express {
     response.json({ estimate, unavailable_reason, runs });
   });
 
+  app.get('/api/jingles/:id/progress', ...authorized('renders.read'), (request, response) => {
+    const id = parse(z.uuid(), request.params.id);
+    const actor = identity(response);
+    const active = jingle_progress;
+    const stage = active?.id === id && active.issuer === actor.issuer && active.subject === actor.subject
+      ? active.stage : null;
+    response.json({ stage });
+  });
+
   app.post('/api/jingles', ...authorized('renders.write'), async (request, response) => {
-    const { description } = parse(z.strictObject({ description: JingleDescription }), request.body);
+    const { description, progress_id } = parse(z.strictObject({ description: JingleDescription, progress_id: z.uuid().optional() }), request.body);
     if (IMITATION.test(description)) throw new HttpError(422, 'Describe an original mood or genre without asking to imitate an artist or song.');
     if (jingle_active || render_active || lyrics_active) throw new HttpError(409, 'Another generation is in progress. Try again when it finishes.');
     jingle_active = true;
+    const progress = progress_id === undefined ? null : { id: progress_id, ...identity(response), stage: 'brief' as JingleStage };
+    jingle_progress = progress;
+    const set_stage = (stage: JingleStage) => { if (progress) progress.stage = stage; };
     try {
       const estimate = await jingle_quote(response);
       const backend = await paid_lyric_backend('jingle_write');
+      set_stage('lyrics');
       const direction = parse(JingleDirection, await (options.jingle_direction
         ? options.jingle_direction(description)
         : backend instanceof AzureLyricBackend
@@ -1205,7 +1225,7 @@ export function create_app(options: CreateAppOptions = {}): Express {
         throw error;
       }
       const lyric_request = LyricRequest.parse({ ...custom, product_path: 'spoken', creative_direction: description });
-      const lyrics = await new LyricWriter(backend).write(lyric_request);
+      const lyrics = await new LyricWriter(backend).write(lyric_request, () => set_stage('safety'));
       const store = await storage();
       const owner = identity(response).subject;
       if (lyrics.status !== 'accepted') {
@@ -1216,17 +1236,21 @@ export function create_app(options: CreateAppOptions = {}): Express {
       const saved = await store.save_lyric_option(owner, lyric_request, lyrics);
       const brief_id = custom.brief.brief_id;
       const selection = { brief_ids: [brief_id], custom_briefs: [custom] };
-      const score = await compose_score({ ...selection, option_id: saved.option_id, confirm_paid_generation: true }, response, true);
+      set_stage('score');
+      const score = await compose_score({ ...selection, option_id: saved.option_id, confirm_paid_generation: true }, response, true, () => set_stage('backing'));
       if (score.status !== 200) throw new HttpError(score.status, score.body.detail);
       response.json(await render_selection({
         ...selection, mode: 'azure',
         lyric_selections: [{ brief_id, option_id: saved.option_id }],
         composition_selections: [{ brief_id, job_id: score.body.job_id }],
-      }, response, estimate));
+      }, response, estimate, set_stage));
     } catch (error) {
       if (error instanceof CloudFailure) throw new HttpError(503, 'AI generation could not complete. No fallback audio was generated.');
       throw error;
-    } finally { jingle_active = false; }
+    } finally {
+      jingle_progress = null;
+      jingle_active = false;
+    }
   });
   app.get('/api/renders/:run_id', ...authorized('renders.read'), async (request, response) => {
     const run = await (await storage()).get_run(String(request.params.run_id), identity(response).subject);

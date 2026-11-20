@@ -16,6 +16,15 @@ interface Identity { readonly issuer: string; readonly subject: string }
 type View = 'workspace' | 'admin'
 const emptyDraft: UserAccessDraft = { issuer: '', subject: '', enabled: false, admin: false, paid_speech: false }
 const emptyEvaluation: EvaluationDraft = { brand_transcription: '', cta_transcription: '', self_rating: '' }
+const generationSteps = [
+  { stage: 'brief', title: 'Check the brief', detail: 'Check the budget and read the business description.', service: 'Earwyrm' },
+  { stage: 'lyrics', title: 'Write the lyrics', detail: 'Extract the brand, offer, and call to action; draft lyrics and check the claims.', service: 'Azure OpenAI' },
+  { stage: 'safety', title: 'Screen the lyrics', detail: 'Check for harmful content and protected material.', service: 'Azure Content Safety' },
+  { stage: 'score', title: 'Compose the score', detail: 'Turn the accepted lyrics into notes and timing.', service: 'Azure OpenAI' },
+  { stage: 'backing', title: 'Render the backing track', detail: 'Check the melody and render the instrumental track.', service: 'Earwyrm' },
+  { stage: 'voice', title: 'Synthesize the voice', detail: 'Generate one vocal for both versions.', service: 'Azure Speech' },
+  { stage: 'mix', title: 'Mix and save two versions', detail: 'Align the voice and save spoken and vocoded WAVs.', service: 'Earwyrm' },
+] as const
 
 function errorText(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback
@@ -52,6 +61,7 @@ function App() {
   const [history, setHistory] = useState<JingleHistory | null>(null)
   const [historyUncertain, setHistoryUncertain] = useState(false)
   const [description, setDescription] = useState('')
+  const [generation, setGeneration] = useState<{ status: 'idle' | 'running' | 'failed' | 'done'; step: number; delayed?: boolean }>({ status: 'idle', step: -1 })
   const [adminUsers, setAdminUsers] = useState<readonly UserAccess[]>([])
   const [adminRequests, setAdminRequests] = useState<readonly AdminAccessRequest[]>([])
   const [userDraft, setUserDraft] = useState<UserAccessDraft>(emptyDraft)
@@ -202,6 +212,7 @@ function App() {
       setHistory(null)
       setHistoryUncertain(false)
       setDescription('')
+      setGeneration({ status: 'idle', step: -1 })
       setEvidence({})
       setEvaluations({})
       setAdminUsers([])
@@ -238,12 +249,40 @@ function App() {
     event.preventDefault()
     if (!client || !config || !history?.estimate || historyUncertain || !description.trim()) return
     await runAction('Generating jingle', async () => {
+      const progressId = crypto.randomUUID()
+      const controller = new AbortController()
+      setGeneration({ status: 'running', step: -1 })
+      let lastStep = -1
+      let timer: ReturnType<typeof setTimeout>
+      const poll = async () => {
+        try {
+          const { stage } = await apiJson<{ stage: string | null }>(client, config, `/api/jingles/${progressId}/progress`, scopes.read, {
+            signal: AbortSignal.any([controller.signal, AbortSignal.timeout(4000)]),
+            interactive: false,
+          })
+          if (controller.signal.aborted) return
+          const step = generationSteps.findIndex(item => item.stage === stage)
+          if (step > lastStep) {
+            lastStep = step
+            setAnnouncement(`Step ${step + 1} of ${generationSteps.length}: ${generationSteps[step]!.title}.`)
+          }
+          setGeneration(current => ({ ...current, step: lastStep, delayed: stage === null && lastStep >= 0 }))
+        } catch {
+          if (!controller.signal.aborted) setGeneration(current => ({ ...current, delayed: true }))
+        } finally {
+          if (!controller.signal.aborted) timer = setTimeout(() => void poll(), 500)
+        }
+      }
+      timer = setTimeout(() => void poll(), 300)
       let result: RenderRun
       try {
         result = await apiJson<RenderRun>(client, config, '/api/jingles', scopes.write, {
-          method: 'POST', body: { description: description.trim() },
+          method: 'POST', body: { description: description.trim(), progress_id: progressId },
         })
       } catch (error) {
+        controller.abort()
+        clearTimeout(timer)
+        setGeneration(current => ({ ...current, status: 'failed' }))
         let refreshMessage = ''
         try { await refreshHistory(client, config) }
         catch {
@@ -252,6 +291,9 @@ function App() {
         }
         throw new Error(`${errorText(error, 'The jingle could not be generated.')} Partial provider calls may be charged. Check history before trying again.${refreshMessage}`)
       }
+      controller.abort()
+      clearTimeout(timer)
+      setGeneration({ status: 'done', step: generationSteps.length })
       setHistory(current => current ? { ...current, runs: [result, ...current.runs.filter(run => run.run_id !== result.run_id)] } : current)
       setDescription('')
       setAnnouncement('Jingle generated. Review and listen below.')
@@ -392,10 +434,10 @@ function App() {
           <button className="button button-secondary" type="button" disabled={busy} onClick={() => void signOut()}>Sign out</button>
         </div>}
       </header>
-      <main id="main" tabIndex={-1} aria-busy={busy || booting || workspaceLoading}>
+      <main id="main" tabIndex={-1} aria-busy={booting || workspaceLoading}>
         <p className="visually-hidden" aria-live="polite" aria-atomic="true">{announcement}</p>
         {(booting || workspaceLoading) && <p className="loading-message" role="status">Loading your workspace…</p>}
-        {busy && <p className="working-message" role="status">{announcement}</p>}
+        {busy && generation.status !== 'running' && <p className="working-message">{announcement}</p>}
         {errorMessage && <p className="alert" role="alert">{errorMessage}</p>}
         {config && config.setup_status !== 'ready' && <section className="panel sign-in-panel">
           <h2>Sign-in setup required</h2>
@@ -419,12 +461,21 @@ function App() {
         {signedIn && access && <div id="workspace">
           <div className="jingle-workspace" hidden={view !== 'workspace'}>
             <section className="jingle-create" aria-labelledby="create-heading">
-              <h1 id="create-heading">Create a jingle</h1>
-              <p>Tell us the business or product name and the sound you want. Add an offer or a call to action if you have one.</p>
+              <div className="jingle-create-banner">
+                <div>
+                  <h1 id="create-heading">Create a jingle</h1>
+                  <p>From a business description to two playable mixes.</p>
+                </div>
+                <svg viewBox="0 0 165 64" aria-hidden="true" focusable="false">
+                  <path d="M2 32h24l10-15 9 29 13-43 13 58 13-39 11 19 10-9h58" />
+                </svg>
+              </div>
+              <div className="jingle-create-grid">
               <form onSubmit={event => void generate(event)}>
                 <label htmlFor="description">Describe your jingle</label>
+                <p id="description-help" className="description-help">Include the business or product name and the sound you want. Add an offer or a call to action if you have one.</p>
                 <textarea id="description" value={description} onChange={event => setDescription(event.currentTarget.value)} maxLength={400} required disabled={busy} placeholder="An upbeat jingle for Cedar Loop Bike Repair, with a bright synth hook for spring tune-ups." aria-describedby="description-help" />
-                <p id="description-help" className="character-count">{description.length} / 400 characters</p>
+                <p className="character-count">{description.length} / 400 characters</p>
                 {history?.estimate && <div className="estimate-summary">
                   <strong>Maximum estimated cost: ${history.estimate.total_max_usd}</strong>
                   <p>AI and safety: ${history.estimate.model_and_safety_max_usd} · Speech: ${history.estimate.speech_max_usd}. Hosting is not included.</p>
@@ -437,6 +488,32 @@ function App() {
                   {historyUncertain && <button className="button button-secondary" type="button" disabled={busy} onClick={() => void reloadWorkspace()}>Reload status</button>}
                 </div>
               </form>
+              <section className="generation-flow" aria-labelledby="generation-flow-heading">
+                <h2 id="generation-flow-heading">How your jingle gets made</h2>
+                <p className="generation-summary">
+                  {generation.status === 'idle' && 'Steps light up as the server reports progress.'}
+                  {generation.status === 'running' && (generation.delayed ? 'Live updates are temporarily unavailable.' : generation.step < 0 ? 'Waiting for the server to start.' : `Step ${generation.step + 1} of ${generationSteps.length}`)}
+                  {generation.status === 'failed' && 'Generation did not complete. Check the message above before trying again.'}
+                  {generation.status === 'done' && 'Both mixes are ready in Your jingles.'}
+                </p>
+                <ol role="list" aria-labelledby="generation-flow-heading" className="generation-steps">
+                  {generationSteps.map((step, index) => {
+                    const state = index < generation.step ? 'complete'
+                      : index === generation.step && generation.status === 'running' && !generation.delayed ? 'active'
+                        : index === generation.step ? 'last' : 'waiting'
+                    return <li key={step.stage} data-state={state} aria-current={state === 'active' ? 'step' : undefined}>
+                      <span className="generation-number" aria-hidden="true">{index + 1}</span>
+                      <div>
+                        <h3>{step.title}</h3>
+                        <p>{step.detail}</p>
+                        <span className="generation-service">{step.service}</span>
+                      </div>
+                      {state !== 'waiting' && <span className="generation-label">{state === 'active' ? 'In progress' : state === 'complete' ? 'Done' : 'Last reported'}</span>}
+                    </li>
+                  })}
+                </ol>
+              </section>
+              </div>
             </section>
             {unresolved.length > 0 && <section className="jingle-reconciliation" aria-labelledby="reconciliation-heading">
               <h2 id="reconciliation-heading">Usage awaiting reconciliation</h2>

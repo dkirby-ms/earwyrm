@@ -1,0 +1,120 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1160" height="980" viewBox="0 0 1160 980" role="img" aria-labelledby="title description">
+  <title id="title">How Earwyrm makes a jingle</title>
+  <desc id="description">The browser submits a description. Azure OpenAI extracts facts, writes and checks lyrics, then composes a score. Content Safety screens the lyrics. Earwyrm renders the score locally, calls Azure Speech once and uses that vocal in spoken and vocoded WAVs. An illustrative first-pass costs 0.01952 US dollars in provider charges.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto" viewBox="0 0 8 6">
+      <path d="M0 0L8 3L0 6Z" fill="#586475"/>
+    </marker>
+    <style>
+      text {font-family: system-ui, sans-serif; fill:#152433}
+      .hero {font-size:52px;font-weight:780;letter-spacing:-1.6px}
+      .eyebrow {font-size:14px;font-weight:750;letter-spacing:2px}
+      .subtitle {font-size:19px;fill:#415165}
+      .heading {font-size:24px;font-weight:760}
+      .body {font-size:16px;fill:#34475b}
+      .api {font-family:monospace;font-size:14px;fill:#356050}
+      .badge {font-size:13px;font-weight:750;letter-spacing:.5px;fill:#1e594a}
+      .local {fill:#34516d}
+      .card {fill:#fff;stroke:#cbd4df}
+      .line {stroke:#586475;stroke-width:2;fill:none;marker-end:url(#arrow)}
+      .num {font-size:15px;font-weight:750;fill:#fff;text-anchor:middle}
+      .side {font-size:14px;fill:#dce7f1}
+      .white {fill:#f4f8fc}
+      .money {font-size:44px;font-weight:800;fill:#f8edb7}
+    </style>
+  </defs>
+  <rect width="1160" height="980" fill="#f3f5f8"/>
+  <rect x="34" y="33" width="1092" height="125" rx="22" fill="#e1efe8"/>
+  <text x="60" y="65" class="eyebrow">EARWYRM / WEB GENERATION</text>
+  <text x="58" y="116" class="hero">How a jingle gets made</text>
+  <text x="60" y="142" class="subtitle">From a business description to two playable mixes</text>
+  <path d="M925 95h16l10 -16 11 31 13 -48 14 64 14 -42 12 20 11 -9h64" fill="none" stroke="#34715e" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <g aria-label="Seven generation steps">
+    <path d="M61 218V829" class="line"/>
+    <g transform="translate(0 177)">
+      <rect x="86" width="657" height="87" rx="13" class="card"/>
+      <circle cx="61" cy="28" r="16" fill="#36536f"/><text x="61" y="33" class="num">1</text>
+      <text x="105" y="30" class="heading">Describe the business</text>
+      <text x="722" y="28" text-anchor="end" class="badge local">BROWSER + API</text>
+      <text x="105" y="53" class="body">Show estimate and history; submit the description and check budgets.</text>
+      <text x="105" y="75" class="api">GET /api/jingles · POST /api/jingles</text>
+    </g>
+    <g transform="translate(0 273)">
+      <rect x="86" width="657" height="106" rx="13" class="card"/>
+      <circle cx="61" cy="28" r="16" fill="#286451"/><text x="61" y="33" class="num">2</text>
+      <text x="105" y="30" class="heading">Extract facts and write lyrics</text>
+      <text x="722" y="28" text-anchor="end" class="badge">AZURE OPENAI · $0.00432</text>
+      <text x="105" y="54" class="body">Extract brand, offer, CTA and mood; preflight, draft and assess grounding.</text>
+      <text x="105" y="75" class="body">Local lyric rules can reject a draft before assessment. Up to 3 retries.</text>
+      <text x="105" y="95" class="api">POST /openai/v1/chat/completions · 4 calls on first-pass success</text>
+    </g>
+    <g transform="translate(0 388)">
+      <rect x="86" width="657" height="91" rx="13" class="card"/>
+      <circle cx="61" cy="28" r="16" fill="#286451"/><text x="61" y="33" class="num">3</text>
+      <text x="105" y="30" class="heading">Screen the lyrics</text>
+      <text x="722" y="28" text-anchor="end" class="badge">CONTENT SAFETY · $0.00076</text>
+      <text x="105" y="55" class="body">Check harmful content and protected material before using the draft.</text>
+      <text x="105" y="78" class="api">POST /contentsafety/{text:analyze, text:detectProtectedMaterial}</text>
+    </g>
+    <g transform="translate(0 488)">
+      <rect x="86" width="657" height="91" rx="13" class="card"/>
+      <circle cx="61" cy="28" r="16" fill="#286451"/><text x="61" y="33" class="num">4</text>
+      <text x="105" y="30" class="heading">Compose the score</text>
+      <text x="722" y="28" text-anchor="end" class="badge">AZURE OPENAI · $0.00244</text>
+      <text x="105" y="55" class="body">Turn accepted lyrics and brief into structured notes and timing, not audio.</text>
+      <text x="105" y="78" class="api">POST /openai/v1/chat/completions · 1 call for a new score</text>
+    </g>
+    <g transform="translate(0 588)">
+      <rect x="86" width="657" height="73" rx="13" class="card"/>
+      <circle cx="61" cy="28" r="16" fill="#36536f"/><text x="61" y="33" class="num">5</text>
+      <text x="105" y="30" class="heading">Render the backing track</text>
+      <text x="722" y="28" text-anchor="end" class="badge local">EARWYRM SERVER</text>
+      <text x="105" y="55" class="body">Check lyric timing and melody similarity, then render MIDI and backing WAV.</text>
+    </g>
+    <g transform="translate(0 670)">
+      <rect x="86" width="657" height="91" rx="13" class="card"/>
+      <circle cx="61" cy="28" r="16" fill="#286451"/><text x="61" y="33" class="num">6</text>
+      <text x="105" y="30" class="heading">Synthesize the voice once</text>
+      <text x="722" y="28" text-anchor="end" class="badge">AZURE SPEECH · $0.01200</text>
+      <text x="105" y="55" class="body">Read lyrics with Jenny Neural; return PCM audio and word timing.</text>
+      <text x="105" y="78" class="api">Azure Speech SDK · speakTextAsync · en-US-JennyNeural</text>
+    </g>
+    <g transform="translate(0 770)">
+      <rect x="86" width="657" height="104" rx="13" class="card"/>
+      <circle cx="61" cy="28" r="16" fill="#36536f"/><text x="61" y="33" class="num">7</text>
+      <text x="105" y="30" class="heading">Mix and play two WAVs</text>
+      <text x="722" y="28" text-anchor="end" class="badge local">EARWYRM SERVER</text>
+      <text x="105" y="55" class="body">Align the same voice to the backing for both spoken and vocoded mixes.</text>
+      <text x="105" y="80" class="api">GET /api/outputs/:output_id/audio · authenticated playback</text>
+    </g>
+  </g>
+
+  <g transform="translate(765 177)" aria-label="Costs and guardrails">
+    <rect width="361" height="697" rx="18" fill="#152c42"/>
+    <text x="24" y="40" class="eyebrow white">ONE FIRST-PASS SUCCESS</text>
+    <text x="24" y="94" class="money">$0.01952</text>
+    <text x="25" y="122" class="side">About 2¢ · example provider cost (USD)</text>
+    <path d="M24 144h313M24 398h313M24 570h313" stroke="#51677d"/>
+    <text x="24" y="172" class="eyebrow white">SCENARIO ASSUMPTIONS</text>
+    <text x="24" y="201" class="side">Example model: GPT-4.1-mini Global</text>
+    <text x="24" y="223" class="side">$0.40 in / $1.60 out per 1M tokens</text>
+    <text x="24" y="250" class="side">Text: 4 × (1,500 in + 300 out tokens)</text>
+    <text x="24" y="272" class="side">Score: 2,500 in + 900 out tokens</text>
+    <text x="24" y="299" class="side">Safety: 2 records at $0.38 per 1,000</text>
+    <text x="24" y="321" class="side">Voice: 250 characters at $48 per 1M</text>
+    <text x="24" y="348" class="side">Speech rate is from the repo sample.</text>
+    <text x="24" y="370" class="side">Deployment model and rates can differ.</text>
+    <text x="24" y="427" class="eyebrow white">APP’S UPFRONT ESTIMATE</text>
+    <text x="24" y="457" class="side">11 × configured model-call ceiling</text>
+    <text x="24" y="479" class="side">+ 2 × configured safety-call ceiling</text>
+    <text x="24" y="501" class="side">+ Speech allowance for 400 characters</text>
+    <text x="24" y="536" class="side">An estimate ceiling, not the Azure bill.</text>
+    <text x="24" y="598" class="eyebrow white">NOT EVERY RUN FINISHES</text>
+    <text x="24" y="626" class="side">Retries can add model calls. Screening</text>
+    <text x="24" y="648" class="side">or provider failures can stop the run;</text>
+    <text x="24" y="670" class="side">no offline audio is substituted.</text>
+  </g>
+  <text x="86" y="920" class="body">Server steps incur no per-call AI charge. The estimate excludes hosting and storage; actual charges require billing reconciliation.</text>
+  <text x="86" y="947" class="body">Rates checked Nov 19, 2026: Azure OpenAI and Content Safety pricing; Speech uses the repository sample.</text>
+</svg>

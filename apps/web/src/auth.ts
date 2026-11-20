@@ -58,12 +58,14 @@ export async function initializeAuth(config: PublicConfig): Promise<AuthContext>
  * Gets an API access token, prompting only when silent acquisition requires interaction.
  *
  * @param scopeSuffix - One of the delegated API scope names configured by the service.
+ * @param interactive - Whether this request can prompt if silent acquisition requires interaction.
  * @throws When no account is signed in or token acquisition fails.
  */
 export async function getAccessToken(
   client: IPublicClientApplication,
   config: PublicConfig,
   scopeSuffix: string,
+  interactive = true,
 ): Promise<string> {
   const account = client.getActiveAccount() ?? client.getAllAccounts()[0]
   if (!account) throw new Error('Sign in before using the workspace.')
@@ -74,7 +76,7 @@ export async function getAccessToken(
     return (await client.acquireTokenSilent(request)).accessToken
   } catch (error) {
     const msal = window.msal
-    if (!msal || !(error instanceof msal.InteractionRequiredAuthError)) throw error
+    if (!interactive || !msal || !(error instanceof msal.InteractionRequiredAuthError)) throw error
     return (await client.acquireTokenPopup(request)).accessToken
   }
 }

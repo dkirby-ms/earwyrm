@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest'
-import { cleanup, render, screen, within } from '@testing-library/react'
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
@@ -26,6 +26,8 @@ function installMocks(options: {
   history?: JingleHistory
   failDecision?: boolean
   failGenerate?: boolean
+  waitForGeneration?: Promise<void>
+  progressStage?: () => string | null
   failRefreshAfterGenerate?: boolean
   email?: string | null
 } = {}) {
@@ -70,12 +72,17 @@ function installMocks(options: {
     }
     if (path === '/api/jingles') {
       if (init?.method === 'POST') {
+        await options.waitForGeneration
         generated = true
         history = { estimate: null, unavailable_reason: 'Awaiting reconciliation', runs: [run] }
         return options.failGenerate ? Response.json({ detail: 'Provider failed' }, { status: 502 }) : Response.json(run)
       }
       if (generated && options.failRefreshAfterGenerate) return Response.json({ detail: 'Status unavailable' }, { status: 503 })
       return Response.json(history)
+    }
+    if (/^\/api\/jingles\/[^/]+\/progress$/.test(path)) {
+      if (!options.progressStage) return Response.json({ detail: 'Unavailable' }, { status: 503 })
+      return Response.json({ stage: options.progressStage() })
     }
     if (path === '/api/attempts/attempt-1/reconcile') {
       history = { estimate, unavailable_reason: null, runs: [{ ...run, attempt: { ...run.attempt, status: 'reconciled', actual_cost_usd: '0.015', jingle_ai_actual_cost_usd: '0.025' } }] }
@@ -124,12 +131,38 @@ describe('Jingle workspace', () => {
     await user.type(prompt, 'A cheerful bike shop jingle')
     await user.click(screen.getByRole('button', { name: 'Generate jingle' }))
     const request = fetchMock.mock.calls.find(([input, init]) => String(input).endsWith('/api/jingles') && init?.method === 'POST')
-    expect(JSON.parse(String(request?.[1]?.body))).toEqual({ description: 'A cheerful bike shop jingle' })
+    expect(JSON.parse(String(request?.[1]?.body))).toEqual({
+      description: 'A cheerful bike shop jingle', progress_id: expect.stringMatching(/^[a-f0-9-]{36}$/),
+    })
     expect(new Headers(request?.[1]?.headers).get('Authorization')).toBe('Bearer test-access-token')
     expect(await screen.findByText('Actual cost: Pending or unknown')).toBeVisible()
     await user.click(screen.getByRole('button', { name: 'Load protected audio' }))
     expect(await screen.findByLabelText('spoken audio for run-1')).toHaveAttribute('src', 'blob:audio')
     expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith('/api/renders/estimate'))).toBe(false)
+  })
+
+  it('highlights only reported stages and keeps the last reported step on failure', async () => {
+    const user = userEvent.setup()
+    let finish!: () => void
+    const pending = new Promise<void>(resolve => { finish = resolve })
+    let stage = 'lyrics'
+    installMocks({ waitForGeneration: pending, progressStage: () => stage, failGenerate: true })
+    render(<App />)
+    await signIn(user)
+    await user.type(await screen.findByLabelText('Describe your jingle'), 'Bike shop')
+    await user.click(screen.getByRole('button', { name: 'Generate jingle' }))
+    const list = screen.getByRole('list', { name: 'How your jingle gets made' })
+    const [brief, lyrics, safety, score] = within(list).getAllByRole('listitem')
+    await waitFor(() => expect(lyrics).toHaveAttribute('aria-current', 'step'))
+    expect(brief).toHaveTextContent('Done')
+    expect(safety).not.toHaveAttribute('aria-current')
+    stage = 'safety'
+    await waitFor(() => expect(safety).toHaveAttribute('aria-current', 'step'))
+    finish()
+    expect(await screen.findByRole('alert')).toHaveTextContent('Provider failed')
+    expect(safety).toHaveTextContent('Last reported')
+    expect(safety).not.toHaveAttribute('aria-current')
+    expect(score).not.toHaveTextContent('Done')
   })
 
   it('refreshes history on failure without resubmitting or losing the prompt', async () => {
