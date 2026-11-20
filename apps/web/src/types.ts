@@ -128,6 +128,21 @@ export interface PaidAttempt {
   readonly attempt_id: string
   readonly status: string
   readonly estimated_cost_usd: string
+  readonly actual_cost_usd?: string | null
+  readonly jingle_estimate?: JingleEstimate | null
+  readonly jingle_ai_actual_cost_usd?: string | null
+}
+
+export interface JingleEstimate {
+  readonly model_and_safety_max_usd: string
+  readonly speech_max_usd: string
+  readonly total_max_usd: string
+}
+
+export interface JingleHistory {
+  readonly estimate: JingleEstimate | null
+  readonly unavailable_reason: string | null
+  readonly runs: readonly RenderRun[]
 }
 
 /** A user-owned render run and its optional paid attempt. */
@@ -136,7 +151,9 @@ export interface RenderRun {
   readonly mode: string
   readonly brief_ids: readonly string[]
   readonly status: string
-  readonly attempt?: PaidAttempt
+  readonly created_at: string
+  readonly outputs: readonly Output[]
+  readonly attempt?: PaidAttempt | null
 }
 
 /** The per-brief and overall evaluation rollup. */

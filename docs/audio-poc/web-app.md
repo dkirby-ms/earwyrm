@@ -1,16 +1,13 @@
 ---
 title: Use the web workspace
-description: Configure local sign-in, preview music, and review jingle versions.
+description: Configure local sign-in, generate AI jingles, and review provider costs.
 ---
 
 [Back to the README](../../README.md)
 
-Use the web workspace to create and compare versions for one advertiser.
+Use the web workspace to turn a description into a jingle with music and voice.
 Start the API and client using the [README quickstart](../../README.md#open-the-web-workspace).
 For hosted setup and database maintenance, use the [Azure runbook](../azure-deployment.md).
-In the signed-in workspace, select **How it works** for an overview of the
-application flow and its representative Azure architecture. Keep that overview
-aligned with the application and infrastructure when those change.
 
 ## Set up local sign-in
 
@@ -48,8 +45,8 @@ request after a denial. After approval, reload the workspace to continue.
 
 An enabled administrator can open **Manage access** to review pending requests
 and grant or deny them without entering the requester's subject. Granting gives
-baseline application access only. Administrator and paid Speech permissions
-remain off; use the existing permission editor to assign those separately.
+application access, including **Generate jingle** when the server is configured.
+Administrator and legacy paid Speech permissions remain off.
 These changes do not modify External ID accounts.
 
 Pending requests show the requester's email alongside their subject. Email comes
@@ -78,134 +75,39 @@ application permissions. Operators can also use
 
 ## Create and review a jingle
 
-1. Select a sample advertiser, or use **Enter or upload brief** to supply your
-   own. Check the brief and call to action (CTA), then select **Continue to music**.
-2. Select **Generate 3 arrangements**. Play the instrumental previews and
-   choose one before continuing. This step does not use paid lyric or voice services.
-   New arrangements introduce a short hook in the first lyric phrase, bring it
-   back in the third, and resolve the call to action into an instrumental tag.
-   They usually run 14 to 20 seconds.
-   Longer briefs can extend the music to fit the complete call to action.
-   Generating again reopens the current set while it is retained.
-   Unreferenced preview sets expire after seven days.
-3. Authorize **Generate 3 lyric drafts**. The writer fits the rhyming drafts to
-   the selected arrangement. Choose an eligible draft to continue. If you
-   change the music, only drafts fitted to the new selection are shown.
-   The first line is used as the hook. If a candidate contains a word the
-   pronunciation dictionary cannot verify, the writer retries with guidance
-   for that line. Drafts still need to pass the same timing and screening checks.
-   If pronunciation or rhyme cannot be verified for your brief, revise the
-   brand spelling or CTA as indicated, or keep the instrumental preview.
-4. Select **Estimate voice demo** and confirm the estimate to render the selected
-   lyrics over the same backing. In **Listen & review**, play, download, or review
-   the demo. Use **Generation history** to find earlier runs.
+1. Describe the jingle in a few sentences. Include the business or product
+   name and, if useful, what it offers, the mood, or an exact call to action.
+   There is no brief to upload.
+2. Check the cost estimate, then select **Generate jingle**. This starts the
+   paid request without a separate confirmation. The server screens the lyrics,
+   uses Foundry to compose the score, and mixes Azure Speech with that score.
+   It does not substitute seeded music if a stage fails.
+3. Listen and review the demo on the same page. Generation is not broadcast
+   approval. If the connection drops, check the page for a result before making
+   another request. A failed generation can still incur provider charges.
 
-### Generate an AI-composed arrangement
+## Understand costs
 
-The three music-first previews are generated locally, not by Foundry. For music
-composed by the model, select **Start AI arrangement** on the **Choose the music**
-screen. This opens the lyrics-first tools without making a paid request.
+The estimate before generation is an upper bound based on configured model
+and screening limits, bounded retries, and the maximum Speech input. Afterward,
+the exact character count gives a narrower Speech estimate. Neither is an
+invoice. The amounts cover provider calls, not hosting.
 
-Authorize lyric generation, generate options, and choose an accepted draft with
-**Use option**. On the selected option, authorize the separately priced arrangement
-request and select **Generate AI arrangement**. Foundry returns a structured score;
-the app compiles its MIDI and renders a playable backing locally. Repeating the
-same accepted option recovers the saved score rather than calling the model again.
-Use **Listen & review** to hear it and estimate vocals on that exact arrangement.
-Paid lyric/model availability and server budget configuration are still required.
+Record actual Speech and, when attributable, actual Foundry and Content Safety
+charges with a billing evidence reference. A combined actual cost is available
+only when both amounts are recorded. For the shared budget, a jingle counts for
+at least its Speech estimate even after reconciliation. An uncertain Speech
+attempt blocks further generation until it is reconciled.
 
-### Arrangement preview limits
+## Configure generation
 
-The server allows 20 new arrangement requests per account in a rolling 24-hour
-window and 1 GiB of preview media per account. A request reserves 12 MiB before
-creating its three jobs, then settles to the measured melody-artifact and output
-audio bytes after all three previews are published. Failed or interrupted requests
-keep their reservation; retry the same brief to recover without another charge.
-Cached retries do not consume a new request allowance. Limits persist across
-restarts and are shared by all API instances using the store.
-
-A global 20-GiB ceiling counts all saved audio and melody artifacts, including
-orphaned media, plus outstanding preview reservations. This deliberately leaves
-headroom on the 100-GiB share; it is not a quota for other rendering workflows.
-Quota failures return HTTP 429 before new preview jobs are created.
-
-Before admitting previews, the server removes unreferenced sets older than seven
-days, including their audio, melody artifacts, job rows, and preview run records.
-Sets referenced by saved lyrics, other renders, or evaluations are preserved.
-Selecting a preview for fitted lyrics or rendering durably pins its entire set
-before artifact reads, so cleanup cannot race downstream work. Pins are
-conservative and remain even if downstream generation fails. Retained sets still
-count toward storage quotas. Expired sets disappear from history and can be
-generated again, subject to the same quotas.
-
-Existing guided-preview jobs are adopted into storage accounting on the next
-arrangement request. Unowned committed jobs count toward global media usage.
-Unrecognized orphan files are counted but are not automatically deleted.
-SQLite adds the ledger on initialization; the existing PostgreSQL additive
-upgrade path adds it without resetting data (`npm run database -- upgrade`).
-
-For JSON upload, provide one object with `name`, `offer`, `location`,
-`contact_details` (`email` and `phone`), `tone`, `approved_claims`, and `cta`.
-Do not include a brief ID or extra fields. Use printable ASCII text, one to
-twenty approved claims, and a file no larger than 24,000 bytes. Keep your
-original JSON: validated but unused custom briefs are session drafts.
-
-**Batch tools** renders one to three briefs using their original scripts, not
-the lyric selected in **Create**. Instrumental results stay **Pending** for
-evaluation, even after rendering completes; they do not prove vocal quality.
-See [how to evaluate output](rendering.md#evaluate-output).
-
-### Create together with MCP chat
-
-From the Brief step, select **Open advanced lyric tools** to use the optional
-lyrics-first workflow. Use **Make it together** to describe a mood, pace, or revision.
-Authorize paid requests for each **Send message** or **Write a lyric draft**
-action. Review or edit the suggested **Creative direction**, choose a lyric
-style, and write a screened draft. Suggestions cannot change the approved facts
-in the brief, and held drafts cannot build audio.
-
-Select an accepted option and choose **Build MCP music preview**. This makes
-no cloud requests. After a disconnect, retry that same option to recover the
-same arrangement rather than creating another. Use **Listen & review** to
-hear its protected instrumental preview.
-
-Choose **Estimate vocals on this arrangement** to add voices to the exact
-backing and syllable timing, then explicitly confirm the Speech estimate.
-The ordinary **Estimate voice + music** action still creates a separate
-arrangement; it does not reuse an MCP preview. Spoken and sung mixes over an MCP
-preview preserve its duration. Sung demos use approximate word slicing, not
-natural singing, and still need producer and advertiser approval.
-
-The latest twelve conversation messages stay in page memory for each
-advertiser. They clear on reload or sign-out. Accepted drafts and music
-previews are saved server-side. Errors keep your unsent message; revise it and
-authorize the next paid action again.
-
-## Enable paid options only with approval
-
-* Chat and lyrics: Set `LYRIC_ENABLED=true` and configure the server-side Foundry and
-  Content Safety settings in [Services and contracts](../service-contracts.md#lyric-writer).
-  An enabled user with paid Speech entitlement can authorize chat, one draft,
-  or a set of three drafts. These actions incur separate charges. The
-  server reserves a worst-case amount against its text budget before each
-  action; this is not an estimate of the actual bill. Only accepted drafts can
-  be selected with **Use option**; human
-  review is still required before distribution.
-* Voice: The Azure workflow sets `SPEECH_ENABLED=true` and configures the
-  app's managed identity for Speech on the shared Foundry account. For
-  local use, set `SPEECH_ENABLED=true`, server-only `SPEECH_KEY` and
-  `SPEECH_REGION`, and positive `SPEECH_PER_RUN_CAP_USD` and
-  `SPEECH_TOTAL_BUDGET_USD` limits. Both paths require valid
-  [Speech rate evidence](rendering.md#render-with-paid-speech) using
-  `SPEECH_EVIDENCE_PATH` if it is outside the default location. An enabled,
-  entitled user selects **Estimate voice demo** for an accepted fitted draft and
-  confirms the estimate. Changing the music or draft requires a new estimate. In
-  **Batch tools**, use **Include vocals** and **Estimate vocal render**.
-
-Paid voice stays blocked until prior attempts are reconciled with billing
-evidence. After a disconnect, reload to check status rather than resubmitting.
-The [Azure runbook](../azure-deployment.md#shared-ai-configuration) describes
-the shared configuration that enables both capabilities in the PoC deployment.
+Configure Foundry, Content Safety, and Speech using the
+[shared AI configuration](../azure-deployment.md#shared-ai-configuration).
+For local development, follow the server-side
+[lyric writer configuration](../service-contracts.md#lyric-writer) and
+[Speech prerequisites](rendering.md#render-with-paid-speech). Enabled users
+can generate when provider configuration and budgets permit. The original CLI
+experiments and lower-level endpoints are not part of the browser workflow.
 
 ## Troubleshoot and find local files
 

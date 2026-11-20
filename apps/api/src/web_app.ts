@@ -10,7 +10,8 @@ import { z } from 'zod';
 import { DefaultAzureCredential, ManagedIdentityCredential } from '@azure/identity';
 import { lyric_allowance, lyric_budget, type PaidLyricGenerationAction } from './lyric_budget.js';
 import { AzureLyricBackend, CloudFailure, LyricCloudSettings, type LyricBackend } from './lyric_cloud.js';
-import { LyricWriter } from './lyric_service.js';
+import { IMITATION, LyricWriter } from './lyric_service.js';
+import { JINGLE_VOICE_MAX_CHARACTERS, JingleDescription, JingleDirection, type JingleEstimate } from './jingle_prompt.js';
 import { AzureScoreComposer, score_prompt, ScoreProviderProvenance, type ScoreComposer } from './score_cloud.js';
 import { ArrangementScore, score_lyric_timing, type ArrangementScore as Arrangement } from './score_dsl.js';
 import { has_cta_rhyme, LyricRequest, LyricResult, LyricRuleError, validate_draft } from './lyrics.js';
@@ -74,6 +75,7 @@ export type EvaluationSubmission = z.infer<typeof EvaluationSubmission>;
 /** Operator billing evidence, never inferred from estimated characters. */
 export const ReconciliationSubmission = z.object({
   actual_cost_usd: z.string().min(1).max(64), evidence_reference: z.string().min(1).max(500),
+  ai_actual_cost_usd: z.string().min(1).max(64).optional(),
 });
 export type ReconciliationSubmission = z.infer<typeof ReconciliationSubmission>;
 /** Exact issuer/subject identities and strict booleans; provider roles are not application entitlements. */
@@ -168,8 +170,9 @@ function selected_inputs(requested_ids: string[], custom_briefs: CustomBrief[] =
       custom.some(value => !requested_ids.includes(value.brief.brief_id))) {
     throw new HttpError(422, 'Custom briefs must be unique and selected');
   }
+  const fixtures = requested_ids.some(id => !custom.some(value => value.brief.brief_id === id)) ? load_inputs() : [];
   const selected = [
-    ...load_inputs().map(([brief, text], index) => ({ index, brief, text, custom: null as CustomBrief | null })),
+    ...fixtures.map(([brief, text], index) => ({ index, brief, text, custom: null as CustomBrief | null })),
     ...custom.map((value, index) => ({ index: index + 3, brief: value.brief, text: custom_script(value), custom: value })),
   ]
     .filter(({ brief }) => requested_ids.includes(brief.brief_id));
@@ -263,7 +266,7 @@ export type WebAppStorage = Pick<WebStorage,
   'get_output' | 'audio_path' | 'save_evaluation' | 'reconcile_attempt' |
   'save_lyric_option' | 'list_lyric_options' | 'get_lyric_option' | 'has_lyric_budget' | 'reserve_lyric_action' |
   'claim_score_compose' | 'commit_score_compose' | 'finish_score_compose' | 'get_score_compose' | 'reconcile_score_compose' |
-  'reserve_previews' | 'complete_previews' | 'pin_preview'>;
+  'reserve_previews' | 'complete_previews' | 'pin_preview' | 'check_jingle_text_budget' | 'check_jingle_speech_budget'>;
 /** All providers, persistence and identity fetchers remain lazy until a route needs them. */
 export interface CreateAppOptions {
   environ?: Environment;
@@ -278,6 +281,8 @@ export interface CreateAppOptions {
   render?: typeof render_brief;
   /** Test adapters retain the same writer gates; production configuration stays server-side. */
   lyric_backend?: LyricBackend;
+  /** Test-only extraction adapter; its result is subject to the same literal sourcing rules. */
+  jingle_direction?: (description: string) => Promise<JingleDirection>;
   chat_advisor?: JingleAdvisor;
   /** Injected provider for tests; production uses the shared Foundry settings and credentials. */
   score_composer?: ScoreComposer;
@@ -308,6 +313,7 @@ export function create_app(options: CreateAppOptions = {}): Express {
   app.locals.storage = options.storage ?? null;
   let storage_pending: Promise<WebAppStorage> | undefined;
   let render_active = false;
+  let jingle_active = false;
   const render = options.render ?? render_brief;
   const speech_factory = options.speech_factory ?? options.speech_provider_factory ?? (() => new AzureSpeech(speech_settings(source)));
   let lyrics_active = false;
@@ -336,11 +342,11 @@ export function create_app(options: CreateAppOptions = {}): Express {
     return store.has_lyric_budget();
   }
 
-  async function paid_lyric_backend(action: PaidLyricGenerationAction): Promise<LyricBackend> {
+  async function paid_lyric_backend(action: PaidLyricGenerationAction | 'jingle_write') {
     const settings = lyric_settings();
     const budget = lyric_budget(source);
     const allowance = lyric_allowance(action, budget);
-    await (await storage()).reserve_lyric_action(action, allowance.cost, budget.per_action, budget.total);
+    await (await storage()).reserve_lyric_action(action === 'jingle_write' ? 'write' : action, allowance.cost, budget.per_action, budget.total);
     if (options.lyric_backend) return options.lyric_backend;
     const clientId = source.LYRIC_MANAGED_IDENTITY_CLIENT_ID;
     const authOptions = { retryOptions: { maxRetries: 0 } };
@@ -508,10 +514,10 @@ export function create_app(options: CreateAppOptions = {}): Express {
     if (!user?.enabled) throw new HttpError(403, 'Application access denied');
     next();
   }];
-  async function paid_configuration(response: Response): Promise<[SpeechEvidence, Decimal, Decimal]> {
+  async function paid_configuration(response: Response, jingle = false): Promise<[SpeechEvidence, Decimal, Decimal]> {
     const { issuer, subject } = identity(response);
     const user = await (await storage()).get_user(issuer, subject);
-    try { return paid_settings(source, Boolean(user?.enabled && user.paid_speech)); }
+    try { return paid_settings(source, Boolean(user?.enabled && (jingle || user.paid_speech))); }
     catch (error) {
       if (error instanceof PaidRenderingDisabled) throw new HttpError(409, error.message);
       if (error instanceof PaidSubjectDenied) throw new HttpError(403, error.message);
@@ -549,6 +555,7 @@ export function create_app(options: CreateAppOptions = {}): Express {
     [/^\/(?:healthz|api\/(?:config|identity|access|briefs|render-options|outputs|poc\/status))$/, ['GET']],
     [/^\/api\/access-requests$/, ['GET', 'POST']],
     [/^\/api\/briefs\/validate$/, ['POST']],
+    [/^\/api\/jingles$/, ['GET', 'POST']],
     [/^\/api\/arrangements$/, ['POST']],
     [/^\/api\/lyrics\/options$/, ['GET', 'POST']],
     [/^\/api\/chat$/, ['GET', 'POST']],
@@ -813,18 +820,18 @@ export function create_app(options: CreateAppOptions = {}): Express {
       throw new HttpError(503, 'Composition could not complete. Retry this same lyric option to recover the existing job.');
     } finally { render_active = false; }
   });
-  app.post('/api/score/compose', ...authorized('renders.write'), async (request, response) => {
+  const score_selection = BriefSelection.extend({
+    option_id: z.uuid(), confirm_paid_generation: z.literal(true),
+  });
+  async function compose_score(payload: z.infer<typeof score_selection>, response: Response, jingle = false) {
     const started = performance.now();
-    const payload = parse(BriefSelection.extend({
-      option_id: z.uuid(), confirm_paid_generation: z.literal(true),
-    }), request.body);
     if (payload.brief_ids.length !== 1) throw new HttpError(422, 'Compose a score for one active brief at a time');
     if (payload.lyric_selections?.length || payload.composition_selections?.length) {
       throw new HttpError(422, 'Score composition accepts one saved lyric option and no browser-selected content');
     }
     const [selected] = selected_inputs(payload.brief_ids, payload.custom_briefs);
     if (!selected) throw new HttpError(422, 'Select one active brief');
-    if (!await lyric_available(response)) throw new HttpError(409, 'Paid score composition is disabled or unavailable for this account');
+    if (!jingle && !await lyric_available(response)) throw new HttpError(409, 'Paid score composition is disabled or unavailable for this account');
     const owner = identity(response).subject;
     const store = await storage();
     const saved = await store.get_lyric_option(payload.option_id, owner);
@@ -858,11 +865,10 @@ export function create_app(options: CreateAppOptions = {}): Express {
     });
     if (!claim.claimed) {
       if (claim.status === 'outcome_unknown') {
-        response.status(503).json({
+        return { status: 503, body: {
           code: 'provider_outcome_unknown', logical_job_id, retryable: false,
           detail: 'The score provider outcome is uncertain; an operator must reconcile it before another submission.',
-        });
-        return;
+        } } as const;
       }
       if (claim.status !== 'committed' || claim.score_json === null) {
         throw new HttpError(409, claim.status === 'failed'
@@ -885,11 +891,10 @@ export function create_app(options: CreateAppOptions = {}): Express {
         try { await store.finish_score_compose(owner, logical_job_id, request_sha256, 'outcome_unknown', claim.attempt_count); }
         catch { console.error('ERROR: Paid score outcome could not be persisted'); }
         console.error('ERROR: Paid score composition failed');
-        response.status(503).json({
+        return { status: 503, body: {
           code: 'provider_outcome_unknown', logical_job_id, retryable: false,
           detail: 'The score provider outcome is uncertain; an operator must reconcile it before another submission.',
-        });
-        return;
+        } } as const;
       }
     } else {
       score = ArrangementScore.parse(JSON.parse(claim.score_json!));
@@ -912,19 +917,22 @@ export function create_app(options: CreateAppOptions = {}): Express {
       if (error instanceof RangeError) throw new HttpError(409, 'The generated score cannot fit the accepted lyric timing.');
       if (error instanceof CompositionUnavailable) {
         console.error('ERROR: Paid score artifacts could not be committed');
-        response.status(503).json({
+        return { status: 503, body: {
           code: 'score_render_unavailable', logical_job_id, retryable: true,
           detail: 'The committed score could not be rendered. Retry this same score job to recover it.',
-        });
-        return;
+        } } as const;
       }
       throw error;
     }
     const run = await publish_composition(store, owner, selected, saved.option_id, result.output, composition, started);
-    response.json({
+    return { status: 200, body: {
       tool: 'compose_score', job_id: composition.job_id, logical_job_id,
       status: 'committed', score, composition, run,
-    });
+    } } as const;
+  }
+  app.post('/api/score/compose', ...authorized('renders.write'), async (request, response) => {
+    const result = await compose_score(parse(score_selection, request.body), response);
+    response.status(result.status).json(result.body);
   });
   app.post('/api/lyrics/options', ...authorized('renders.write'), async (request, response) => {
     const payload = parse(BriefSelection.extend({ confirm_paid_generation: z.literal(true), arrangement_job_id: z.uuid().optional() }), request.body);
@@ -1007,12 +1015,15 @@ export function create_app(options: CreateAppOptions = {}): Express {
       ...(payload.composition_selections?.length ? { composition_selections: payload.composition_selections } : {}),
     });
   });
-  app.post('/api/renders', ...authorized('renders.write'), async (request, response) => {
-    const payload = parse(RenderRequest, request.body);
+  async function render_selection(payload: RenderRequest, response: Response, jingle_estimate?: JingleEstimate) {
     if (payload.mode === 'instrumental' && payload.lyric_selections?.length) {
       throw new HttpError(422, 'Instrumental previews do not render selected lyrics');
     }
     const selected = await render_inputs(payload, identity(response).subject);
+    if (jingle_estimate && (payload.mode !== 'azure' || selected.length !== 1 ||
+        !selected[0]?.composition?.result.tempo_bpm || !selected[0].lyric_source)) {
+      throw new HttpError(409, 'An AI score and screened lyrics are required. No fallback audio was generated.');
+    }
     const brief_ids = selected.map(({ brief }) => brief.brief_id);
     const { issuer, subject: owner } = identity(response);
     const store = await storage();
@@ -1027,22 +1038,26 @@ export function create_app(options: CreateAppOptions = {}): Express {
     }
     let reservation: Parameters<WebStorage['reserve_paid_run']>[0] | undefined;
     if (payload.mode === 'azure') {
-      const [paid_evidence, cap, budget] = await paid_configuration(response);
+      const [paid_evidence, cap, budget] = await paid_configuration(response, Boolean(jingle_estimate));
       evidence = paid_evidence;
       const per_brief = Object.fromEntries(selected.map(({ brief, text }) => [brief.brief_id, cost_for(text, paid_evidence).toString()]));
       const estimate = Object.values(per_brief).reduce((total, value) => total.add(value), new Decimal(0));
       if (estimate.gt(cap)) throw new HttpError(409, 'Per-run Speech cap exceeded');
-      if (!payload.confirmation) throw new HttpError(409, 'Explicit Speech confirmation is required');
-      const fingerprint = render_fingerprint(selected);
-      if (payload.confirmation.input_fingerprint !== fingerprint) {
-        throw new HttpError(409, 'Speech confirmation does not match brief and lyric contents');
+      if (jingle_estimate) {
+        if (estimate.gt(jingle_estimate.speech_max_usd)) throw new HttpError(409, 'Speech cost exceeds the generation estimate');
+      } else {
+        if (!payload.confirmation) throw new HttpError(409, 'Explicit Speech confirmation is required');
+        const fingerprint = render_fingerprint(selected);
+        if (payload.confirmation.input_fingerprint !== fingerprint) {
+          throw new HttpError(409, 'Speech confirmation does not match brief and lyric contents');
+        }
+        if (JSON.stringify(payload.confirmation.brief_ids) !== JSON.stringify(brief_ids)) throw new HttpError(409, 'Speech confirmation does not match briefs');
+        if (!decimal(payload.confirmation.estimated_cost_usd).eq(estimate)) throw new HttpError(409, 'Speech confirmation does not match the server estimate');
       }
-      if (JSON.stringify(payload.confirmation.brief_ids) !== JSON.stringify(brief_ids)) throw new HttpError(409, 'Speech confirmation does not match briefs');
-      if (!decimal(payload.confirmation.estimated_cost_usd).eq(estimate)) throw new HttpError(409, 'Speech confirmation does not match the server estimate');
       reservation = {
         run_id, attempt_id: randomUUID(), owner, brief_ids, per_brief_estimates: per_brief,
         estimated_cost_usd: estimate, submitted_characters: selected.reduce((sum, { text }) => sum + text.length, 0),
-        total_budget_usd: budget, evidence, issuer,
+        total_budget_usd: budget, evidence, issuer, jingle_estimate,
       };
     }
     // Recheck after asynchronous entitlement validation, then set before the next await.
@@ -1081,6 +1096,9 @@ export function create_app(options: CreateAppOptions = {}): Express {
                   if (typeof component === 'object' && component !== null && component.component === 'script') {
                     component.origin = `Selected screened lyric option ${lyric_source.option_id}`;
                   }
+                  if (jingle_estimate) {
+                    row.disclosure = 'AI-composed music with screened AI lyrics and a synthetic Azure voice; review demo, not a broadcast master.';
+                  }
                 }
               }
             }
@@ -1108,7 +1126,107 @@ export function create_app(options: CreateAppOptions = {}): Express {
     }
     const result = await store.get_run(run_id, owner);
     if (!result) throw new HttpError(500, 'Render record is unavailable');
-    response.json(public_run(result));
+    return public_run(result);
+  }
+  app.post('/api/renders', ...authorized('renders.write'), async (request, response) => {
+    response.json(await render_selection(parse(RenderRequest, request.body), response));
+  });
+
+  async function jingle_quote(response: Response): Promise<JingleEstimate> {
+    if ((source.LYRIC_ENABLED ?? 'false').trim().toLowerCase() !== 'true') {
+      throw new HttpError(409, 'AI lyrics and music are disabled.');
+    }
+    if (!lyric_settings() && (!options.jingle_direction || !options.score_composer)) {
+      throw new HttpError(503, 'AI lyrics and music are not configured.');
+    }
+    const [evidence, speech_cap, speech_budget] = await paid_configuration(response, true);
+    const speech = cost_for(' '.repeat(JINGLE_VOICE_MAX_CHARACTERS), evidence);
+    if (speech.gt(speech_cap)) throw new HttpError(409, 'The voice estimate exceeds the server spending limit.');
+    const budget = lyric_budget(source);
+    const writing = lyric_allowance('jingle_write', budget).cost;
+    const composing = lyric_allowance('compose', budget).cost;
+    if (writing.gt(budget.per_action) || composing.gt(budget.per_action)) {
+      throw new HttpError(409, 'The AI estimate exceeds the server spending limit.');
+    }
+    const ai = writing.plus(composing);
+    const store = await storage();
+    await store.check_jingle_text_budget(ai, budget.total);
+    await store.check_jingle_speech_budget(speech, speech_budget);
+    return {
+      model_and_safety_max_usd: ai.toFixed(), speech_max_usd: speech.toFixed(), total_max_usd: ai.plus(speech).toFixed(),
+    };
+  }
+
+  app.get('/api/jingles', ...authorized('renders.read'), async (_request, response) => {
+    let estimate = null;
+    let unavailable_reason = null;
+    try { estimate = await jingle_quote(response); }
+    catch (error) {
+      if (error instanceof CloudFailure) unavailable_reason = 'AI generation or its spending limits are not configured.';
+      else if (error instanceof HttpError || error instanceof StorageConflict) unavailable_reason = error.message;
+      else throw error;
+    }
+    const runs = (await (await storage()).list_runs(identity(response).subject)).flatMap(run => {
+      if (run.attempt?.jingle_estimate) return [public_run(run)];
+      if (run.attempt && run.attempt.status !== 'reconciled') return [public_run({ ...run, outputs: [] })];
+      return [];
+    });
+    response.json({ estimate, unavailable_reason, runs });
+  });
+
+  app.post('/api/jingles', ...authorized('renders.write'), async (request, response) => {
+    const { description } = parse(z.strictObject({ description: JingleDescription }), request.body);
+    if (IMITATION.test(description)) throw new HttpError(422, 'Describe an original mood or genre without asking to imitate an artist or song.');
+    if (jingle_active || render_active || lyrics_active) throw new HttpError(409, 'Another generation is in progress. Try again when it finishes.');
+    jingle_active = true;
+    try {
+      const estimate = await jingle_quote(response);
+      const backend = await paid_lyric_backend('jingle_write');
+      const direction = parse(JingleDirection, await (options.jingle_direction
+        ? options.jingle_direction(description)
+        : backend instanceof AzureLyricBackend
+          ? backend.extract_direction(description)
+          : Promise.reject(new CloudFailure('missing_jingle_direction_adapter'))));
+      const { name, offer, cta, tone } = direction;
+      if (!name || ![name, offer, cta].every(value => value === null || description.includes(value))) {
+        throw new HttpError(422, 'Include the business or product name and any exact words you want to hear.');
+      }
+      const normalized = BriefDetails.safeParse({
+        name, tone, offer: offer ?? 'Not specified', location: 'Not specified',
+        contact_details: { email: 'Not specified', phone: 'Not specified' },
+        approved_claims: [offer ?? name],
+        cta: cta ?? `Find out more about ${name} today`,
+      });
+      if (!normalized.success) throw new HttpError(422, 'Use a shorter business name or call to action.');
+      let custom: CustomBrief;
+      try { custom = create_custom_brief(normalized.data); }
+      catch (error) {
+        if (error instanceof z.ZodError) throw new HttpError(422, 'Use a shorter description and spell out numbers or symbols in the name and call to action.');
+        throw error;
+      }
+      const lyric_request = LyricRequest.parse({ ...custom, product_path: 'spoken', creative_direction: description });
+      const lyrics = await new LyricWriter(backend).write(lyric_request);
+      const store = await storage();
+      const owner = identity(response).subject;
+      if (lyrics.status !== 'accepted') {
+        if (lyrics.status === 'unavailable') throw new HttpError(503, 'The AI lyric service could not complete generation.');
+        if (lyrics.status === 'human_review_required') throw new HttpError(422, 'The description or lyrics include claims that require human review. Try describing the business without prices, guarantees, or regulated claims.');
+        throw new HttpError(422, 'The lyrics did not pass screening or fit the jingle. Try a short, pronounceable business name and leave the call to action open.');
+      }
+      const saved = await store.save_lyric_option(owner, lyric_request, lyrics);
+      const brief_id = custom.brief.brief_id;
+      const selection = { brief_ids: [brief_id], custom_briefs: [custom] };
+      const score = await compose_score({ ...selection, option_id: saved.option_id, confirm_paid_generation: true }, response, true);
+      if (score.status !== 200) throw new HttpError(score.status, score.body.detail);
+      response.json(await render_selection({
+        ...selection, mode: 'azure',
+        lyric_selections: [{ brief_id, option_id: saved.option_id }],
+        composition_selections: [{ brief_id, job_id: score.body.job_id }],
+      }, response, estimate));
+    } catch (error) {
+      if (error instanceof CloudFailure) throw new HttpError(503, 'AI generation could not complete. No fallback audio was generated.');
+      throw error;
+    } finally { jingle_active = false; }
   });
   app.get('/api/renders/:run_id', ...authorized('renders.read'), async (request, response) => {
     const run = await (await storage()).get_run(String(request.params.run_id), identity(response).subject);
@@ -1185,13 +1303,14 @@ export function create_app(options: CreateAppOptions = {}): Express {
   app.post('/api/attempts/:attempt_id/reconcile', ...authorized('renders.write'), async (request, response) => {
     const submission = parse(ReconciliationSubmission, request.body);
     const actual_cost_usd = decimal(submission.actual_cost_usd);
+    const ai_actual_cost_usd = submission.ai_actual_cost_usd === undefined ? undefined : decimal(submission.ai_actual_cost_usd);
     const evidence_reference = submission.evidence_reference.trim();
     if (!evidence_reference) throw new HttpError(422, 'Evidence reference is required');
     if (render_active) throw new HttpError(409, 'A paid render is active');
     render_active = true;
     try {
       const attempt = await (await storage()).reconcile_attempt({
-        attempt_id: String(request.params.attempt_id), owner: identity(response).subject, actual_cost_usd, evidence_reference,
+        attempt_id: String(request.params.attempt_id), owner: identity(response).subject, actual_cost_usd, evidence_reference, ai_actual_cost_usd,
       });
       response.json({ attempt_id: attempt.attempt_id, status: attempt.status, actual_cost_usd: attempt.actual_cost_usd, reconciliation_reference: attempt.reconciliation_reference });
     } catch (error) {

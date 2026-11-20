@@ -160,24 +160,23 @@ components:
 
 **Creative North Star: "Campaign Color"**
 
-A red advertiser navigation shell frames white paper work areas and dark ink.
+A red brand block anchors a warm white workspace with dark ink.
 The interface is precise, restrained, and familiar to ad sellers. Color supplies
 orientation; a workhorse sans-serif carries the working content without spectacle.
 
 Controls retain native expectations, compact proportions, thin rules, and small
-corners. Selected lyrics and their audio source receive the yellow emphasis.
-Listening, paid confirmation, and human review remain distinct, legible actions.
+corners. The prompt, estimate, and primary action form one group. The result
+list keeps playback, cost, and review status distinct.
 
 **Key Characteristics:**
 
-* Red advertiser shell and paper work areas
+* Red branding and paper work areas
 * Dark ink and approved workhorse sans-serif typography
-* Yellow emphasis for selected lyrics and linked audio
 * Flat sections, thin rules, and small control corners
 * Native controls and explicit human approval safeguards
 
-Source authority is the shipped [stylesheet](src/index.css), sampled
-[workspace components](src/App.tsx), and [brief editor](src/BriefEditor.tsx).
+Source authority is the shipped [stylesheet](src/index.css) and
+[workspace components](src/App.tsx).
 [Product truth](PRODUCT.md) and the
 [direction contract](.impeccable/surfaces/src-app-tsx.md) constrain their use.
 The approved direction is code-led (seed `seed:317be641a22c37aa`), not a catalog
@@ -245,33 +244,11 @@ use size, weight, and spacing rather than an ornamental display face.
 
 ## Layout
 
-The root is (16px). The header and workspace share a left column (16.5rem) and
-a fluid `minmax(0, 1fr)` work column. Header minimum height is (6rem); workspace
-minimum height is `calc(100dvh - 6rem)`. The rail stretches with the content.
-
-Work-area padding is (2.5rem) vertically and
-`clamp(1.5rem, 3.5vw, 3.5rem)` horizontally. Rail padding is
-(2.25rem 1.25rem). Repeated spacing steps live in frontmatter; they are observed
-rem values, not a fabricated uniform grid. Forms and fields cap at (44rem).
-Brief fields form two equal columns. Lists use thin separators rather than tiles.
-
-Audio rows use three columns:
-`minmax(12rem, 0.85fr) minmax(0, 1.35fr) auto`, with a (1.5rem) gap.
-Batch content uses `minmax(0, 1fr) minmax(12rem, 0.65fr)` with the same gap.
-Details lists use `minmax(8rem, 0.4fr) minmax(0, 1fr)`.
-
-* At maximum width (75rem), audio rows become two columns, their review action
-  moves below in column two, session identity text hides, and render guidance stacks.
-* At maximum width (48rem), the shell becomes one column. A native advertiser
-  select replaces the collection list; rail actions form two equal columns.
-  Work padding becomes (1.75rem 1.25rem). Audio rows, brief fields, batch content,
-  and details lists stack. Review actions stretch; the footer loses its rail offset.
-* At minimum width (100rem), the work area's right padding becomes
-  `max(3.5rem, calc((100vw - 90rem) / 2))`.
-
-The (390px), (550px), and (1440px) capture widths are verification sizes, not
-breakpoints. Long lyrics and identifiers wrap; evidence blocks scroll within a
-maximum height (24rem). Dialogs retain viewport gutters and internal scrolling.
+The header puts the red brand block beside account controls on desktop and
+above them on small screens. The centered work area uses one vertical flow:
+prompt and estimate, then results. A thin rule separates the result list from
+the composer. The textarea and estimate share a left edge; the cost breakdown
+wraps at narrow widths. Review and billing details expand inline.
 
 ## Elevation & Depth
 
@@ -320,18 +297,17 @@ and session actions use (0.85rem).
 
 ### Inputs / Fields
 
-Familiar native inputs, selects, textareas, file inputs, and checkboxes retain
-their semantics. Text fields have a field edge, white fill, and minimum height
+Familiar native inputs and textareas retain their semantics. Text fields have
+a field edge, white fill, and minimum height
 (2.75rem). Textareas start at (5rem) and resize vertically. Placeholder text uses
 muted ink at full opacity. Checkboxes use advertiser red and measure (1.1rem).
 Focus follows the shared outline; disabled fields use native behavior.
 
 ### Navigation
 
-Text buttons wrap without clipping. Active buttons expose `aria-pressed` and the
-red inset underline; hover adds warm paper. Main navigation has a (0.5rem) gap;
-brief-section navigation has a (2rem) gap and a bottom rule. The selected
-advertiser is white with deep red text, never yellow.
+Text buttons wrap without clipping. Active buttons expose `aria-pressed` and
+the red inset underline; hover adds warm paper. Access administration stays
+separate from the composer.
 
 ### Chips / Status
 
@@ -342,55 +318,46 @@ Screening, render readiness, and human evaluation are separate from approval.
 
 ### Cards / Containers
 
-Working containers are mostly open sections separated by rules. Lyrics have
-vertical padding (1.5rem); selected lyrics add comfortable horizontal padding.
-Selected audio uses the same fill and edge. Notices use padding (0.85rem 1rem),
+Working containers are open sections separated by rules. Notices use padding (0.85rem 1rem),
 supporting text, and a neutral border. Alerts use unit padding and failure colors.
 Do not turn every section into a raised card.
 
 ### Review Disclosure
 
-Native `details` and `summary` hold review filters and status, technical evidence,
-history, and batch tools. Summaries are bold with minimum height (2.75rem).
+Native `details` and `summary` hold optional billing and audio details.
 Review summaries are muted supporting text. Preserve the native disclosure
 marker, keyboard behavior, and accessible content relationship.
 
 ### Lyrics and Audio Source
 
-Only an accepted saved draft with output is selectable. Held drafts remain
-visible and disabled for rendering. The selected lyric contains its estimate
-action beside its selection action. Audio rows retain native playback controls
-(height 2.6rem) and expose both textual selection and human-review state.
-The source panel preserves line breaks and reveals the linked lyric text.
+Only screened, accepted lyrics can produce a jingle. The result shows the
+linked lyrics and protected playback controls. A ready demo still requires
+approval before broadcast.
 
 Protected audio loading and one-player-at-a-time behavior remain application
 responsibilities. Sidecar examples illustrate appearance, not authorization.
 
-### Paid Confirmation
+### Generation Costs
 
-A native modal dialog shows the server estimate, advertiser, and exact saved
-lyric option number, hook, and full text. Its width and radius live in frontmatter;
-maximum height is `calc(100dvh - 2rem)`. Interior padding is
-`clamp(1.5rem, 4vw, 2.5rem)`. The selected lyric block uses unit padding and the
-selection edge. Cancellation never submits. Missing lyric context disables
-confirmation; confirmation remains bound to the server-owned identity and text.
+Show the estimated maximum and its provider breakdown beside **Generate
+jingle**, without a modal or checkbox. In the result list, show recorded
+charges separately and label missing charges as pending or unavailable.
 
 ### Permissions and Human Review
 
-Keep sign-in and application-access boundaries, paid consent, reconciliation
-blocks, and accessible progress/error announcements. Human evaluation remains
-available independently of playback, and submitted evaluations remain immutable.
-Keep provenance and usage evidence accessible through native disclosure.
+Keep sign-in and application-access boundaries, spending limits, and accessible
+progress and error announcements. Preserve protected access to audio and usage
+evidence.
 
 ## Do's and Don'ts
 
 ### Do
 
-* Do use the red advertiser shell, paper work areas, and dark working text.
-* Do preserve native inputs, audio controls, disclosure, and modal behavior.
+* Do use red branding, paper work areas, and dark working text.
+* Do preserve native inputs, audio controls, and disclosure.
 * Do pair selection color with explicit state text and accessible control state.
-* Do show the exact lyric option, hook, and full text before paid confirmation.
-* Do preserve permissions, paid consent, held drafts, provenance, and human approval.
+* Do show estimated spend before generation and display actual charges separately.
+* Do distinguish screened lyrics and generated audio from broadcast approval.
 * Do respect reduced motion and retain visible keyboard focus.
 
 ### Don't

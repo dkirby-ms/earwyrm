@@ -235,6 +235,28 @@ footer p { margin: 0; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; clip-path: inset(50%); }
 [hidden] { display: none !important; }
 
+.jingle-workspace { max-width: 70rem; margin-inline: auto; padding: 3rem clamp(1.25rem, 5vw, 4rem) 5rem; }
+.jingle-create { max-width: 52rem; }
+.jingle-create > p { color: var(--muted); }
+.jingle-create form { gap: 0.6rem; }
+.jingle-create textarea { max-width: none; min-height: 9rem; }
+.character-count { margin: 0; color: var(--muted); font-size: 0.85rem; text-align: right; }
+.estimate-summary { margin-top: 0.75rem; padding: 1rem 0; border-top: 1px solid var(--line); }
+.estimate-summary p { margin: 0.4rem 0 0; color: var(--muted); font-size: 0.9rem; }
+.jingle-reconciliation, .jingle-history { margin-top: 3rem; padding-top: 2rem; border-top: 1px solid var(--line); }
+.jingle-reconciliation > p { color: var(--muted); }
+.jingle-reconciliation details, .jingle-run { padding: 1rem 0; border-top: 1px solid var(--line); }
+.jingle-reconciliation form, .jingle-output form { max-width: 44rem; }
+.jingle-reconciliation form button, .jingle-output form button { justify-self: start; }
+.run-heading { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 0.5rem 1rem; }
+.run-heading h3 { margin: 0; }
+.run-heading time, .run-cost { font-size: 0.9rem; }
+.jingle-run > p { margin: 0.5rem 0; overflow-wrap: anywhere; }
+.jingle-output { max-width: 52rem; padding: 1rem 0; }
+.jingle-output h4 { margin: 0 0 0.6rem; }
+.jingle-output details { margin-top: 0.75rem; }
+.output-playback audio { max-width: 30rem; }
+
 @media (min-width: 100rem) {
   .work-panel { padding-right: max(3.5rem, calc((100vw - 90rem) / 2)); }
 }

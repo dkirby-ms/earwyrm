@@ -7,6 +7,7 @@ import { PostgresConnection, SqliteConnection, serialized, transaction, type Con
 import { prepare_database_file } from "./sqlite_files.js";
 import { STATIC_ROOT } from "./paths.js";
 import type { LyricRequest, LyricResult } from "./lyrics.js";
+import type { JingleEstimate } from "./jingle_prompt.js";
 import type { PaidLyricGenerationAction } from "./lyric_budget.js";
 import type { MelodyService } from "./melody_service.js";
 import type { ScoreProviderProvenance } from "./score_cloud.js";
@@ -60,13 +61,14 @@ export interface AttemptRecord {
 /** Recoverable render status and its owner-filtered outputs. */
 export interface RunRecord {
   run_id: string; mode: string; brief_ids: string[]; status: string; created_at: string;
-  outputs: OutputRecord[]; attempt?: { attempt_id: string; status: string; estimated_cost_usd: string; actual_cost_usd: string | null; reconciliation_reference: string | null };
+  outputs: OutputRecord[]; attempt?: { attempt_id: string; status: string; estimated_cost_usd: string; actual_cost_usd: string | null; reconciliation_reference: string | null; jingle_estimate?: JingleEstimate; jingle_ai_actual_cost_usd?: string | null };
 }
 /** All monetary values are USD decimals; reservation serializes globally across owners. */
 export interface PaidRunOptions {
   run_id: string; attempt_id: string; owner: string; brief_ids: string[];
   per_brief_estimates: Record<string, string>; estimated_cost_usd: Decimal.Value; submitted_characters: number;
   total_budget_usd: Decimal.Value; evidence: Record<string, unknown>; issuer?: string | null;
+  jingle_estimate?: JingleEstimate;
 }
 /** First-submission-only human evaluation evidence. */
 export interface EvaluationOptions {
@@ -295,6 +297,14 @@ export class WebStorage {
       total = total.plus(amount);
     }
     return total;
+  }
+  /** Checks the full jingle quote before the first billable text call. Individual reservations still enforce the cap atomically. */
+  async check_jingle_text_budget(cost: Decimal, total: Decimal): Promise<void> {
+    await this.read(async c => {
+      if ((await this.reserved_text_cost(c)).plus(cost).gt(total)) {
+        throw new StorageConflict("The shared AI generation budget is exhausted.");
+      }
+    });
   }
   /** Atomically reserves one compose call and claims its unique owner/job key before provider submission. */
   async claim_score_compose(options: ScoreReservationOptions): Promise<ScoreReservationClaim> {
@@ -672,6 +682,24 @@ export class WebStorage {
   async has_unreconciled_paid_attempt(): Promise<boolean> {
     return this.read(async c => (await c.execute("SELECT 1 FROM paid_attempts WHERE status != 'reconciled' LIMIT 1")).rows.length !== 0);
   }
+  private async check_speech_budget(c: Connection, estimate: Decimal, budget: Decimal, jingle: boolean): Promise<void> {
+    let spent = new Money(0);
+    for (const row of (await c.execute("SELECT status, estimated_cost_usd, actual_cost_usd, evidence_json FROM paid_attempts")).rows) {
+      const is_jingle = Boolean(JSON.parse(String(row.evidence_json)).jingle_estimate);
+      if (row.status !== "reconciled" && !(jingle && is_jingle && row.status === "awaiting_reconciliation")) {
+        throw new StorageConflict("A prior paid attempt needs reconciliation");
+      }
+      const cost = new Money(String(row.status === "reconciled" ? row.actual_cost_usd : row.estimated_cost_usd));
+      if (!cost.isFinite() || cost.isNegative()) throw new StorageConflict("Paid ledger contains an invalid cost");
+      // Entering billing evidence does not let a workspace user free reserved spend.
+      spent = spent.plus(is_jingle ? Money.max(cost, String(row.estimated_cost_usd)) : cost);
+    }
+    if (spent.plus(estimate).gt(budget)) throw new StorageConflict("Cumulative Speech budget would be exceeded");
+  }
+  /** Estimates of completed jingle voice calls remain reserved until reconciled; uncertain calls still block spending. */
+  async check_jingle_speech_budget(estimate: Decimal, budget: Decimal): Promise<void> {
+    await this.read(c => this.check_speech_budget(c, estimate, budget, true));
+  }
   /** Atomically reserves the cumulative budget before any provider submission. */
   async reserve_paid_run(options: PaidRunOptions): Promise<void> {
     const o = options;
@@ -679,19 +707,18 @@ export class WebStorage {
     const budget = new Money(o.total_budget_usd);
     if (!estimate.isFinite() || estimate.isNegative() || !budget.isFinite() || budget.isNegative()) throw new TypeError("Costs must be finite nonnegative USD amounts");
     await this.write(async c => {
-      if (o.issuer != null && !(await c.execute("SELECT 1 FROM application_users WHERE issuer = ? AND subject = ? AND enabled = 1 AND paid_speech = 1", [o.issuer, o.owner])).rows.length) throw new StorageAccessDenied("Paid Speech access is not enabled");
-      if ((await c.execute("SELECT 1 FROM paid_attempts WHERE status != 'reconciled' LIMIT 1")).rows.length) throw new StorageConflict("A prior paid attempt needs reconciliation");
-      let spent = new Money(0);
-      for (const row of (await c.execute("SELECT status, estimated_cost_usd, actual_cost_usd FROM paid_attempts")).rows) {
-        const cost = new Money(String(row.status === "reconciled" ? row.actual_cost_usd : row.estimated_cost_usd));
-        if (!cost.isFinite() || cost.isNegative()) throw new StorageConflict("Paid ledger contains an invalid cost");
-        spent = spent.plus(cost);
-      }
-      if (spent.plus(estimate).gt(budget)) throw new StorageConflict("Cumulative Speech budget would be exceeded");
+      const jingle = o.jingle_estimate !== undefined;
+      if (o.issuer != null && !(await c.execute(
+        `SELECT 1 FROM application_users WHERE issuer = ? AND subject = ? AND enabled = 1${jingle ? "" : " AND paid_speech = 1"}`,
+        [o.issuer, o.owner],
+      )).rows.length) throw new StorageAccessDenied(jingle ? "Application access denied" : "Paid Speech access is not enabled");
+      await this.check_speech_budget(c, estimate, budget, jingle);
       const now = new Date().toISOString();
       await c.execute("INSERT INTO runs VALUES (?, ?, ?, ?, ?, ?)", [o.run_id, o.owner, "azure", canonical_json(o.brief_ids), "rendering", now]);
       await c.execute(`INSERT INTO paid_attempts (attempt_id, run_id, owner, brief_ids_json, per_brief_estimates_json, estimated_cost_usd, submitted_characters, status, evidence_json, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [o.attempt_id, o.run_id, o.owner, canonical_json(o.brief_ids), canonical_json(o.per_brief_estimates), estimate.toString(), o.submitted_characters, "reserved", canonical_json(o.evidence), now]);
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [o.attempt_id, o.run_id, o.owner, canonical_json(o.brief_ids), canonical_json(o.per_brief_estimates), estimate.toString(), o.submitted_characters, "reserved", canonical_json({
+          ...o.evidence, ...(o.jingle_estimate ? { jingle_estimate: o.jingle_estimate } : {}),
+        }), now]);
     });
   }
   private async update_attempt(attempt_id: string, status: string): Promise<void> {
@@ -779,8 +806,13 @@ export class WebStorage {
     });
     if (!pair) return null;
     const { row, attempt } = pair;
+    const evidence = attempt ? JSON.parse(String(attempt.evidence_json)) as {
+      jingle_estimate?: JingleEstimate; jingle_ai_actual_cost_usd?: string;
+    } : null;
     return { run_id: String(row.run_id), mode: String(row.mode), brief_ids: JSON.parse(String(row.brief_ids_json)) as string[], status: String(row.status), created_at: String(row.created_at), outputs: (await this.list_outputs(owner)).filter(o => o.run_id === run_id),
-      ...(attempt ? { attempt: { attempt_id: String(attempt.attempt_id), status: String(attempt.status), estimated_cost_usd: String(attempt.estimated_cost_usd), actual_cost_usd: attempt.actual_cost_usd as string | null, reconciliation_reference: attempt.reconciliation_reference as string | null } } : {}) };
+      ...(attempt ? { attempt: { attempt_id: String(attempt.attempt_id), status: String(attempt.status), estimated_cost_usd: String(attempt.estimated_cost_usd), actual_cost_usd: attempt.actual_cost_usd as string | null, reconciliation_reference: attempt.reconciliation_reference as string | null,
+        ...(evidence?.jingle_estimate ? { jingle_estimate: evidence.jingle_estimate, jingle_ai_actual_cost_usd: evidence.jingle_ai_actual_cost_usd ?? null } : {}),
+      } } : {}) };
   }
   /** Lists recoverable runs newest first without exposing other owners. */
   async list_runs(owner: string): Promise<RunRecord[]> {
@@ -797,15 +829,24 @@ export class WebStorage {
       return true;
     });
   }
-  /** Reconciles once and allocates actual batch USD across paired outputs in the same transaction. */
-  async reconcile_attempt(o: { attempt_id: string; owner: string; actual_cost_usd: Decimal.Value; evidence_reference: string }): Promise<AttemptRecord> {
+  /** Reconciles Speech once, with optional separately verified AI service charges, and allocates only Speech costs across outputs. */
+  async reconcile_attempt(o: { attempt_id: string; owner: string; actual_cost_usd: Decimal.Value; evidence_reference: string; ai_actual_cost_usd?: Decimal.Value }): Promise<AttemptRecord> {
     const actual = new Money(o.actual_cost_usd);
-    if (!actual.isFinite() || actual.isNegative()) throw new TypeError("Actual cost must be finite and nonnegative");
+    const ai_actual = o.ai_actual_cost_usd === undefined ? null : new Money(o.ai_actual_cost_usd);
+    if (!actual.isFinite() || actual.isNegative() || (ai_actual && (!ai_actual.isFinite() || ai_actual.isNegative()))) {
+      throw new TypeError("Actual cost must be finite and nonnegative");
+    }
     await this.write(async c => {
       const row = (await c.execute("SELECT * FROM paid_attempts WHERE attempt_id = ? AND owner = ?", [o.attempt_id, o.owner])).rows[0];
       if (!row) throw new StorageNotFound("Paid attempt was not found");
+      const evidence = JSON.parse(String(row.evidence_json)) as Record<string, unknown>;
+      if (ai_actual && !evidence.jingle_estimate) throw new StorageConflict("AI billing is only recorded for AI jingle runs");
+      if (ai_actual) {
+        evidence.jingle_ai_actual_cost_usd = ai_actual.toString();
+        evidence.jingle_ai_reconciliation_reference = o.evidence_reference;
+      }
       if (!["reserved", "submitted", "awaiting_reconciliation", "failed_or_unknown"].includes(String(row.status))) throw new StorageConflict("Paid attempt is not ready for reconciliation");
-      await c.execute("UPDATE paid_attempts SET status = 'reconciled', actual_cost_usd = ?, reconciliation_reference = ?, reconciled_at = ? WHERE attempt_id = ?", [actual.toString(), o.evidence_reference, new Date().toISOString(), o.attempt_id]);
+      await c.execute("UPDATE paid_attempts SET status = 'reconciled', actual_cost_usd = ?, reconciliation_reference = ?, reconciled_at = ?, evidence_json = ? WHERE attempt_id = ?", [actual.toString(), o.evidence_reference, new Date().toISOString(), canonical_json(evidence), o.attempt_id]);
       const estimates = JSON.parse(String(row.per_brief_estimates_json)) as Record<string, string>;
       for (const output of (await c.execute("SELECT output_id, brief_id, manifest_json FROM outputs WHERE run_id = ?", [row.run_id!])).rows) {
         const manifest = JSON.parse(String(output.manifest_json)) as Manifest;

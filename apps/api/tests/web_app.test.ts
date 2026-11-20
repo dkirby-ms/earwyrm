@@ -961,6 +961,93 @@ describe('guarded paid text ledger', () => {
   });
 });
 
+describe('one-page AI jingles', () => {
+  it('quotes without provider calls, renders the generated score with voice for an enabled user, and records verified charges', async () => {
+    const root = root_dir();
+    const [brief, script] = load_inputs()[0]!;
+    const cta = script.split(/(?<=[.!?])\s+/).at(-1)!;
+    const hook = `${brief.name}, a tune up for your ride`;
+    const lyrics = `${hook}\n${cta}`;
+    const direction = vi.fn(async () => ({ name: brief.name, offer: 'tune ups', cta, tone: 'upbeat' }));
+    const backend: LyricBackend = {
+      preflight: vi.fn(async () => ({ english: true, risky_claims: false, artist_imitation: false })),
+      generate: vi.fn(async () => JSON.stringify({ hook, lyrics, syllables_per_line: [12, 16], rhyme_scheme: '--', brand_count: 2, cta })),
+      assess: vi.fn(async () => ({ english: true, grounded: true, risky_claims: false })),
+      screen: vi.fn(async () => ({ moderation_passed: true, protected_material_detected: false })),
+    };
+    const compose = vi.fn(async () => test_score);
+    const synthesize = vi.fn(async (text: string) => {
+      const words = [...text.matchAll(WORD)].map((match, index) => ({
+        text: match[0], text_offset: match.index, offset: index / 8, duration: 1 / 8,
+      }));
+      return { result_id: 'TEST', audio: new Float64Array(words.length * SAMPLE_RATE / 8).fill(0.1), words };
+    });
+    const renderer = vi.fn(render_brief);
+    const { app, access_token } = await fixture({
+      data_dir: root,
+      environ: { ...speech_environment(root, { SPEECH_TOTAL_BUDGET_USD: '2' }), ...lyric_limits, LYRIC_ENABLED: 'true' },
+      jingle_direction: direction, lyric_backend: backend, score_composer: { compose },
+      render: renderer, speech_factory: () => ({ synthesize }),
+    });
+    const user = await token('user-b');
+    const description = `An upbeat ad for ${brief.name}, with tune ups. End with "${cta}"`;
+    const quote = await request(app).get('/api/jingles').auth(user, { type: 'bearer' });
+    expect(quote.status).toBe(200);
+    expect(quote.body).toEqual({ estimate: { model_and_safety_max_usd: '0.112', speech_max_usd: '0.4', total_max_usd: '0.512' }, unavailable_reason: null, runs: [] });
+    expect(direction).not.toHaveBeenCalled();
+    const generate = () => request(app).post('/api/jingles').auth(user, { type: 'bearer' }).send({ description });
+    const run = await generate();
+    expect(run.status, JSON.stringify(run.body)).toBe(200);
+    expect(compose).toHaveBeenCalledTimes(1);
+    expect(synthesize).toHaveBeenCalledExactlyOnceWith(lyrics);
+    expect(renderer.mock.calls[0]?.[6]?.composition?.result.tempo_bpm).toBe(test_score.tempo_bpm);
+    expect(run.body.outputs.map((output: { variant: string }) => output.variant).sort()).toEqual(['spoken', 'vocoded']);
+    expect(run.body.attempt).toMatchObject({
+      status: 'awaiting_reconciliation', actual_cost_usd: null, jingle_ai_actual_cost_usd: null, jingle_estimate: quote.body.estimate,
+    });
+    const pending = await request(app).get('/api/jingles').auth(user, { type: 'bearer' });
+    expect(pending.body.estimate).toEqual(quote.body.estimate);
+    const other_owner = await request(app).get('/api/jingles').auth(access_token, { type: 'bearer' });
+    expect(other_owner.body.runs).toEqual([]);
+    const billed = await request(app).post(`/api/attempts/${run.body.attempt.attempt_id}/reconcile`)
+      .auth(user, { type: 'bearer' }).send({ actual_cost_usd: '0.0004', ai_actual_cost_usd: '0.003', evidence_reference: 'verified Azure billing' });
+    expect(billed.status).toBe(200);
+    const history = await request(app).get('/api/jingles').auth(user, { type: 'bearer' });
+    expect(history.body.runs).toHaveLength(1);
+    expect(history.body.runs[0].attempt).toMatchObject({
+      actual_cost_usd: '0.0004', jingle_ai_actual_cost_usd: '0.003',
+    });
+  });
+
+  it('does not render a fallback when a score provider fails', async () => {
+    const root = root_dir();
+    const [brief, script] = load_inputs()[0]!;
+    const cta = script.split(/(?<=[.!?])\s+/).at(-1)!;
+    const hook = `${brief.name}, a tune up for your ride`;
+    const render = vi.fn(fake_render);
+    const { app, access_token, speech_factory } = await fixture({
+      data_dir: root,
+      environ: { ...speech_environment(root, { SPEECH_TOTAL_BUDGET_USD: '2' }), ...lyric_limits, LYRIC_ENABLED: 'true' },
+      jingle_direction: async () => ({ name: brief.name, offer: 'tune ups', cta, tone: 'upbeat' }),
+      lyric_backend: {
+        preflight: async () => ({ english: true, risky_claims: false, artist_imitation: false }),
+        generate: async () => JSON.stringify({ hook, lyrics: `${hook}\n${cta}`, syllables_per_line: [12, 16], rhyme_scheme: '--', brand_count: 2, cta }),
+        assess: async () => ({ english: true, grounded: true, risky_claims: false }),
+        screen: async () => ({ moderation_passed: true, protected_material_detected: false }),
+      },
+      score_composer: { compose: async () => { throw new Error('test provider failed'); } },
+      render,
+    });
+    const result = await request(app).post('/api/jingles').auth(access_token, { type: 'bearer' })
+      .send({ description: `Write an upbeat jingle for ${brief.name}, with tune ups. End with "${cta}"` });
+    expect(result.status).toBe(503);
+    expect(render).not.toHaveBeenCalled();
+    expect(speech_factory).not.toHaveBeenCalled();
+    const history = await request(app).get('/api/jingles').auth(access_token, { type: 'bearer' });
+    expect(history.body.runs).toEqual([]);
+  });
+});
+
 describe('guarded paid score composition', () => {
   const lyric_backend: LyricBackend = {
     preflight: vi.fn(async () => ({ english: true, risky_claims: false, artist_imitation: false })),

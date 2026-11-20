@@ -37,9 +37,9 @@ npm run dev:web
 Open [http://localhost:8000/](http://localhost:8000/). Without configured
 Microsoft Entra External ID, the page starts in setup mode and you can't
 render from the browser. Follow the [web workspace guide](docs/audio-poc/web-app.md)
-to configure sign-in and authorize a user. Then pick a sample brief, select
-**Preview music only**, and open **Listen & review** to play or download a
-version. Paid lyric and voice generation require separate setup and approval.
+to configure sign-in and the AI services. Describe the jingle and select
+**Generate jingle**. The page shows an estimate before generation and keeps
+playback and billing status alongside the result.
 
 ## Find the right guide
 

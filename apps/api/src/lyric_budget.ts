@@ -9,7 +9,7 @@ const ceilings = {
   compose: { model: 1, safety: 0 },
 } as const;
 
-/** Identifies one consented web action and its worst-case provider workload. */
+/** Identifies one web action and its worst-case provider workload. */
 export type PaidLyricAction = keyof typeof ceilings;
 /** Paid lyric actions with a separate legacy reservation table. */
 export type PaidLyricGenerationAction = Exclude<PaidLyricAction, 'compose'>;
@@ -33,8 +33,10 @@ export function lyric_budget(env: Record<string, string | undefined>) {
 }
 
 /** Returns the full reservation and a call guard scoped to that single action. */
-export function lyric_allowance(action: PaidLyricAction, budget: ReturnType<typeof lyric_budget>) {
-  const remaining = { ...ceilings[action] };
+export function lyric_allowance(action: PaidLyricAction | 'jingle_write', budget: ReturnType<typeof lyric_budget>) {
+  const remaining = action === 'jingle_write'
+    ? { model: ceilings.write.model + 1, safety: ceilings.write.safety }
+    : { ...ceilings[action] };
   return {
     cost: budget.model.times(remaining.model).plus(budget.safety.times(remaining.safety)),
     consume(kind: keyof typeof remaining): void {
