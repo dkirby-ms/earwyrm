@@ -153,6 +153,7 @@ resource ai 'Microsoft.CognitiveServices/accounts@2025-06-01' = if (shouldProvis
   properties: {
     customSubDomainName: aiName
     disableLocalAuth: true
+    publicNetworkAccess: 'Enabled'
   }
 }
 
