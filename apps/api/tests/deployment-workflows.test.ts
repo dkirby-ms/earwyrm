@@ -7,8 +7,15 @@ import { describe, expect, it } from 'vitest';
 
 const workflows = new URL('../../../.github/workflows/', import.meta.url);
 const prepare = readFileSync(new URL('prepare-deployment.yml', workflows), 'utf8');
+const platform = readFileSync(new URL('../../../infra/platform.bicep', import.meta.url), 'utf8');
 
 describe('deployment workflow privilege separation', () => {
+  it('explicitly enables network access for the shared Foundry account', () => {
+    expect(platform).toMatch(
+      /resource ai 'Microsoft\.CognitiveServices\/accounts@[^']+'[\s\S]*?publicNetworkAccess: 'Enabled'/,
+    );
+  });
+
   it('keeps installation and builds in an unprivileged job with no environment or inherited secrets', () => {
     expect(prepare).toContain('npm ci --no-audit --no-fund');
     expect(prepare).toContain('docker build --file Dockerfile.web');
