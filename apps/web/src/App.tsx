@@ -61,6 +61,7 @@ function App() {
   const [history, setHistory] = useState<JingleHistory | null>(null)
   const [historyUncertain, setHistoryUncertain] = useState(false)
   const [description, setDescription] = useState('')
+  const [pronunciationHints, setPronunciationHints] = useState('')
   const [generation, setGeneration] = useState<{ status: 'idle' | 'running' | 'failed' | 'done'; step: number; delayed?: boolean }>({ status: 'idle', step: -1 })
   const [adminUsers, setAdminUsers] = useState<readonly UserAccess[]>([])
   const [adminRequests, setAdminRequests] = useState<readonly AdminAccessRequest[]>([])
@@ -231,6 +232,7 @@ function App() {
       setBudgetDraft(null)
       setHistoryUncertain(false)
       setDescription('')
+      setPronunciationHints('')
       setGeneration({ status: 'idle', step: -1 })
       setEvidence({})
       setEvaluations({})
@@ -296,7 +298,10 @@ function App() {
       let result: RenderRun
       try {
         result = await apiJson<RenderRun>(client, config, '/api/jingles', scopes.write, {
-          method: 'POST', body: { description: description.trim(), progress_id: progressId },
+          method: 'POST', body: {
+            description: description.trim(), progress_id: progressId,
+            ...(pronunciationHints.trim() ? { pronunciation_hints: pronunciationHints.trim() } : {}),
+          },
         })
       } catch (error) {
         controller.abort()
@@ -316,6 +321,7 @@ function App() {
       setGeneration({ status: 'done', step: generationSteps.length })
       setHistory(current => current ? { ...current, runs: [result, ...current.runs.filter(run => run.run_id !== result.run_id)] } : current)
       setDescription('')
+      setPronunciationHints('')
       setAnnouncement('Jingle generated. Review and listen below.')
       try { await refreshHistory(client, config) }
       catch {
@@ -566,6 +572,12 @@ function App() {
                 <p id="description-help" className="description-help">Include the business or product name and the sound you want. Add an offer or a call to action if you have one.</p>
                 <textarea id="description" value={description} onChange={event => setDescription(event.currentTarget.value)} maxLength={400} required disabled={busy} placeholder="An upbeat jingle for Cedar Loop Bike Repair, with a bright synth hook for spring tune-ups." aria-describedby="description-help" />
                 <p className="character-count">{description.length} / 400 characters</p>
+                <details>
+                  <summary>Brand pronunciation hints (optional)</summary>
+                  <label htmlFor="pronunciation-hints">Pronunciation hints</label>
+                  <p id="pronunciation-help" className="description-help">For an unfamiliar brand word, use familiar words to check its syllables: zyvox = zee fox. One hint per line. Your lyrics keep the original spelling; listen to check the voice pronunciation.</p>
+                  <textarea id="pronunciation-hints" value={pronunciationHints} onChange={event => setPronunciationHints(event.currentTarget.value)} maxLength={2000} disabled={busy} aria-describedby="pronunciation-help" rows={2} />
+                </details>
                 {budget && <>
                   <p className="budget-balance">Lifetime allowance: ${budget.limit_usd}. Charged or reserved: ${budget.charged_usd}. Remaining: ${budget.remaining_usd}. Contact an administrator to adjust your allowance.</p>
                   <p className="budget-balance">Lyric reserve: ${budget.lyric_reserved_usd}. Administrator-recorded verified lyric actual: ${budget.lyric_actual_usd}.</p>

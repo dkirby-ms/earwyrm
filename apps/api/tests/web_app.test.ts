@@ -1076,16 +1076,70 @@ describe('guarded paid text ledger', () => {
 });
 
 describe('one-page AI jingles', () => {
-  it('quotes without provider calls, renders the generated score with voice for an enabled user, and records verified charges', async () => {
+  it.each(['short_cta', 'punctuation', 'pronunciation', 'invalid_hint', 'overlong_cta', 'unknown_brand', 'fixed_whitespace'] as const)('handles %s without rewriting user text or wasting opening retries', async scenario => {
+    const root = root_dir();
+    const name = ['pronunciation', 'invalid_hint', 'unknown_brand'].includes(scenario) ? 'Zyvox Bike' : 'Bright Bike';
+    const cta = scenario === 'short_cta' ? `Call ${name} today`
+      : scenario === 'overlong_cta' ? `Call ${name} ${'one '.repeat(20)}today`
+      : scenario === 'fixed_whitespace' ? `Call ${name} today `
+      : `Call ${name} to plan your next ride${scenario === 'punctuation' ? '\u2026' : ''}`;
+    const hook = scenario === 'punctuation' ? 'Let\u2019s ride with Bright Bike, on your next ride'
+      : `${name}, a tune up for your very next ride`;
+    const backend: LyricBackend = {
+      preflight: vi.fn(async () => ({ english: true, risky_claims: false, artist_imitation: false })),
+      generate: vi.fn(async () => JSON.stringify({ hook })),
+      assess: vi.fn(async () => ({ english: true, grounded: true, risky_claims: false })),
+      screen: vi.fn(async () => ({ moderation_passed: true, protected_material_detected: false })),
+    };
+    const compose = vi.fn(async () => test_score);
+    const synthesize = vi.fn(async () => ({ result_id: 'TEST', audio: new Float64Array(480).fill(0.1), words: [] }));
+    const { app, store, access_token } = await fixture({
+      data_dir: root,
+      environ: { ...speech_environment(root, { SPEECH_TOTAL_BUDGET_USD: '2' }), ...lyric_limits, LYRIC_ENABLED: 'true' },
+      jingle_direction: async () => ({ name, offer: 'tune ups', tone: 'upbeat', cta, suggested_cta: null }),
+      lyric_backend: backend, score_composer: { compose }, speech_factory: () => ({ synthesize }),
+    });
+    const result = await request(app).post('/api/jingles').auth(access_token, { type: 'bearer' }).send({
+      description: `A bell that sounds like a doorbell for ${name}, with tune ups. End with "${cta}"`,
+      ...(scenario === 'pronunciation' ? { pronunciation_hints: 'zyvox = zee fox' } : {}),
+      ...(scenario === 'invalid_hint' ? { pronunciation_hints: 'zyvox = qzx' } : {}),
+    });
+    if (['invalid_hint', 'overlong_cta', 'unknown_brand', 'fixed_whitespace'].includes(scenario)) {
+      expect(result.status, JSON.stringify(result.body)).toBe(422);
+      expect(result.body.detail).toContain(scenario === 'invalid_hint' ? 'pronunciation hints'
+        : scenario === 'overlong_cta' ? 'one to twenty syllables'
+        : scenario === 'fixed_whitespace' ? 'without leading or trailing spaces' : 'dictionary');
+      expect(backend.generate).not.toHaveBeenCalled();
+      expect(compose).not.toHaveBeenCalled();
+      expect(synthesize).not.toHaveBeenCalled();
+      return;
+    }
+    expect(result.status, JSON.stringify(result.body)).toBe(200);
+    expect(backend.generate).toHaveBeenCalledTimes(1);
+    expect(backend.screen).toHaveBeenCalledExactlyOnceWith(`${hook}\n${cta}`);
+    const submitted = scenario === 'punctuation' ? `Let's ride with Bright Bike, on your next ride\nCall Bright Bike to plan your next ride...` : `${hook}\n${cta}`;
+    expect(synthesize).toHaveBeenCalledExactlyOnceWith(submitted);
+    const run = await store.get_run(result.body.run_id, 'user-a');
+    expect(run?.outputs[0]?.manifest.lyric_source).toMatchObject({ lyrics: `${hook}\n${cta}`, cta });
+    if (scenario === 'pronunciation') expect(backend.assess).toHaveBeenCalledWith(expect.objectContaining({
+      pronunciations: { zyvox: ['Z', 'IY1', 'F', 'AA1', 'K', 'S'] },
+    }), expect.anything());
+  });
+
+  it.each(['exact', 'suggested'] as const)('quotes, renders, and records charges using the %s closing line', async closing => {
     const root = root_dir();
     const [brief, script] = load_inputs()[0]!;
     const cta = script.split(/(?<=[.!?])\s+/).at(-1)!;
     const hook = `${brief.name}, a tune up for your ride`;
     const lyrics = `${hook}\n${cta}`;
-    const direction = vi.fn(async () => ({ name: brief.name, offer: 'tune ups', cta, tone: 'upbeat' }));
+    const direction = vi.fn(async () => ({
+      name: brief.name, offer: 'tune ups', tone: 'upbeat',
+      cta: closing === 'exact' ? cta : null,
+      suggested_cta: closing === 'suggested' ? cta : null,
+    }));
     const backend: LyricBackend = {
       preflight: vi.fn(async () => ({ english: true, risky_claims: false, artist_imitation: false })),
-      generate: vi.fn(async () => JSON.stringify({ hook, lyrics, syllables_per_line: [12, 15], rhyme_scheme: '--', brand_count: 2, cta })),
+      generate: vi.fn(async () => JSON.stringify({ hook })),
       assess: vi.fn(async () => ({ english: true, grounded: true, risky_claims: false })),
       screen: vi.fn(async () => ({ moderation_passed: true, protected_material_detected: false })),
     };
@@ -1104,7 +1158,7 @@ describe('one-page AI jingles', () => {
       render: renderer, speech_factory: () => ({ synthesize }),
     });
     const user = await token('user-b');
-    const description = `An upbeat ad for ${brief.name}, with tune ups. End with "${cta}"`;
+    const description = `An upbeat ad for ${brief.name}, with tune ups.${closing === 'exact' ? ` End with "${cta}"` : ''}`;
     const quote = await request(app).get('/api/jingles').auth(user, { type: 'bearer' });
     expect(quote.status).toBe(200);
     expect(quote.body).toEqual({ estimate: { model_and_safety_max_usd: '0.112', speech_max_usd: '0.4', total_max_usd: '0.512' }, unavailable_reason: null, runs: [] });
@@ -1144,7 +1198,6 @@ describe('one-page AI jingles', () => {
     const cta = script.split(/(?<=[.!?])\s+/).at(-1)!;
     const hook = `${brief.name}, a tune up for your ride`;
     const marker = 'private-test-marker';
-    const draft = { hook, lyrics: `${hook}\n${cta}`, syllables_per_line: [12, 16], rhyme_scheme: '--', brand_count: 2, cta };
     const completion = (content: string) => Response.json({ choices: [{ finish_reason: 'stop', message: { content } }] });
     let attempts = 0;
     const send = vi.fn(async (url: string, init: RequestInit) => {
@@ -1161,10 +1214,10 @@ describe('one-page AI jingles', () => {
       }
       attempts++;
       if (scenario === 'refused') return Response.json({ error: { code: 'content_filter', message: marker } }, { status: 400 });
-      if (scenario === 'screened') return completion(JSON.stringify({ ...draft, syllables_per_line: [12, 15] }));
+      if (scenario === 'screened') return completion(JSON.stringify({ hook }));
       if (attempts === 1) return Response.json({ error: marker }, { status: 429 });
       if (attempts === 2) return completion(marker);
-      return completion(JSON.stringify({ ...draft, cta: marker }));
+      return completion(JSON.stringify({ hook: cta }));
     });
     const lyric_backend = new AzureLyricBackend({
       foundry_endpoint: 'https://foundry.example.test', safety_endpoint: 'https://safety.example.test', deployment: 'test',
@@ -1176,7 +1229,7 @@ describe('one-page AI jingles', () => {
       environ: { ...speech_environment(root, { SPEECH_TOTAL_BUDGET_USD: '2' }), ...lyric_limits, LYRIC_ENABLED: 'true' },
       jingle_direction: async () => {
         if (scenario === 'unknown') throw new CloudFailure(marker);
-        return { name: brief.name, offer: 'tune ups', cta, tone: 'upbeat' };
+        return { name: brief.name, offer: 'tune ups', cta, suggested_cta: null, tone: 'upbeat' };
       },
       lyric_backend, score_composer: { compose: score },
     });
@@ -1241,10 +1294,10 @@ describe('one-page AI jingles', () => {
     const { app, access_token, speech_factory } = await fixture({
       data_dir: root,
       environ: { ...speech_environment(root, { SPEECH_TOTAL_BUDGET_USD: '2' }), ...lyric_limits, LYRIC_ENABLED: 'true' },
-      jingle_direction: async () => ({ name: brief.name, offer: 'tune ups', cta, tone: 'upbeat' }),
+      jingle_direction: async () => ({ name: brief.name, offer: 'tune ups', cta, suggested_cta: null, tone: 'upbeat' }),
       lyric_backend: {
         preflight: async () => ({ english: true, risky_claims: false, artist_imitation: false }),
-        generate: async () => JSON.stringify({ hook, lyrics: `${hook}\n${cta}`, syllables_per_line: [12, 16], rhyme_scheme: '--', brand_count: 2, cta }),
+        generate: async () => JSON.stringify({ hook }),
         assess: async () => ({ english: true, grounded: true, risky_claims: false }),
         screen: async () => ({ moderation_passed: true, protected_material_detected: false }),
       },

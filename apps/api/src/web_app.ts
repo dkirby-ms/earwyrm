@@ -15,7 +15,7 @@ import { JINGLE_VOICE_MAX_CHARACTERS, JingleDescription, JingleDirection, type J
 import { jingle_diagnostic, set_jingle_diagnostic_stage, trace_jingle } from './jingle_diagnostics.js';
 import { AzureScoreComposer, score_prompt, ScoreProviderProvenance, type ScoreComposer } from './score_cloud.js';
 import { ArrangementScore, score_lyric_timing, type ArrangementScore as Arrangement } from './score_dsl.js';
-import { has_cta_rhyme, LyricRequest, LyricResult, LyricRuleError, validate_draft } from './lyrics.js';
+import { brand_pronunciations, has_cta_rhyme, LyricRequest, LyricResult, LyricRuleError, normalize_spoken_text, validate_draft } from './lyrics.js';
 import { bind_timing, digest, GuidedPreview, guided_pronunciations, known_meter, phrase_counts } from './guided_arrangement.js';
 import { PreviewCompositionRequest, preview_duration } from './melody.js';
 import { MelodyService, CompositionUnavailable, JobConflict, type CompositionResult } from './melody_service.js';
@@ -518,7 +518,7 @@ export function create_app(options: CreateAppOptions = {}): Express {
         composition = await tools.artifacts(committed);
       }
       return {
-        ...selected, text: draft.lyrics, composition,
+        ...selected, text: normalize_spoken_text(draft.lyrics), composition,
         lyric_source: {
           option_id: stored.option_id, ...draft, status: 'accepted' as const, ai_generated: true, broadcast_approval_required: true,
           ...(request.arrangement ? { arrangement_job_id: request.arrangement.job_id } : {}),
@@ -1287,7 +1287,10 @@ export function create_app(options: CreateAppOptions = {}): Express {
   });
 
   app.post('/api/jingles', ...authorized('renders.write'), (request, response) => trace_jingle(response, async () => {
-    const { description, progress_id } = parse(z.strictObject({ description: JingleDescription, progress_id: z.uuid().optional() }), request.body);
+    const { description, progress_id, pronunciation_hints } = parse(z.strictObject({
+      description: JingleDescription, progress_id: z.uuid().optional(),
+      pronunciation_hints: z.string().max(2000).optional(),
+    }), request.body);
     if (IMITATION.test(description)) throw new HttpError(422, 'Describe an original mood or genre without asking to imitate an artist or song.');
     if (jingle_active || render_active || lyrics_active) throw new HttpError(409, 'Another generation is in progress. Try again when it finishes.');
     jingle_active = true;
@@ -1306,15 +1309,17 @@ export function create_app(options: CreateAppOptions = {}): Express {
         : backend instanceof AzureLyricBackend
           ? backend.extract_direction(description)
           : Promise.reject(new CloudFailure('missing_jingle_direction_adapter'))));
-      const { name, offer, cta, tone } = direction;
+      const { name, offer, cta, suggested_cta, tone } = direction;
       if (!name || ![name, offer, cta].every(value => value === null || description.includes(value))) {
         throw new HttpError(422, 'Include the business or product name and any exact words you want to hear.');
       }
+      const closing_line = cta ?? suggested_cta;
+      if (!closing_line) throw new HttpError(422, 'The AI could not suggest a closing line. Include an exact call to action in your description.');
       const normalized = BriefDetails.safeParse({
         name, tone, offer: offer ?? 'Not specified', location: 'Not specified',
         contact_details: { email: 'Not specified', phone: 'Not specified' },
         approved_claims: [offer ?? name],
-        cta: cta ?? `Find out more about ${name} today`,
+        cta: closing_line,
       });
       if (!normalized.success) throw new HttpError(422, 'Use a shorter business name or call to action.');
       let custom: CustomBrief;
@@ -1323,12 +1328,23 @@ export function create_app(options: CreateAppOptions = {}): Express {
         if (error instanceof z.ZodError) throw new HttpError(422, 'Use a shorter description and spell out numbers or symbols in the name and call to action.');
         throw error;
       }
-      const lyric_request = LyricRequest.parse({ ...custom, product_path: 'spoken', creative_direction: description });
+      let pronunciations: LyricRequest['pronunciations'];
+      try { pronunciations = brand_pronunciations(name, pronunciation_hints ?? ''); }
+      catch (error) {
+        if (!(error instanceof LyricRuleError)) throw error;
+        jingle_diagnostic({ event: 'request_failed', reason: 'invalid_pronunciation_hint' });
+        throw new HttpError(422, 'Use pronunciation hints like brandword = spoken words, one per line, with familiar English words and only words from the business name.');
+      }
+      const lyric_request = LyricRequest.parse({ ...custom, product_path: 'spoken', pronunciations, creative_direction: description });
       set_stage('lyrics');
-      const lyrics = await new LyricWriter(backend, 'derive').write(lyric_request, () => set_stage('safety'));
+      const lyrics = await new LyricWriter(backend, 'browser_jingle').write(lyric_request, () => set_stage('safety'));
       const store = await storage();
       const owner = identity(response).subject;
       if (lyrics.status !== 'accepted') {
+        if (lyrics.reasons.includes('fixed_lyric_format')) throw new HttpError(422, 'The business name and closing line must be single lines without leading or trailing spaces and fit within 400 characters after punctuation normalization. Your exact wording was not changed.');
+        if (lyrics.reasons.includes('fixed_pronunciation_required')) throw new HttpError(422, 'The dictionary does not contain a word in the business name or closing line. Add a pronunciation hint for a brand word, or explicitly supply a spoken spelling in your description. Your exact wording was not changed.');
+        if (lyrics.reasons.includes('cta_meter')) throw new HttpError(422, 'The exact closing line cannot fit: spoken closing lines must contain one to twenty syllables. Shorten it explicitly or leave the call to action open. Your wording was not changed.');
+        if (lyrics.reasons.includes('cta_brand_count')) throw new HttpError(422, 'The closing line repeats the business name more than twice. Supply different exact wording or leave the call to action open.');
         if (lyrics.status === 'unavailable') throw new HttpError(503, 'The AI lyric service could not complete generation.');
         if (lyrics.status === 'human_review_required') throw new HttpError(422, 'The description or lyrics include claims that require human review. Try describing the business without prices, guarantees, or regulated claims.');
         throw new HttpError(422, 'The lyrics did not pass screening or fit the jingle. Try a short, pronounceable business name and leave the call to action open.');

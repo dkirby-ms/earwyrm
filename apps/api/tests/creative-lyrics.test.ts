@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { CredentialUnavailableError } from "@azure/identity";
 import { Assessment, AzureLyricBackend, CATEGORIES, CloudFailure, LyricCloudSettings, ModelRefusal, Preflight, Screening, type CloudTransport, type LyricBackend } from "../src/lyric_cloud.js";
 import { lyric_allowance, lyric_budget } from "../src/lyric_budget.js";
-import { LyricDraft, LyricRequest, LyricResult, validate_draft } from "../src/lyrics.js";
+import { brand_pronunciations, LyricDraft, LyricRequest, LyricResult, lyric_syllables, normalize_spoken_text, validate_draft } from "../src/lyrics.js";
 import { LyricWriter } from "../src/lyric_service.js";
 import {
   AzureScoreComposer, score_prompt, type ScoreTelemetry, type ScoreTelemetrySpan,
@@ -50,6 +50,39 @@ const completion = (content: string, updates = {}) => ({ choices: [{ finish_reas
 const transport = (data: unknown, status = 200) => vi.fn<CloudTransport>().mockImplementation(async () => new Response(JSON.stringify(data), { status }));
 
 describe("deterministic lyric rules", () => {
+  it("accepts short spoken CTAs only when the full jingle meets its syllable budget", () => {
+    const request = request_fixture(), cta = "Call Bright Bike today";
+    const hook = "Bright Bike, a tune up for your very next ride";
+    request.cta = cta;
+    const draft: LyricDraft = { hook, lyrics: `${hook}\n${cta}`, cta, syllables_per_line: [11, 5], rhyme_scheme: "--", brand_count: 2 };
+    expect(validate_draft(request, draft)).toBe(draft);
+    const short = "Bright Bike, a tune up for your next great ride";
+    expect(() => validate_draft(request, { ...draft, hook: short, lyrics: `${short}\n${cta}`, syllables_per_line: [10, 5] })).toThrow("meter");
+  });
+
+  it("normalizes typographic punctuation without changing exact lyric wording", () => {
+    const request = request_fixture();
+    const cta = "Call Bright Bike to plan your next ride\u2026";
+    const hook = "Let\u2019s ride with Bright Bike, on your next ride";
+    request.cta = cta;
+    expect(LyricRequest.parse(request).cta).toBe(cta);
+    const draft: LyricDraft = { hook, lyrics: `${hook}\n${cta}`, cta, syllables_per_line: [9, 8], rhyme_scheme: "--", brand_count: 2 };
+    expect(validate_draft(request, draft)).toBe(draft);
+    expect(lyric_syllables(hook, {})).toHaveLength(9);
+    expect(normalize_spoken_text("\u201cLet\u2019s\u00a0ride\u201d\u2014today\u2026")).toBe('"Let\'s ride"-today...');
+    expect(() => validate_draft(request, { ...draft, cta: normalize_spoken_text(cta) })).toThrow("cta_placement");
+    expect(LyricRequest.safeParse({ ...request, cta: "Call Bright Bike \u200btoday" }).success).toBe(false);
+  });
+
+  it("derives brand overrides only from explicit dictionary hints", () => {
+    const overrides = brand_pronunciations("Zyvox Bike", "zyvox = zee fox");
+    expect(lyric_syllables("Zyvox Bike", overrides)).toHaveLength(3);
+    expect(() => lyric_syllables("Zyvox Bike", {})).toThrow("unknown_pronunciation");
+    for (const hints of ["zyvox = qzx", "other = zee fox", "zyvox = zee\nzyvox = fox", "zyvox: zee fox"]) {
+      expect(() => brand_pronunciations("Zyvox Bike", hints)).toThrow();
+    }
+  });
+
   it("still rejects out-of-meter lyrics when deriving syllable counts", () => {
     const request = request_fixture(), draft = draft_fixture();
     expect(() => validate_draft(request, {
@@ -105,6 +138,53 @@ describe("deterministic lyric rules", () => {
 });
 
 describe("four-attempt fail-closed writer", () => {
+  it.each(["leading_space", "trailing_space", "normalized_length"] as const)("rejects fixed CTA %s format before generation", async scenario => {
+    const request = request_fixture(), backend = backend_fixture();
+    request.cta = scenario === "leading_space" ? ` ${request.cta}` : scenario === "trailing_space"
+      ? `${request.cta} ` : `${request.cta}${"\u2026".repeat(130)}`;
+    const result = await new LyricWriter(backend, "browser_jingle").write(request);
+    expect(result).toMatchObject({ status: "rejected", attempts: 0, reasons: ["fixed_lyric_format"], output: null });
+    expect(backend.preflight).not.toHaveBeenCalled();
+    expect(backend.generate).not.toHaveBeenCalled();
+  });
+
+  it.each(["overlong", "unknown_brand", "unknown_cta", "repeated_brand"] as const)("rejects fixed %s input before generation", async scenario => {
+    const request = request_fixture(), backend = backend_fixture();
+    if (scenario === "overlong") request.cta = `Call Bright Bike ${"one ".repeat(20)}today`;
+    if (scenario === "unknown_brand") request.brief.name = "Zyvox Bike";
+    if (scenario === "unknown_cta") request.cta = "Call Bright Bike to plan your qzx ride";
+    if (scenario === "repeated_brand") request.cta = "Bright Bike Bright Bike Bright Bike today";
+    const result = await new LyricWriter(backend, "browser_jingle").write(request);
+    expect(result).toMatchObject({ status: "rejected", attempts: 0, output: null });
+    expect(result.reasons).toEqual([scenario === "overlong" ? "cta_meter" : scenario === "repeated_brand" ? "cta_brand_count" : "fixed_pronunciation_required"]);
+    expect(backend.preflight).not.toHaveBeenCalled();
+    expect(backend.generate).not.toHaveBeenCalled();
+  });
+
+  it("accepts a browser short CTA and preserves it across opening retries", async () => {
+    const request = request_fixture(), backend = backend_fixture();
+    request.cta = "Call Bright Bike today";
+    backend.generate.mockResolvedValueOnce(JSON.stringify({ hook: "Bright Bike, a tune up for your ride" }))
+      .mockResolvedValueOnce(JSON.stringify({ hook: "Bright Bike, a tune up for your very next ride" }));
+    const result = await new LyricWriter(backend, "browser_jingle").write(request);
+    expect(result).toMatchObject({ status: "accepted", attempts: 2, output: { cta: request.cta, syllables_per_line: [11, 5] } });
+    expect(backend.generate.mock.calls[1][1]).toEqual(["meter"]);
+    expect(backend.assess).toHaveBeenCalledTimes(1);
+    expect(backend.screen).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["comparison", "invitation", "contextual_imitation", "contextual_risk"] as const)("uses contextual safety for %s", async scenario => {
+    const request = request_fixture(), backend = backend_fixture();
+    request.creative_direction = scenario === "comparison" || scenario === "contextual_imitation"
+      ? "A bell that sounds like a doorbell" : "Feel free to visit";
+    if (scenario === "contextual_imitation") backend.preflight.mockResolvedValue({ english: true, artist_imitation: true, risky_claims: false });
+    if (scenario === "contextual_risk") backend.assess.mockResolvedValue({ english: true, grounded: true, risky_claims: true });
+    const result = await new LyricWriter(backend).write(request);
+    expect(result.status).toBe(scenario === "contextual_imitation" ? "rejected" : scenario === "contextual_risk" ? "human_review_required" : "accepted");
+    expect(backend.preflight).toHaveBeenCalledTimes(1);
+    expect(backend.screen).toHaveBeenCalledTimes(scenario === "contextual_imitation" ? 0 : 1);
+  });
+
   it("requires preflight, generation, independent assessment and screening before acceptance", async () => {
     const backend = backend_fixture(), result = await new LyricWriter(backend).write(request_fixture());
     expect(result.status).toBe("accepted"); expect(result.attempts).toBe(1); expect(result.output).toEqual(draft_fixture());

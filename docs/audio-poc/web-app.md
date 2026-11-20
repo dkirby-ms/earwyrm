@@ -77,7 +77,20 @@ application permissions. Operators can also use
 
 1. Describe the jingle in a few sentences. Include the business or product
    name and, if useful, what it offers, the mood, or an exact call to action.
-   There is no brief to upload.
+   If you leave the call to action open, the AI suggests a closing line.
+   Earwyrm adds that line, or the exact wording you supplied, before validating
+   and screening the complete lyrics. There is no brief to upload.
+   A spoken opening uses 8-20 syllables. The closing line can use 1-20 syllables
+   when the complete two-line jingle totals 16-40. Earwyrm checks fixed closing
+   text before opening retries and explains incompatible exact wording rather
+   than rewriting it. Fixed text must be a single line without leading or
+   trailing spaces, within 400 characters after punctuation normalization.
+   For an unfamiliar brand word, expand **Brand pronunciation hints (optional)**
+   and enter a hint such as `zyvox = zee fox`, one per line. Hints must refer to
+   words in the business name and use familiar dictionary words. They verify
+   syllables without replacing the original brand spelling; listen to verify
+   the stock voice's pronunciation. Guided vocals still require exact verified
+   pronunciation, rhyme and note timing.
 2. Check the cost estimate, then select **Generate jingle**. This starts the
    paid request without a separate confirmation. The server screens the lyrics,
    uses Foundry to compose the score, and mixes Azure Speech with that score.
@@ -88,6 +101,14 @@ application permissions. Operators can also use
 4. Listen and review the demo on the same page. Generation is not broadcast
    approval. If the connection drops, check the page for a result before making
    another request. A failed generation can still incur provider charges.
+
+Common curly quotes and apostrophes, dash variants, nonbreaking spaces and
+ellipses are normalized for validation and Speech input. Stored/displayed lyrics
+retain your original punctuation and exact closing wording. Unsupported symbols
+and control characters are still rejected. Ordinary sound comparisons and
+invitations such as "feel free to visit" go through contextual safety checks;
+artist imitation, ungrounded or risky claims, moderation and protected-material
+screening remain enforced.
 
 ## Understand costs
 

@@ -1,16 +1,22 @@
 import { SpanKind, trace } from "@opentelemetry/api";
 import { z } from "zod";
 import { Assessment, CloudFailure, ModelRefusal, Preflight, Screening, type LyricBackend } from "./lyric_cloud.js";
-import { GuidedLyricCandidate, LyricDraft, LyricRequest, LyricResult, LyricRuleError, validate_draft } from "./lyrics.js";
+import { BrowserLyricCandidate, GuidedLyricCandidate, LyricDraft, LyricRequest, LyricResult, LyricRuleError, validate_draft, validate_fixed_lyrics } from "./lyrics.js";
 import { jingle_diagnostic } from "./jingle_diagnostics.js";
 
-export const IMITATION = /\b(in (?:the )?style of|sound(?:s)? like|inspired by|imitat\w*|channel(?:ing)?|sing like|write like|tribute to)\b/i;
-export const RISK = /[$%]|\b(dollars?|cents?|pounds?|euros?|price|free|discount|sale|best|finest|cheapest|fastest|greatest|leading|guarantee\w*|health|medical|dental|clinic|pharmacy|wellness|medicine|treatment|supplement|cure|financial|insurance|investment|loan|credit|bank|mortgage|alcohol|beer|wine|spirits|brewery|pub|bar|cannabis|gambling|casino|vape|tobacco)\b/i;
+export const IMITATION = /\b(in (?:the )?style of|(?:imitate|sound(?:s)? like|sing like|write like) (?:a |the )?(?:named )?(?:artist|band|song|singer))\b/i;
+export const RISK = /[$%]|\bfree\b(?!\s+to\b)|\b(dollars?|cents?|pounds?|euros?|price|discount|sale|best|finest|cheapest|fastest|greatest|leading|guarantee\w*|health|medical|dental|clinic|pharmacy|wellness|medicine|treatment|supplement|cure|financial|insurance|investment|loan|credit|bank|mortgage|alcohol|beer|wine|spirits|brewery|pub|bar|cannabis|gambling|casino|vape|tobacco)\b/i;
 const TRACER = trace.getTracer("earwyrm.lyric_service");
 const GuidedBackendDraft = GuidedLyricCandidate.extend({ hook: z.unknown().optional() });
 
-function parse_candidate(request: LyricRequest, data: unknown): LyricDraft | undefined {
-  if (request.arrangement) {
+function parse_candidate(request: LyricRequest, data: unknown, mode?: "browser_jingle"): LyricDraft | undefined {
+  if (mode === "browser_jingle") {
+    const parsed = BrowserLyricCandidate.safeParse(data);
+    if (!parsed.success) return undefined;
+    const { hook } = parsed.data;
+    // The validator replaces these counts before assessment, screening or storage.
+    data = { hook, lyrics: `${hook}\n${request.cta}`, cta: request.cta, syllables_per_line: [0, 0], rhyme_scheme: "--", brand_count: 2 };
+  } else if (request.arrangement) {
     const parsed = GuidedBackendDraft.safeParse(data);
     if (!parsed.success) return undefined;
     data = { ...parsed.data, hook: parsed.data.lyrics.split("\n", 1)[0] };
@@ -26,7 +32,7 @@ function brief_text(request: LyricRequest): string {
 
 /** Fail-closed writer owning one initial generation attempt and exactly three retries. */
 export class LyricWriter {
-  constructor(readonly backend: LyricBackend, private readonly syllable_counts: "verify" | "derive" = "verify") {}
+  constructor(readonly backend: LyricBackend, private readonly mode?: "browser_jingle") {}
 
   /** Resolve to screened lyrics or an explicit safe outcome; notify immediately before external safety checks. */
   async write(request: LyricRequest, on_screen?: () => void): Promise<LyricResult> {
@@ -52,6 +58,11 @@ export class LyricWriter {
     };
     if (IMITATION.test(text)) return result("rejected", ["artist_imitation"]);
     try {
+      try { validate_fixed_lyrics(request); }
+      catch (error) {
+        if (!(error instanceof LyricRuleError)) throw error;
+        return result("rejected", [error.message === "unknown_pronunciation" ? "fixed_pronunciation_required" : error.message]);
+      }
       const preflight = parse_evidence(Preflight, await this.backend.preflight(request), "malformed_assessment");
       if (preflight.artist_imitation || !preflight.english) return result("rejected", [preflight.artist_imitation ? "artist_imitation" : "unsupported_language"]);
       for (attempts = 1; attempts <= 4; attempts++) {
@@ -60,13 +71,15 @@ export class LyricWriter {
         try {
           const previous_pronunciation_line = pronunciation_line;
           pronunciation_line = undefined;
-          const raw = await this.backend.generate(request, feedback, previous_pronunciation_line);
+          const raw = this.mode
+            ? await this.backend.generate(request, feedback, previous_pronunciation_line, this.mode)
+            : await this.backend.generate(request, feedback, previous_pronunciation_line);
           let data: unknown;
           try { data = JSON.parse(raw); }
           catch (error) { if (!(error instanceof SyntaxError)) throw error; retry("malformed_lyric_output"); continue; }
-          const parsed = parse_candidate(request, data);
+          const parsed = parse_candidate(request, data, this.mode);
           if (!parsed) { retry("malformed_lyric_output"); continue; }
-          draft = validate_draft(request, parsed, this.syllable_counts);
+          draft = validate_draft(request, parsed, this.mode ? "derive" : "verify");
         } catch (error) {
           if (error instanceof LyricRuleError) {
             retry(error.message);

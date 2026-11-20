@@ -7,11 +7,12 @@ export const JingleDescription = z.string().trim().min(1, 'Describe the jingle y
 /** Maximum submitted voice characters, matching the validated lyric draft limit. */
 export const JINGLE_VOICE_MAX_CHARACTERS = 400;
 
-/** Source phrases extracted from the description, with creative mood kept separate from facts. */
+/** Source phrases extracted from the description, with generated wording kept separate from facts. */
 export const JingleDirection = z.strictObject({
   name: Text.nullable(),
   offer: Text.nullable(),
   cta: Text.nullable(),
+  suggested_cta: Text.nullable(),
   tone: Text,
 });
 export type JingleDirection = z.infer<typeof JingleDirection>;

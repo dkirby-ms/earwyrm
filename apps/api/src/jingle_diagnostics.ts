@@ -18,6 +18,7 @@ const safe_reasons = new Set([
   'moderation_rejected', 'protected_material', 'risky_claims_require_human_review', 'model_refusal',
   'malformed_lyric_output', 'line_format', 'cta_placement', 'hook_placement', 'use_pronounceable_words',
   'unknown_pronunciation', 'syllable_labels', 'unstressed_rhyme', 'arrangement_meter', 'meter',
+  'fixed_pronunciation_required', 'fixed_lyric_format', 'cta_meter', 'cta_brand_count', 'invalid_pronunciation_hint',
   'syllable_metadata', 'rhyme_metadata', 'rhyme', 'brand_count',
   'cloud_authentication_failed', 'cloud_transport_failed', 'cloud_temporarily_unavailable',
   'cloud_request_failed', 'malformed_cloud_response', 'malformed_model_envelope', 'incomplete_model_output',
