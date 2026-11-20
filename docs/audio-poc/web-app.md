@@ -102,6 +102,18 @@ only when both amounts are recorded. For the shared budget, a jingle counts for
 at least its Speech estimate even after reconciliation. An uncertain Speech
 attempt blocks further generation until it is reconciled.
 
+Lyric generation reserves its configured action cap before provider calls.
+Failure or partial-completion status and token counts do not verify billed
+dollars. A lyric reservation stays pending at its full cap until an
+administrator records an actual amount supported by evidence attributable to
+that request. The app stores the evidence reference; it does not fetch or
+verify Azure billing records. Settlement replaces the reserve with the
+recorded actual, including zero when supported. Administrators can correct or
+reopen a settlement, and each change is retained in the reservation history.
+Reopening restores the pending hold. The two reported failures have not been
+verified against account-specific request and reservation records, so the
+reported $1.24 decrease cannot be attributed to two $0.62 reservations.
+
 ## Manage budgets
 
 Open **Manage access**, then **Budgets and usage**. Administrators can inspect
@@ -131,13 +143,23 @@ limits both apply; changing them does not enable disabled services, grant
 permissions, change price estimates, bypass reconciliation, or raise
 per-operation safety caps.
 
-Charged or reserved usage is conservative, not an invoice: text reservations
-retain their worst-case ceilings, and jingle Speech retains at least its
-estimate after reconciliation. Recorded actuals include only submitted billing
-evidence. Historical text reservations without owner information remain in the
-shared total and are shown separately; they are not assigned to a guessed user.
-Actual records are read-only here. Use the existing reconciliation workflow to
-record provider charges, rather than altering historical usage to grant credit.
+Charged or reserved usage is conservative, not an invoice: pending lyric
+reservations retain their full caps until evidence-backed administrator
+settlement, while settled lyric reservations count at the recorded actual.
+Chat and score reservations keep their existing policies, and jingle Speech
+retains at least its estimate after reconciliation. The lyric reservation
+controls let administrators record evidence-backed lyric actuals. Speech and
+full-jingle actuals continue to use the existing owner-scoped attempt
+reconciliation workflow. Historical text reservations without owner information
+remain in the shared total and are shown separately; they are not assigned to a
+guessed user.
+
+Use the lyric reservation controls to settle a pending entry, correct a
+settlement, or reopen it when evidence needs review. The app records the
+evidence reference and audit history but does not verify or retrieve the
+underlying Azure billing record. Paid score composition keeps its existing
+reconciliation behavior: retries retain or increase the reservation for the
+current model-call ceiling and do not refund it.
 
 Budget endpoints are `GET /api/budget` for the caller's own balance and
 `GET/PUT /api/admin/budgets` for administrators. Writes require `renders.write`
@@ -145,6 +167,15 @@ and current enabled administrator permission. The strict write body contains
 `scope` (`text`, `speech`, or `user`) and decimal-string `limit_usd`; user updates
 also require an existing user's `owner` subject. Actual charges and usage
 counters are not writable through this endpoint.
+
+Administrators can settle or correct a lyric reservation with
+`POST /api/admin/lyric-reservations/:reservation_id/settle` or
+`POST /api/admin/lyric-reservations/:reservation_id/correct`. Both accept
+`actual_cost_usd`, `evidence_reference`, and `reason`, and return the updated
+`reservation`. Reopening uses
+`POST /api/admin/lyric-reservations/:reservation_id/reopen` with a `reason`.
+The app enforces authorization and records the supplied evidence reference,
+but the administrator must verify that the evidence supports the amount.
 
 SQLite adds budget storage and nullable lyric ownership on initialization.
 PostgreSQL uses the existing additive upgrade path; see the

@@ -5,6 +5,34 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 import type { AccessRequestStatus, JingleHistory } from './types'
 
+type MockLyricEvent = {
+  event_id: string
+  reservation_id: string
+  event_type: 'settled' | 'corrected' | 'reopened'
+  previous_status: 'pending' | 'settled'
+  new_status: 'pending' | 'settled'
+  previous_actual_usd: string | null
+  new_actual_usd: string | null
+  actor_issuer: string
+  actor_subject: string
+  evidence_reference: string | null
+  reason: string
+  created_at: string
+}
+type MockLyricReservation = {
+  reservation_id: string
+  action: 'discuss' | 'write' | 'options'
+  owner: string | null
+  reserved_usd: string
+  settlement_status: 'pending' | 'settled'
+  actual_cost_usd: string | null
+  evidence_reference: string | null
+  settled_by: { issuer: string; subject: string } | null
+  settled_at: string | null
+  created_at: string
+  events: MockLyricEvent[]
+}
+
 // jsdom does not implement dialog methods; native keyboard behavior is checked in the browser.
 const dialogTriggers = new WeakMap<HTMLDialogElement, HTMLElement>()
 Object.defineProperties(HTMLDialogElement.prototype, {
@@ -47,6 +75,7 @@ function installMocks(options: {
   email?: string | null
   failBudgetSave?: boolean
   failBudgetLoad?: boolean
+  failLyricAction?: boolean
 } = {}) {
   let denied = Boolean(options.denied)
   let status = options.status ?? 'none'
@@ -57,12 +86,35 @@ function installMocks(options: {
     { issuer: 'https://identity.example.test/tenant/v2.0', subject: 'existing-user', enabled: true, admin: true, paid_speech: true },
     { issuer: 'https://identity.example.test/tenant/v2.0', subject: 'current-user', enabled: true, admin: true, paid_speech: true },
   ]
-  const balance = { limit_usd: '5', charged_usd: '1.25', remaining_usd: '3.75' }
+  const balance = {
+    limit_usd: '5', charged_usd: '1.25', remaining_usd: '3.75',
+    lyric_reserved_usd: '0.62', lyric_actual_usd: '0.05',
+  }
+  const lyricReservations: MockLyricReservation[] = [
+    {
+      reservation_id: 'reservation-pending', action: 'write', owner: 'current-user', reserved_usd: '0.62',
+      settlement_status: 'pending', actual_cost_usd: null, evidence_reference: null, settled_by: null, settled_at: null,
+      created_at: '2026-11-18T12:00:00Z', events: [],
+    },
+    {
+      reservation_id: 'reservation-settled', action: 'discuss', owner: 'current-user', reserved_usd: '0.2',
+      settlement_status: 'settled', actual_cost_usd: '0.05', evidence_reference: 'TEST-ONLY verified reference',
+      settled_by: { issuer: users[0]!.issuer, subject: 'current-user' }, settled_at: '2026-11-18T12:30:00Z',
+      created_at: '2026-11-18T11:00:00Z', events: [{
+        event_id: 'event-settled', reservation_id: 'reservation-settled', event_type: 'settled',
+        previous_status: 'pending', new_status: 'settled', previous_actual_usd: null, new_actual_usd: '0.05',
+        actor_issuer: users[0]!.issuer, actor_subject: 'current-user',
+        evidence_reference: 'TEST-ONLY verified reference', reason: 'Verified lyric cost',
+        created_at: '2026-11-18T12:30:00Z',
+      }],
+    },
+  ]
   const budgets = {
-    text: { limit_usd: '20', charged_usd: '1', remaining_usd: '19' },
+    text: { limit_usd: '20', charged_usd: '1', remaining_usd: '19', lyric_reserved_usd: '0.62', lyric_actual_usd: '0.05' },
     speech: { limit_usd: '10', charged_usd: '0.25', remaining_usd: '9.75' },
     actuals: { speech_usd: '0.1', ai_usd: '0', unreconciled_speech_attempts: 1 },
     unattributed_text_usd: '0.5',
+    lyric_reservations: lyricReservations,
     users: users.map(user => ({ issuer: user.issuer, subject: user.subject, ...balance })),
   }
   const logoutPopup = vi.fn(async () => undefined)
@@ -101,6 +153,60 @@ function installMocks(options: {
       }
       if (options.failBudgetLoad) return Response.json({ detail: 'Persistent storage is unavailable' }, { status: 503 })
       return Response.json(budgets)
+    }
+    if (/^\/api\/admin\/lyric-reservations\/[^/]+\/(?:settle|correct|reopen)$/.test(path)) {
+      if (options.failLyricAction) return Response.json({ detail: 'Billing evidence could not be verified' }, { status: 409 })
+      const [, , , , reservationId, action] = path.split('/')
+      const reservation = lyricReservations.find(item => item.reservation_id === reservationId)
+      if (!reservation) return Response.json({ detail: 'Lyric reservation was not found' }, { status: 404 })
+      const body = JSON.parse(String(init?.body)) as { actual_cost_usd?: string; evidence_reference?: string; reason: string }
+      const previousStatus = reservation.settlement_status
+      const previousActual = reservation.actual_cost_usd
+      const oldEffective = previousStatus === 'pending' ? Number(reservation.reserved_usd) : Number(previousActual)
+      if (action === 'settle' || action === 'correct') {
+        reservation.settlement_status = 'settled'
+        reservation.actual_cost_usd = body.actual_cost_usd ?? '0'
+        reservation.evidence_reference = body.evidence_reference ?? null
+        reservation.settled_by = { issuer: users[0]!.issuer, subject: 'current-user' }
+        reservation.settled_at = new Date().toISOString()
+      } else {
+        reservation.settlement_status = 'pending'
+        reservation.actual_cost_usd = null
+        reservation.evidence_reference = null
+        reservation.settled_by = null
+        reservation.settled_at = null
+      }
+      const newEffective = reservation.settlement_status === 'pending'
+        ? Number(reservation.reserved_usd) : Number(reservation.actual_cost_usd)
+      const delta = newEffective - oldEffective
+      const adjust = (target: { charged_usd: string; remaining_usd: string | null }) => {
+        target.charged_usd = (Number(target.charged_usd) + delta).toFixed(2)
+        if (target.remaining_usd !== null) target.remaining_usd = (Number(target.remaining_usd) - delta).toFixed(2)
+      }
+      adjust(budgets.text)
+      adjust(balance)
+      for (const user of budgets.users) if (user.subject === 'current-user') adjust(user)
+      budgets.text.lyric_reserved_usd = lyricReservations
+        .filter(item => item.settlement_status === 'pending').reduce((total, item) => total + Number(item.reserved_usd), 0).toFixed(2)
+      budgets.text.lyric_actual_usd = lyricReservations
+        .filter(item => item.settlement_status === 'settled').reduce((total, item) => total + Number(item.actual_cost_usd), 0).toFixed(2)
+      balance.lyric_reserved_usd = budgets.text.lyric_reserved_usd
+      balance.lyric_actual_usd = budgets.text.lyric_actual_usd
+      const user = budgets.users.find(item => item.subject === 'current-user')
+      if (user) {
+        user.lyric_reserved_usd = budgets.text.lyric_reserved_usd
+        user.lyric_actual_usd = budgets.text.lyric_actual_usd
+      }
+      reservation.events.push({
+        event_id: `event-${reservation.events.length + 1}`, reservation_id: reservation.reservation_id,
+        event_type: action === 'settle' ? 'settled' : action === 'correct' ? 'corrected' : 'reopened',
+        previous_status: previousStatus, new_status: reservation.settlement_status,
+        previous_actual_usd: previousActual, new_actual_usd: reservation.actual_cost_usd,
+        actor_issuer: users[0]!.issuer, actor_subject: 'current-user',
+        evidence_reference: reservation.settlement_status === 'pending' ? null : body.evidence_reference ?? null,
+        reason: body.reason, created_at: new Date().toISOString(),
+      })
+      return Response.json({ reservation })
     }
     if (path === '/api/access-requests') {
       if (init?.method === 'POST') status = 'pending'
@@ -293,6 +399,88 @@ describe('Jingle workspace', () => {
 })
 
 describe('Authentication and access administration', () => {
+  it('shows pending lyric reserves separately from administrator-recorded verified actuals', async () => {
+    const user = userEvent.setup()
+    installMocks()
+    render(<App />)
+    await signIn(user)
+    expect(await screen.findByText(/Lyric reserve: \$0\.62\. Administrator-recorded verified lyric actual: \$0\.05\./)).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Manage access' }))
+    expect(await screen.findByRole('heading', { name: 'Lyric reservations' })).toBeVisible()
+    const pending = screen.getAllByRole('listitem').find(item => item.textContent?.includes('reservation-pending'))
+    const settled = screen.getAllByRole('listitem').find(item => item.textContent?.includes('reservation-settled'))
+    expect(pending).toBeVisible()
+    expect(pending).toHaveTextContent('Pending')
+    expect(pending).toHaveTextContent('Reserved $0.62')
+    expect(settled).toBeVisible()
+    expect(settled).toHaveTextContent('Settled')
+    expect(settled).toHaveTextContent('Administrator-recorded actual $0.05')
+    expect(settled).toHaveTextContent('Current actual: $0.05')
+    expect(within(pending!).getByRole('button', { name: 'Record verified lyric cost' })).toBeVisible()
+    expect(within(settled!).getByRole('button', { name: 'Correct recorded cost' })).toBeVisible()
+    expect(within(settled!).getByRole('button', { name: 'Reopen reservation' })).toBeVisible()
+  })
+
+  it('settles, corrects, and reopens lyric reservations while refreshing remaining budget', async () => {
+    const user = userEvent.setup()
+    const { fetchMock } = installMocks()
+    render(<App />)
+    await signIn(user)
+    await user.click(screen.getByRole('button', { name: 'Manage access' }))
+    await screen.findByRole('heading', { name: 'Lyric reservations' })
+    const settlementForm = screen.getByRole('form', { name: 'Settle lyric reservation reservation-pending' })
+    await user.type(within(settlementForm).getByLabelText('Verified actual lyric cost (USD)'), '0.04')
+    await user.type(within(settlementForm).getByLabelText('Billing evidence reference'), 'TEST-ONLY meter record')
+    await user.type(within(settlementForm).getByLabelText('Settlement reason'), 'Verified lyric-call cost')
+    await user.click(screen.getByRole('button', { name: 'Record verified lyric cost' }))
+    await user.click(screen.getByRole('button', { name: 'Workspace' }))
+    expect(await screen.findByText(/Lifetime allowance: \$5\. Charged or reserved: \$0\.67\. Remaining: \$4\.33\./)).toBeVisible()
+    const settlementCall = fetchMock.mock.calls.find(([input]) => String(input).endsWith('/reservation-pending/settle'))
+    expect(JSON.parse(String(settlementCall?.[1]?.body))).toEqual({
+      actual_cost_usd: '0.04', evidence_reference: 'TEST-ONLY meter record', reason: 'Verified lyric-call cost',
+    })
+
+    await user.click(screen.getByRole('button', { name: 'Manage access' }))
+    await screen.findByRole('heading', { name: 'Lyric reservations' })
+    const correctionForm = screen.getByRole('form', { name: 'Correct lyric reservation reservation-pending' })
+    await user.type(within(correctionForm).getByLabelText('Corrected actual lyric cost (USD)'), '0.03')
+    await user.type(within(correctionForm).getByLabelText('Replacement billing evidence reference'), 'TEST-ONLY corrected meter')
+    await user.type(within(correctionForm).getByLabelText('Correction reason'), 'Corrected after review')
+    await user.click(within(correctionForm).getByRole('button', { name: 'Correct recorded cost' }))
+    await user.click(screen.getByRole('button', { name: 'Workspace' }))
+    expect(await screen.findByText(/Lifetime allowance: \$5\. Charged or reserved: \$0\.66\. Remaining: \$4\.34\./)).toBeVisible()
+
+    await user.click(screen.getByRole('button', { name: 'Manage access' }))
+    await screen.findByRole('heading', { name: 'Lyric reservations' })
+    const reopenForm = screen.getByRole('form', { name: 'Reopen lyric reservation reservation-pending' })
+    await user.type(within(reopenForm).getByLabelText('Reopening reason'), 'Evidence needs another review')
+    await user.click(within(reopenForm).getByRole('button', { name: 'Reopen reservation' }))
+    await user.click(screen.getByRole('button', { name: 'Workspace' }))
+    expect(await screen.findByText(/Lifetime allowance: \$5\. Charged or reserved: \$1\.25\. Remaining: \$3\.75\./)).toBeVisible()
+    const reopenCall = fetchMock.mock.calls.find(([input]) => String(input).endsWith('/reservation-pending/reopen'))
+    expect(JSON.parse(String(reopenCall?.[1]?.body))).toEqual({ reason: 'Evidence needs another review' })
+    const workspace = screen.getByRole('region', { name: 'Create a jingle' })
+    expect(within(workspace).getByText(/Lyric reserve: \$0\.62\./)).toBeVisible()
+  })
+
+  it('retains settlement inputs and shows the server error when evidence is rejected', async () => {
+    const user = userEvent.setup()
+    installMocks({ failLyricAction: true })
+    render(<App />)
+    await signIn(user)
+    await user.click(screen.getByRole('button', { name: 'Manage access' }))
+    await screen.findByRole('heading', { name: 'Lyric reservations' })
+    const form = screen.getByRole('form', { name: 'Settle lyric reservation reservation-pending' })
+    await user.type(within(form).getByLabelText('Verified actual lyric cost (USD)'), '0.04')
+    await user.type(within(form).getByLabelText('Billing evidence reference'), 'TEST-ONLY unverified reference')
+    await user.type(within(form).getByLabelText('Settlement reason'), 'Needs verification')
+    await user.click(screen.getByRole('button', { name: 'Record verified lyric cost' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Billing evidence could not be verified')
+    expect(within(form).getByLabelText('Verified actual lyric cost (USD)')).toHaveValue('0.04')
+    expect(within(form).getByLabelText('Billing evidence reference')).toHaveValue('TEST-ONLY unverified reference')
+    expect(within(form).getByLabelText('Settlement reason')).toHaveValue('Needs verification')
+  })
+
   it('opens the AI budget dialog by keyboard and cancels without saving', async () => {
     const user = userEvent.setup()
     const { fetchMock } = installMocks()

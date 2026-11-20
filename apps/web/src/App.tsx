@@ -3,8 +3,8 @@ import type { IPublicClientApplication } from '@azure/msal-browser'
 import { ApiError, apiBlob, apiJson } from './api'
 import { initializeAuth } from './auth'
 import type {
-  Access, AccessRequestStatus, AdminAccessRequest, BudgetBalance, BudgetOverview, EvaluationDraft, JingleHistory,
-  Output, PaidAttempt, PublicConfig, RenderRun, UserAccess, UserAccessDraft,
+  Access, AccessRequestStatus, AdminAccessRequest, BudgetOverview, EvaluationDraft, JingleHistory, LyricReservation,
+  Output, PaidAttempt, PublicConfig, RenderRun, TextBudgetBalance, UserAccess, UserAccessDraft,
 } from './types'
 
 const scopes = {
@@ -64,7 +64,7 @@ function App() {
   const [generation, setGeneration] = useState<{ status: 'idle' | 'running' | 'failed' | 'done'; step: number; delayed?: boolean }>({ status: 'idle', step: -1 })
   const [adminUsers, setAdminUsers] = useState<readonly UserAccess[]>([])
   const [adminRequests, setAdminRequests] = useState<readonly AdminAccessRequest[]>([])
-  const [budget, setBudget] = useState<BudgetBalance | null>(null)
+  const [budget, setBudget] = useState<TextBudgetBalance | null>(null)
   const [adminBudgets, setAdminBudgets] = useState<BudgetOverview | null>(null)
   const [budgetDraft, setBudgetDraft] = useState<{ scope: 'text' | 'speech' | 'user'; owner: string; limit_usd: string } | null>(null)
   const [userDraft, setUserDraft] = useState<UserAccessDraft>(emptyDraft)
@@ -107,7 +107,7 @@ function App() {
   async function refreshHistory(authClient: IPublicClientApplication, publicConfig: PublicConfig): Promise<void> {
     const [result, balance] = await Promise.all([
       apiJson<JingleHistory>(authClient, publicConfig, '/api/jingles', scopes.read),
-      apiJson<BudgetBalance>(authClient, publicConfig, '/api/budget', scopes.read),
+      apiJson<TextBudgetBalance>(authClient, publicConfig, '/api/budget', scopes.read),
     ])
     setHistory(result)
     setBudget(balance)
@@ -425,6 +425,41 @@ function App() {
     if (saved) setBudgetDraft(null)
   }
 
+  async function updateLyricReservation(
+    event: FormEvent<HTMLFormElement>,
+    reservation: LyricReservation,
+    action: 'settle' | 'correct' | 'reopen',
+  ): Promise<void> {
+    event.preventDefault()
+    if (!client || !config) return
+    const form = event.currentTarget
+    const values = new FormData(form)
+    const reason = String(values.get('reason') ?? '')
+    const body = action === 'reopen' ? { reason } : {
+      actual_cost_usd: String(values.get('actual_cost_usd') ?? ''),
+      evidence_reference: String(values.get('evidence_reference') ?? ''),
+      reason,
+    }
+    let saved = false
+    const label = action === 'settle' ? 'Recording lyric settlement'
+      : action === 'correct' ? 'Correcting lyric settlement' : 'Reopening lyric settlement'
+    await runAction(label, async () => {
+      await apiJson<{ reservation: LyricReservation }>(
+        client, config,
+        `/api/admin/lyric-reservations/${encodeURIComponent(reservation.reservation_id)}/${action}`,
+        scopes.write, { method: 'POST', body },
+      )
+      saved = true
+      setAnnouncement(`${label} saved. Refreshing balances and history.`)
+      try { await Promise.all([loadAdmin(), refreshHistory(client, config)]) }
+      catch (error) {
+        throw new Error(`The lyric settlement was saved, but budget data could not be refreshed: ${errorText(error, 'Reload to check current balances.')}`)
+      }
+      setAnnouncement('Lyric budget data refreshed.')
+    })
+    if (saved) form.reset()
+  }
+
   function openAdmin(): void {
     setView('admin')
     window.setTimeout(() => adminHeading.current?.focus(), 0)
@@ -531,7 +566,11 @@ function App() {
                 <p id="description-help" className="description-help">Include the business or product name and the sound you want. Add an offer or a call to action if you have one.</p>
                 <textarea id="description" value={description} onChange={event => setDescription(event.currentTarget.value)} maxLength={400} required disabled={busy} placeholder="An upbeat jingle for Cedar Loop Bike Repair, with a bright synth hook for spring tune-ups." aria-describedby="description-help" />
                 <p className="character-count">{description.length} / 400 characters</p>
-                {budget && <p className="budget-balance">Lifetime allowance: ${budget.limit_usd}. Charged or reserved: ${budget.charged_usd}. Remaining: ${budget.remaining_usd}. Contact an administrator to adjust your allowance.</p>}
+                {budget && <>
+                  <p className="budget-balance">Lifetime allowance: ${budget.limit_usd}. Charged or reserved: ${budget.charged_usd}. Remaining: ${budget.remaining_usd}. Contact an administrator to adjust your allowance.</p>
+                  <p className="budget-balance">Lyric reserve: ${budget.lyric_reserved_usd}. Administrator-recorded verified lyric actual: ${budget.lyric_actual_usd}.</p>
+                  <p className="muted">Pending lyric reservations continue to count against your allowance until attributable billing evidence supports an actual cost.</p>
+                </>}
                 {history?.estimate && <div className="estimate-summary">
                   <strong>Maximum estimated cost: ${history.estimate.total_max_usd}</strong>
                   <p>AI and safety: ${history.estimate.model_and_safety_max_usd} · Speech: ${history.estimate.speech_max_usd}. Hosting is not included.</p>
@@ -644,16 +683,62 @@ function App() {
               {adminBudgets ? <>
                 <dl className="budget-summary">
                   <div><dt>Shared AI and safety</dt><dd>Limit: {adminBudgets.text.limit_usd === null ? 'Not configured' : `$${adminBudgets.text.limit_usd}`}. Charged or reserved: ${adminBudgets.text.charged_usd}. Remaining: {adminBudgets.text.remaining_usd === null ? 'Unavailable' : `$${adminBudgets.text.remaining_usd}`}.</dd>
+                    <dd>Lyric reserve: ${adminBudgets.text.lyric_reserved_usd}. Administrator-recorded verified lyric actual: ${adminBudgets.text.lyric_actual_usd}.</dd>
                     <dd><button className="button button-secondary" type="button" aria-haspopup="dialog" disabled={busy} onClick={event => editBudget(event.currentTarget, 'text', adminBudgets.text.limit_usd)}>Edit AI budget</button></dd></div>
                   <div><dt>Shared Speech</dt><dd>Limit: {adminBudgets.speech.limit_usd === null ? 'Not configured' : `$${adminBudgets.speech.limit_usd}`}. Charged or reserved: ${adminBudgets.speech.charged_usd}. Remaining: {adminBudgets.speech.remaining_usd === null ? 'Unavailable' : `$${adminBudgets.speech.remaining_usd}`}.</dd>
                     <dd><button className="button button-secondary" type="button" aria-haspopup="dialog" disabled={busy} onClick={event => editBudget(event.currentTarget, 'speech', adminBudgets.speech.limit_usd)}>Edit Speech budget</button></dd></div>
                 </dl>
                 <p>Recorded actual charges: Speech ${adminBudgets.actuals.speech_usd}; AI and safety ${adminBudgets.actuals.ai_usd}. Speech attempts awaiting reconciliation: {adminBudgets.actuals.unreconciled_speech_attempts}.</p>
-                <p className="muted">Actuals include only recorded billing evidence, not all provider usage. Text uses worst-case reservations. Historical text charges without a user: ${adminBudgets.unattributed_text_usd}, included in the shared AI total.</p>
+                <p className="muted">Lyric actuals are recorded from administrator-provided evidence; Earwyrm does not fetch Azure billing data. Score calls remain reserved. Full-jingle AI actuals are listed separately and are not added to lyric actuals. Unattributed text amount counted toward the shared AI budget: ${adminBudgets.unattributed_text_usd}.</p>
+                <section aria-labelledby="lyric-reservations-heading">
+                  <h4 id="lyric-reservations-heading">Lyric reservations</h4>
+                  <p>Keep entries pending when cost cannot be attributed. Settlement records evidence and a reason; corrections and reopenings remain in the history.</p>
+                  {adminBudgets.lyric_reservations.length === 0
+                    ? <p className="muted">No lyric reservations have been recorded.</p>
+                    : <ul className="lyric-reservation-list">{adminBudgets.lyric_reservations.map(reservation => <li key={reservation.reservation_id}>
+                      <p className="lyric-reservation-summary">
+                        <strong>{reservation.settlement_status === 'pending' ? 'Pending' : 'Settled'}</strong>
+                        {' · '}{reservation.action}{' · '}<code>{reservation.reservation_id}</code>
+                        {' · '}{reservation.owner === null ? 'Unattributed legacy reservation' : `Owner ${reservation.owner}`}
+                        {' · '}Reserved ${reservation.reserved_usd}
+                        {reservation.actual_cost_usd !== null && <> · Administrator-recorded actual ${reservation.actual_cost_usd}</>}
+                        {' · '}Created <time dateTime={reservation.created_at}>{new Date(reservation.created_at).toLocaleString()}</time>
+                      </p>
+                      {reservation.events.length > 0 && <details className="lyric-reservation-history">
+                        <summary>Transition history ({reservation.events.length})</summary>
+                        <ol>{reservation.events.map(item => <li key={item.event_id}>
+                          <p><time dateTime={item.created_at}>{new Date(item.created_at).toLocaleString()}</time>
+                            {' · '}{item.event_type} by <code>{item.actor_subject}</code>
+                            {' · '}{item.previous_status === 'pending' ? `Previous hold: $${reservation.reserved_usd}` : `Previous actual: $${item.previous_actual_usd}`}
+                            {' · '}{item.new_status === 'pending' ? `Current hold: $${reservation.reserved_usd}` : `Current actual: $${item.new_actual_usd}`}</p>
+                          <p>{item.reason}{item.evidence_reference ? ` · Evidence: ${item.evidence_reference}` : ''}</p>
+                        </li>)}</ol>
+                      </details>}
+                      {reservation.settlement_status === 'pending'
+                        ? <form className="lyric-settlement-form" aria-label={`Settle lyric reservation ${reservation.reservation_id}`} onSubmit={event => void updateLyricReservation(event, reservation, 'settle')}>
+                          <label>Verified actual lyric cost (USD)<input name="actual_cost_usd" type="text" inputMode="decimal" pattern="[0-9]+(\.[0-9]+)?" maxLength={64} required disabled={busy} /></label>
+                          <label>Billing evidence reference<input name="evidence_reference" type="text" maxLength={500} required disabled={busy} /></label>
+                          <label>Settlement reason<input name="reason" type="text" maxLength={1000} required disabled={busy} /></label>
+                          <button className="button button-secondary" type="submit" disabled={busy}>Record verified lyric cost</button>
+                        </form>
+                        : <div className="lyric-settlement-actions">
+                          <form className="lyric-settlement-form" aria-label={`Correct lyric reservation ${reservation.reservation_id}`} onSubmit={event => void updateLyricReservation(event, reservation, 'correct')}>
+                            <label>Corrected actual lyric cost (USD)<input name="actual_cost_usd" type="text" inputMode="decimal" pattern="[0-9]+(\.[0-9]+)?" maxLength={64} required disabled={busy} /></label>
+                            <label>Replacement billing evidence reference<input name="evidence_reference" type="text" maxLength={500} required disabled={busy} /></label>
+                            <label>Correction reason<input name="reason" type="text" maxLength={1000} required disabled={busy} /></label>
+                            <button className="button button-secondary" type="submit" disabled={busy}>Correct recorded cost</button>
+                          </form>
+                          <form className="lyric-settlement-form" aria-label={`Reopen lyric reservation ${reservation.reservation_id}`} onSubmit={event => void updateLyricReservation(event, reservation, 'reopen')}>
+                            <label>Reopening reason<input name="reason" type="text" maxLength={1000} required disabled={busy} /></label>
+                            <button className="button button-secondary" type="submit" disabled={busy}>Reopen reservation</button>
+                          </form>
+                        </div>}
+                    </li>)}</ul>}
+                </section>
                 <h4>User lifetime allowances</h4>
                 <p>Users start with a $5 trial allowance shared across paid features. Existing attributable usage counts. Allowances do not reset automatically.</p>
                 <ul className="stack budget-users">{adminBudgets.users.map(user => <li key={`${user.issuer}:${user.subject}`}>
-                  <p><code>{user.subject}</code>: limit ${user.limit_usd}; charged or reserved ${user.charged_usd}; remaining ${user.remaining_usd}.</p>
+                  <p><code>{user.subject}</code>: limit ${user.limit_usd}; charged or reserved ${user.charged_usd}; remaining ${user.remaining_usd}; lyric reserve ${user.lyric_reserved_usd}; verified lyric actual ${user.lyric_actual_usd}.</p>
                   <button className="button button-secondary" type="button" aria-haspopup="dialog" disabled={busy} onClick={event => editBudget(event.currentTarget, 'user', user.limit_usd, user.subject)}>Edit budget for {user.subject}</button>
                 </li>)}</ul>
               </> : <p role="status">Budget data has not loaded. Use Refresh budgets to retry.</p>}

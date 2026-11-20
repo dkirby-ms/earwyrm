@@ -21,7 +21,8 @@ export const WEB_TABLE_COLUMNS: Record<string, readonly string[]> = {
   application_users: ["issuer", "subject", "enabled", "admin", "paid_speech", "created_at"],
   access_requests: ["request_id", "issuer", "subject", "status", "created_at", "updated_at", "email"],
   lyric_options: ["option_id", "owner", "brief_id", "request_json", "result_json", "created_at"],
-  lyric_reservations: ["reservation_id", "action", "reserved_usd", "created_at", "owner"],
+  lyric_reservations: ["reservation_id", "action", "reserved_usd", "created_at", "settlement_status", "actual_cost_usd", "evidence_reference", "settled_by_issuer", "settled_by_subject", "settled_at", "owner"],
+  lyric_reservation_events: ["event_id", "reservation_id", "event_type", "previous_status", "new_status", "previous_actual_usd", "new_actual_usd", "actor_issuer", "actor_subject", "evidence_reference", "reason", "created_at"],
   budget_limits: ["scope", "owner", "limit_usd", "updated_by", "updated_at"],
   score_reservations: ["reservation_id", "owner", "action", "logical_job_id", "request_sha256", "reserved_usd", "status", "score_json", "created_at", "updated_at", "provider_json", "attempt_count"],
   score_reconciliations: ["reservation_id", "attempt_number", "evidence_reference", "reconciled_at"],
@@ -29,6 +30,8 @@ export const WEB_TABLE_COLUMNS: Record<string, readonly string[]> = {
   preview_reservations: ["request_key", "owner", "logical_ids_json", "reserved_bytes", "completed", "pinned", "created_at"],
 };
 const LEGACY_SCORE_RESERVATION_COLUMNS = WEB_TABLE_COLUMNS.score_reservations.slice(0, 10);
+const LEGACY_LYRIC_RESERVATION_COLUMNS = ["reservation_id", "action", "reserved_usd", "created_at", "owner"];
+const LEGACY_LYRIC_RESERVATION_COLUMNS_NO_OWNER = LEGACY_LYRIC_RESERVATION_COLUMNS.slice(0, 4);
 export const MELODY_TABLE_COLUMNS: Record<string, readonly string[]> = {
   render_jobs: ["job_id", "logical_job_id", "request_json", "result_json", "melodies_json", "status", "created_at"],
   local_outputs: ["output_id", "melodies_json"],
@@ -67,7 +70,7 @@ function require_root(root: string): string {
   return realpathSync(root);
 }
 const RESET_TABLES = [
-  "budget_limits", "preview_reservations", "score_reconciliations", "score_schema_migrations", "score_reservations", "lyric_reservations", "lyric_options", "access_requests", "application_users", "application_identity", "evaluations", "outputs", "paid_attempts",
+  "budget_limits", "preview_reservations", "lyric_reservation_events", "score_reconciliations", "score_schema_migrations", "score_reservations", "lyric_reservations", "lyric_options", "access_requests", "application_users", "application_identity", "evaluations", "outputs", "paid_attempts",
   "runs", "local_outputs", "render_jobs", "earwyrm_store_metadata",
 ] as const;
 const RESET_DATA_ENTRIES = ["audio", "work", "melody", "earwyrm.sqlite3", ".earwyrm-initialized"] as const;
@@ -118,7 +121,7 @@ export async function initialize_fresh(directory: string, database_url: string, 
       await WebStorage._create_schema(c);
       await WebStorage._bootstrap_owner(c, owner.issuer, owner.subject);
       await MelodyService._create_schema(c);
-      const tables = [...REQUIRED_TABLES, "lyric_reservations", "score_reservations", "score_reconciliations", "score_schema_migrations", "preview_reservations"];
+      const tables = [...REQUIRED_TABLES, "lyric_reservations", "lyric_reservation_events", "score_reservations", "score_reconciliations", "score_schema_migrations", "preview_reservations"];
       const count = (await c.execute(`SELECT count(*) AS table_count FROM pg_catalog.pg_class
         WHERE relnamespace = current_schema()::regnamespace AND relkind IN ('r', 'p')
         AND relname IN (${tables.map(() => "?").join(",")})`, tables)).rows[0];
@@ -226,7 +229,9 @@ async function validate_web(c: Connection, root: string, tables: Set<string>): P
   }
   if (tables.has("score_schema_migrations")) {
     const migrations = (await c.execute("SELECT version, applied_at FROM score_schema_migrations")).rows;
-    if (migrations.length !== 1 || migrations[0]!.version !== 2 || !migrations[0]!.applied_at) {
+    const versions = migrations.map(row => Number(row.version));
+    if (!versions.includes(2) || versions.some(version => version !== 2 && version !== 3) ||
+        migrations.some(row => !row.applied_at)) {
       throw new TypeError("SQLite source contains an unsupported score migration version");
     }
   }
@@ -253,10 +258,16 @@ async function validate_melody(c: Connection, root: string): Promise<void> {
 export async function _copy_sqlite_table(source: Connection, target: Connection, table: string, columns: readonly string[]): Promise<number> {
   const supported = WEB_TABLE_COLUMNS[table] ?? MELODY_TABLE_COLUMNS[table];
   const legacy = table === "access_requests" ? supported?.filter(column => column !== "email")
-    : table === "lyric_reservations" ? supported?.filter(column => column !== "owner")
     : table === "score_reservations" ? LEGACY_SCORE_RESERVATION_COLUMNS : undefined;
+  const lyricLayouts = table === "lyric_reservations"
+    ? [supported, LEGACY_LYRIC_RESERVATION_COLUMNS, LEGACY_LYRIC_RESERVATION_COLUMNS_NO_OWNER,
+      supported?.filter(column => column !== "owner")]
+    : [];
   if (!supported || (JSON.stringify(columns) !== JSON.stringify(supported) &&
-      (!legacy || JSON.stringify(columns) !== JSON.stringify(legacy)))) throw new TypeError("Unsupported import table");
+      (!legacy || JSON.stringify(columns) !== JSON.stringify(legacy)) &&
+      !lyricLayouts.some(layout => layout && JSON.stringify(columns) === JSON.stringify(layout)))) {
+    throw new TypeError("Unsupported import table");
+  }
   const names = columns.join(", "), sql = `INSERT INTO ${table} (${names}) VALUES (${columns.map(() => "?").join(", ")})`;
   let count = 0;
   // Iterate SQLite statements directly to avoid retaining an entire historical table.
@@ -281,12 +292,17 @@ export async function import_sqlite(directory: string, database_url: string): Pr
     web = new SqliteConnection(webPath, true);
     melody = new SqliteConnection(melodyPath, true);
     const sourceColumns = { ...WEB_TABLE_COLUMNS };
-    for (const table of ["budget_limits", "access_requests", "lyric_options", "lyric_reservations", "score_reservations", "score_reconciliations", "score_schema_migrations", "preview_reservations"]) {
+    for (const table of ["budget_limits", "access_requests", "lyric_options", "lyric_reservations", "lyric_reservation_events", "score_reservations", "score_reconciliations", "score_schema_migrations", "preview_reservations"]) {
       if (!(await web.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", [table])).rows.length) delete sourceColumns[table];
     }
-    if (sourceColumns.lyric_reservations &&
-        !(await web.execute("PRAGMA table_info(lyric_reservations)")).rows.some(row => row.name === "owner")) {
-      sourceColumns.lyric_reservations = sourceColumns.lyric_reservations.filter(column => column !== "owner");
+    if (sourceColumns.lyric_reservations) {
+      const lyricColumns = (await web.execute("PRAGMA table_info(lyric_reservations)")).rows.map(row => String(row.name));
+      if (lyricColumns.includes("settlement_status")) {
+        sourceColumns.lyric_reservations = WEB_TABLE_COLUMNS.lyric_reservations!.filter(column => lyricColumns.includes(column));
+      } else if (JSON.stringify(lyricColumns) === JSON.stringify(LEGACY_LYRIC_RESERVATION_COLUMNS) ||
+                 JSON.stringify(lyricColumns) === JSON.stringify(LEGACY_LYRIC_RESERVATION_COLUMNS_NO_OWNER)) {
+        sourceColumns.lyric_reservations = lyricColumns;
+      }
     }
     if (sourceColumns.score_reservations) {
       const scoreColumns = (await web.execute("PRAGMA table_info(score_reservations)")).rows.map(row => String(row.name));

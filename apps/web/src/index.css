@@ -183,7 +183,14 @@ audio { display: block; width: 100%; min-width: 0; height: 2.6rem; margin-top: 0
 .budget-summary dt { font-weight: 700; }
 .budget-summary dd { margin: 0.4rem 0 0; }
 .budget-users, .budget-target { overflow-wrap: anywhere; }
-.budget-balance, .budget-summary, .budget-users { font-variant-numeric: tabular-nums; }
+.lyric-reservation-list { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
+.lyric-reservation-list > li { min-width: 0; padding-block: 1rem; border-top: 1px solid var(--line); }
+.lyric-reservation-summary { overflow-wrap: anywhere; }
+.lyric-reservation-history { margin-block: 0.75rem; }
+.lyric-reservation-history ol { display: grid; gap: 0.75rem; padding-inline-start: 1.5rem; }
+.lyric-reservation-history li p { overflow-wrap: anywhere; }
+.lyric-settlement-actions { display: grid; gap: 1rem; }
+.workspace-view .lyric-settlement-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr)); align-items: end; gap: 0.75rem; max-width: none; margin-block: 1rem; }
 .budget-limit-form p, .budget-limit-form .button-row { margin: 0; }
 .budget-limit-form button[aria-disabled="true"] { opacity: 0.6; cursor: not-allowed; }
 .workspace-view form { max-width: 44rem; }

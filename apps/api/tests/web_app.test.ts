@@ -7,6 +7,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { createHash } from 'node:crypto';
+import { Decimal } from 'decimal.js';
 import { create_app, EXPECTED_ANSWERS, type CreateAppOptions } from '../src/web_app.js';
 import { AuthSettings, TokenValidator, type Environment } from '../src/web_auth.js';
 import { canonical_json, STATIC_ROOT, StorageConflict, WebStorage } from '../src/web_storage.js';
@@ -130,7 +131,9 @@ describe('same-origin Express API', () => {
     const auth = { type: 'bearer' as const };
     expect((await request(app).get('/api/budget')).status).toBe(401);
     const other = await token('user-b');
-    expect((await request(app).get('/api/budget').auth(other, auth)).body).toEqual({ limit_usd: '5', charged_usd: '0', remaining_usd: '5' });
+    expect((await request(app).get('/api/budget').auth(other, auth)).body).toEqual({
+      limit_usd: '5', charged_usd: '0', remaining_usd: '5', lyric_reserved_usd: '0', lyric_actual_usd: '0',
+    });
     expect((await request(app).get('/api/admin/budgets').auth(other, auth)).status).toBe(403);
     expect((await request(app).put('/api/admin/budgets').auth(other, auth).send({ scope: 'text', limit_usd: '10' })).status).toBe(403);
     expect((await request(app).get('/api/budget').auth(await token('disabled'), auth)).status).toBe(403);
@@ -150,6 +153,58 @@ describe('same-origin Express API', () => {
     expect(overview.body.users.find((user: { subject: string }) => user.subject === 'user-b').limit_usd).toBe('0');
     await store.set_user(issuer, 'user-a', { enabled: true, admin: false, paid_speech: true });
     expect((await request(app).put('/api/admin/budgets').auth(access_token, auth).send({ scope: 'text', limit_usd: '10' })).status).toBe(403);
+  });
+
+  it('restricts lyric settlement actions to admins and preserves correction and reopen history', async () => {
+    const { app, store, access_token } = await fixture({ environ: lyric_limits });
+    await store.reserve_lyric_action('write', new Decimal('0.62'), new Decimal(1), new Decimal(5), 'user-a');
+    const auth = { type: 'bearer' as const };
+    const overview = await request(app).get('/api/admin/budgets').auth(access_token, auth);
+    expect(overview.status).toBe(200);
+    const reservation_id = overview.body.lyric_reservations[0].reservation_id as string;
+    const path = `/api/admin/lyric-reservations/${reservation_id}`;
+    const settlement = {
+      actual_cost_usd: '0.05', evidence_reference: 'TEST-ONLY verified billing record',
+      reason: 'Verified lyric-call charge',
+    };
+    const other = await token('user-b');
+    expect((await request(app).post(`${path}/settle`).auth(other, auth).send(settlement)).status).toBe(403);
+    expect((await request(app).post(`${path}/correct`).auth(other, auth).send(settlement)).status).toBe(403);
+    expect((await request(app).post(`${path}/reopen`).auth(other, auth).send({ reason: 'Recheck evidence' })).status).toBe(403);
+    expect((await request(app).post(`${path}/settle`).auth(access_token, auth)
+      .send({ ...settlement, actual_cost_usd: '-0.01' })).status).toBe(422);
+    expect((await request(app).post(`${path}/settle`).auth(access_token, auth)
+      .send({ actual_cost_usd: '0.05', reason: settlement.reason })).status).toBe(422);
+    expect((await request(app).post(`${path}/settle`).auth(access_token, auth)
+      .send({ actual_cost_usd: '0.05', evidence_reference: settlement.evidence_reference })).status).toBe(422);
+    expect((await request(app).post(`/api/admin/lyric-reservations/missing/settle`)
+      .auth(access_token, auth).send(settlement)).status).toBe(404);
+
+    const settled = await request(app).post(`${path}/settle`).auth(access_token, auth).send(settlement);
+    expect(settled.status).toBe(200);
+    expect(settled.body.reservation).toMatchObject({
+      settlement_status: 'settled', reserved_usd: '0.62', actual_cost_usd: '0.05',
+      events: [expect.objectContaining({ reason: settlement.reason, actor_subject: 'user-a' })],
+    });
+    expect((await request(app).post(`${path}/settle`).auth(access_token, auth).send(settlement)).status).toBe(409);
+
+    const correction = await request(app).post(`${path}/correct`).auth(access_token, auth).send({
+      actual_cost_usd: '0.03', evidence_reference: 'TEST-ONLY corrected billing record', reason: 'Corrected after verification',
+    });
+    expect(correction.status).toBe(200);
+    expect(correction.body.reservation.events).toHaveLength(2);
+    const reopened = await request(app).post(`${path}/reopen`).auth(access_token, auth)
+      .send({ reason: 'Evidence needs another review' });
+    expect(reopened.status).toBe(200);
+    expect(reopened.body.reservation).toMatchObject({
+      settlement_status: 'pending', actual_cost_usd: null, events: [
+        expect.objectContaining({ event_type: 'settled' }),
+        expect.objectContaining({ event_type: 'corrected', previous_actual_usd: '0.05' }),
+        expect.objectContaining({ event_type: 'reopened', previous_actual_usd: '0.03' }),
+      ],
+    });
+    const refreshed = await request(app).get('/api/admin/budgets').auth(access_token, auth);
+    expect(refreshed.body.text).toMatchObject({ charged_usd: '0.62', lyric_reserved_usd: '0.62', lyric_actual_usd: '0' });
   });
 
   it.each([['1e2', '100'], ['.5', '0.5']])('normalizes existing Speech budget default %s for administration', async (value, expected) => {
@@ -1042,7 +1097,7 @@ describe('one-page AI jingles', () => {
       return { result_id: 'TEST', audio: new Float64Array(words.length * SAMPLE_RATE / 8).fill(0.1), words };
     });
     const renderer = vi.fn(render_brief);
-    const { app, access_token } = await fixture({
+    const { app, store, access_token } = await fixture({
       data_dir: root,
       environ: { ...speech_environment(root, { SPEECH_TOTAL_BUDGET_USD: '2' }), ...lyric_limits, LYRIC_ENABLED: 'true' },
       jingle_direction: direction, lyric_backend: backend, score_composer: { compose },
@@ -1111,7 +1166,7 @@ describe('one-page AI jingles', () => {
     }, { getToken: async () => ({ token: marker, expiresOnTimestamp: Date.now() + 60000 }) }, send);
     const score = vi.fn();
     const logs = vi.spyOn(console, 'info').mockImplementation(() => {});
-    const { app, access_token } = await fixture({
+    const { app, store, access_token } = await fixture({
       data_dir: root,
       environ: { ...speech_environment(root, { SPEECH_TOTAL_BUDGET_USD: '2' }), ...lyric_limits, LYRIC_ENABLED: 'true' },
       jingle_direction: async () => {
@@ -1141,6 +1196,12 @@ describe('one-page AI jingles', () => {
     expect(events.every(event => event.diagnostic_id === id)).toBe(true);
     expect(events.at(-1)).toMatchObject({ event: 'request_finished', http_status: result.status,
       stage: scenario === 'unknown' ? 'brief' : scenario === 'screened' ? 'safety' : 'lyrics' });
+    const budget = await request(app).get('/api/admin/budgets').auth(access_token, { type: 'bearer' });
+    expect(budget.body.lyric_reservations.length).toBeGreaterThan(0);
+    expect(budget.body.lyric_reservations.every((row: { settlement_status: string }) => row.settlement_status === 'pending')).toBe(true);
+    expect(budget.body.text.charged_usd).toBe(budget.body.text.lyric_reserved_usd);
+    expect(budget.body.text.lyric_actual_usd).toBe('0');
+    expect((await store.get_user_budget('user-a')).lyric_reserved_usd).toBe(budget.body.text.lyric_reserved_usd);
     if (scenario === 'unknown') {
       expect(events[0]).toMatchObject({ event: 'request_failed', reason: 'unknown_reason' });
       expect(send).not.toHaveBeenCalled();

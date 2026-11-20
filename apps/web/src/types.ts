@@ -69,13 +69,51 @@ export interface BudgetBalance {
   readonly remaining_usd: string | null
 }
 
-/** Admin-only usage combines conservative ceilings without mislabeling them as actual provider charges. */
+/** Budget totals with lyric holds and administrator-recorded verified lyric actuals separated. */
+export interface TextBudgetBalance extends BudgetBalance {
+  readonly lyric_reserved_usd: string
+  readonly lyric_actual_usd: string
+}
+
+/** An immutable admin-recorded transition in a lyric reservation's settlement history. */
+export interface LyricReservationEvent {
+  readonly event_id: string
+  readonly reservation_id: string
+  readonly event_type: 'settled' | 'corrected' | 'reopened'
+  readonly previous_status: 'pending' | 'settled'
+  readonly new_status: 'pending' | 'settled'
+  readonly previous_actual_usd: string | null
+  readonly new_actual_usd: string | null
+  readonly actor_issuer: string
+  readonly actor_subject: string
+  readonly evidence_reference: string | null
+  readonly reason: string
+  readonly created_at: string
+}
+
+/** Current lyric hold or settled actual, plus its append-only transition history. */
+export interface LyricReservation {
+  readonly reservation_id: string
+  readonly action: 'discuss' | 'write' | 'options'
+  readonly owner: string | null
+  readonly reserved_usd: string
+  readonly settlement_status: 'pending' | 'settled'
+  readonly actual_cost_usd: string | null
+  readonly evidence_reference: string | null
+  readonly settled_by: { readonly issuer: string; readonly subject: string } | null
+  readonly settled_at: string | null
+  readonly created_at: string
+  readonly events: readonly LyricReservationEvent[]
+}
+
+/** Admin-only usage separates conservative holds from administrator-recorded actuals. */
 export interface BudgetOverview {
-  readonly text: BudgetBalance
+  readonly text: TextBudgetBalance
   readonly speech: BudgetBalance
   readonly actuals: { readonly speech_usd: string; readonly ai_usd: string; readonly unreconciled_speech_attempts: number }
   readonly unattributed_text_usd: string
-  readonly users: readonly (BudgetBalance & { readonly issuer: string; readonly subject: string })[]
+  readonly lyric_reservations: readonly LyricReservation[]
+  readonly users: readonly (TextBudgetBalance & { readonly issuer: string; readonly subject: string })[]
 }
 
 /** A component and its rights or provenance evidence. */

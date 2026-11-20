@@ -36,7 +36,7 @@ import {
 } from './web_auth.js';
 import {
   STATIC_ROOT, StorageAccessDenied, StorageConflict, StorageNotFound, WebStorage, canonical_json,
-  type AccessRequestRecord, type AccessRequestSubmission, type OutputRecord, type RunRecord,
+  type AccessRequestRecord, type AccessRequestSubmission, type LyricReservationRecord, type OutputRecord, type RunRecord,
 } from './web_storage.js';
 
 export { REPOSITORY_ROOT };
@@ -100,6 +100,12 @@ const ScoreReconciliationSubmission = z.strictObject({
   confirmed_submission_stopped: z.literal(true).optional(),
   evidence_reference: z.string().trim().min(1).max(500),
 });
+const LyricSettlementSubmission = z.strictObject({
+  actual_cost_usd: z.string().trim().min(1).max(64),
+  evidence_reference: z.string().trim().min(1).max(500),
+  reason: z.string().trim().min(1).max(1000),
+});
+const LyricReopenSubmission = z.strictObject({ reason: z.string().trim().min(1).max(1000) });
 
 /** Paid calls have not been explicitly enabled. */
 export class PaidRenderingDisabled extends Error {}
@@ -276,6 +282,7 @@ export type WebAppStorage = Pick<WebStorage,
   'save_output' | 'set_run_status' | 'finish_attempt' | 'get_run' | 'list_runs' | 'list_outputs' |
   'get_output' | 'audio_path' | 'save_evaluation' | 'reconcile_attempt' |
   'save_lyric_option' | 'list_lyric_options' | 'get_lyric_option' | 'has_lyric_budget' | 'reserve_lyric_action' |
+  'settle_lyric_reservation_as_admin' | 'correct_lyric_reservation_as_admin' | 'reopen_lyric_reservation_as_admin' |
   'claim_score_compose' | 'commit_score_compose' | 'finish_score_compose' | 'get_score_compose' | 'reconcile_score_compose' |
   'reserve_previews' | 'complete_previews' | 'pin_preview' | 'check_jingle_text_budget' | 'check_jingle_speech_budget'>;
 /** All providers, persistence and identity fetchers remain lazy until a route needs them. */
@@ -391,6 +398,21 @@ export function create_app(options: CreateAppOptions = {}): Express {
     })();
     try { return await storage_pending; }
     finally { storage_pending = undefined; }
+  }
+  async function admin_lyric_operation(
+    response: Response,
+    operation: (store: WebAppStorage, actor: { issuer: string; subject: string }) => Promise<LyricReservationRecord>,
+  ): Promise<LyricReservationRecord> {
+    const actor = identity(response), store = await storage();
+    const operator = await store.get_user(actor.issuer, actor.subject);
+    if (!operator?.admin) throw new HttpError(403, 'Application administrator access is required');
+    try { return await operation(store, actor); }
+    catch (error) {
+      if (error instanceof StorageNotFound) throw new HttpError(404, 'Lyric reservation was not found');
+      if (error instanceof StorageConflict) throw new HttpError(409, error.message);
+      if (error instanceof TypeError) throw new HttpError(422, error.message);
+      throw error;
+    }
   }
   async function publish_composition(
     store: WebAppStorage,
@@ -574,6 +596,7 @@ export function create_app(options: CreateAppOptions = {}): Express {
     [/^\/api\/chat$/, ['GET', 'POST']],
     [/^\/api\/admin\/users$/, ['GET', 'PUT']],
     [/^\/api\/admin\/budgets$/, ['GET', 'PUT']],
+    [/^\/api\/admin\/lyric-reservations\/[^/]+\/(?:settle|correct|reopen)$/, ['POST']],
     [/^\/api\/budget$/, ['GET']],
     [/^\/api\/admin\/access-requests$/, ['GET']],
     [/^\/api\/admin\/access-requests\/[^/]+\/decision$/, ['POST']],
@@ -681,6 +704,33 @@ export function create_app(options: CreateAppOptions = {}): Express {
   app.get('/api/admin/budgets', ...authorized('renders.read'), async (_request, response) => {
     const { issuer, subject } = identity(response);
     response.json(await (await storage()).budgets_as_admin(issuer, subject, budget_defaults()));
+  });
+  app.post('/api/admin/lyric-reservations/:reservation_id/settle', ...authorized('renders.write'), async (request, response) => {
+    const payload = parse(LyricSettlementSubmission, request.body);
+    const reservation_id = String(request.params.reservation_id);
+    const actual_cost_usd = decimal(payload.actual_cost_usd);
+    const reservation = await admin_lyric_operation(response, (store, actor) =>
+      store.settle_lyric_reservation_as_admin(
+        actor.issuer, actor.subject, reservation_id, actual_cost_usd, payload.evidence_reference, payload.reason,
+      ));
+    response.json({ reservation });
+  });
+  app.post('/api/admin/lyric-reservations/:reservation_id/correct', ...authorized('renders.write'), async (request, response) => {
+    const payload = parse(LyricSettlementSubmission, request.body);
+    const reservation_id = String(request.params.reservation_id);
+    const actual_cost_usd = decimal(payload.actual_cost_usd);
+    const reservation = await admin_lyric_operation(response, (store, actor) =>
+      store.correct_lyric_reservation_as_admin(
+        actor.issuer, actor.subject, reservation_id, actual_cost_usd, payload.evidence_reference, payload.reason,
+      ));
+    response.json({ reservation });
+  });
+  app.post('/api/admin/lyric-reservations/:reservation_id/reopen', ...authorized('renders.write'), async (request, response) => {
+    const payload = parse(LyricReopenSubmission, request.body);
+    const reservation_id = String(request.params.reservation_id);
+    const reservation = await admin_lyric_operation(response, (store, actor) =>
+      store.reopen_lyric_reservation_as_admin(actor.issuer, actor.subject, reservation_id, payload.reason));
+    response.json({ reservation });
   });
   app.put('/api/admin/budgets', ...authorized('renders.write'), async (request, response) => {
     const payload = parse(BudgetSubmission, request.body);

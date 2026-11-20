@@ -18,6 +18,22 @@ export { STATIC_ROOT };
 function is_score_reservation_status(value: string): value is ScoreReservationStatus {
   return value === "submitted" || value === "committed" || value === "outcome_unknown" || value === "failed";
 }
+function is_paid_lyric_action(value: string): value is PaidLyricGenerationAction {
+  return value === "discuss" || value === "write" || value === "options";
+}
+function is_lyric_reservation_status(value: string): value is LyricReservationRecord["settlement_status"] {
+  return value === "pending" || value === "settled";
+}
+function is_lyric_event_type(value: string): value is LyricReservationEvent["event_type"] {
+  return value === "settled" || value === "corrected" || value === "reopened";
+}
+function required_ledger_text(value: string, label: string, maxLength: number): string {
+  const text = value.trim();
+  if (!text || text.length > maxLength || /[\u0000-\u001f\u007f]/.test(text)) {
+    throw new TypeError(`${label} must be nonempty plain text no longer than ${maxLength} characters`);
+  }
+  return text;
+}
 /** A durable reservation or immutable record prevents this operation. */
 export class StorageConflict extends Error {}
 /** No record belongs to the supplied owner. */
@@ -30,14 +46,49 @@ export interface StorageOptions { database_url?: string | null }
 export interface BudgetBalance {
   limit_usd: string | null; charged_usd: string; remaining_usd: string | null;
 }
+/** Text budget totals, including lyric reservations and settled lyric actuals. */
+export interface TextBudgetBalance extends BudgetBalance {
+  lyric_reserved_usd: string;
+  lyric_actual_usd: string;
+}
 /** Shared ceilings retain environment defaults; user ceilings default to $5 for life. */
 export interface BudgetDefaults { text: string | null; speech: string | null }
 /** Administrator view separates confirmed charges from conservative reservation accounting. */
 export interface BudgetOverview {
-  text: BudgetBalance; speech: BudgetBalance;
+  text: TextBudgetBalance; speech: BudgetBalance;
   actuals: { speech_usd: string; ai_usd: string; unreconciled_speech_attempts: number };
   unattributed_text_usd: string;
-  users: (BudgetBalance & { issuer: string; subject: string })[];
+  lyric_reservations: LyricReservationRecord[];
+  users: (TextBudgetBalance & { issuer: string; subject: string })[];
+}
+/** Current ledger state for one lyric reservation, with its immutable transitions. */
+export interface LyricReservationRecord {
+  reservation_id: string;
+  action: PaidLyricGenerationAction;
+  owner: string | null;
+  reserved_usd: string;
+  settlement_status: "pending" | "settled";
+  actual_cost_usd: string | null;
+  evidence_reference: string | null;
+  settled_by: { issuer: string; subject: string } | null;
+  settled_at: string | null;
+  created_at: string;
+  events: LyricReservationEvent[];
+}
+/** One append-only settlement, correction, or reopening event. */
+export interface LyricReservationEvent {
+  event_id: string;
+  reservation_id: string;
+  event_type: "settled" | "corrected" | "reopened";
+  previous_status: "pending" | "settled";
+  new_status: "pending" | "settled";
+  previous_actual_usd: string | null;
+  new_actual_usd: string | null;
+  actor_issuer: string;
+  actor_subject: string;
+  evidence_reference: string | null;
+  reason: string;
+  created_at: string;
 }
 /** Operator-managed application permissions, not identity-provider accounts. */
 export interface UserPermissions { enabled: boolean; admin: boolean; paid_speech: boolean }
@@ -259,9 +310,50 @@ export class WebStorage {
     }
     return { charged, actual, ai_actual, pending };
   }
-  private async user_budget(c: Connection, owner: string): Promise<BudgetBalance> {
-    const charged = (await this.reserved_text_cost(c, owner)).plus((await this.speech_usage(c, owner)).charged);
-    return this.balance(await this.effective_limit(c, "user", "5", owner), charged);
+  private async text_budget_totals(c: Connection, owner?: string) {
+    const predicate = owner === undefined ? "" : " WHERE owner = ?";
+    const parameters = owner === undefined ? [] : [owner];
+    let charged = new Money(0), lyric_reserved = new Money(0), lyric_actual = new Money(0), unattributed = new Money(0);
+    for (const row of (await c.execute(
+      `SELECT owner, reserved_usd, settlement_status, actual_cost_usd FROM lyric_reservations${predicate}`,
+      parameters,
+    )).rows) {
+      const reserved = this.budget_amount(String(row.reserved_usd));
+      if (reserved.lte(0)) throw new Error("Invalid lyric budget reservation");
+      const status = String(row.settlement_status);
+      let effective: Decimal;
+      if (status === "pending") {
+        if (row.actual_cost_usd !== null) throw new Error("Pending lyric reservation has an actual cost");
+        lyric_reserved = lyric_reserved.plus(reserved);
+        effective = reserved;
+      } else if (status === "settled") {
+        if (row.actual_cost_usd === null) throw new Error("Settled lyric reservation has no actual cost");
+        effective = this.budget_amount(String(row.actual_cost_usd));
+        lyric_actual = lyric_actual.plus(effective);
+      } else {
+        throw new Error("Lyric reservation has an invalid settlement status");
+      }
+      charged = charged.plus(effective);
+      if (row.owner === null) unattributed = unattributed.plus(effective);
+    }
+    for (const row of (await c.execute(
+      `SELECT reserved_usd FROM score_reservations${owner === undefined ? "" : " WHERE owner = ?"}`,
+      parameters,
+    )).rows) {
+      const amount = this.budget_amount(String(row.reserved_usd));
+      if (amount.lte(0)) throw new Error("Invalid score budget reservation");
+      charged = charged.plus(amount);
+    }
+    return { charged, lyric_reserved, lyric_actual, unattributed };
+  }
+  private async user_budget(c: Connection, owner: string): Promise<TextBudgetBalance> {
+    const text = await this.text_budget_totals(c, owner);
+    const charged = text.charged.plus((await this.speech_usage(c, owner)).charged);
+    return {
+      ...this.balance(await this.effective_limit(c, "user", "5", owner), charged),
+      lyric_reserved_usd: text.lyric_reserved.toFixed(),
+      lyric_actual_usd: text.lyric_actual.toFixed(),
+    };
   }
   private async check_user_budget(c: Connection, owner: string, cost: Decimal): Promise<void> {
     const budget = await this.user_budget(c, owner);
@@ -270,7 +362,7 @@ export class WebStorage {
     }
   }
   /** Returns only the caller's lifetime allowance; existing attributable history counts. */
-  async get_user_budget(owner: string): Promise<BudgetBalance> {
+  async get_user_budget(owner: string): Promise<TextBudgetBalance> {
     return this.write(c => this.user_budget(c, owner));
   }
   /** Preflights the complete jingle; individual stages must still reserve atomically. */
@@ -281,21 +373,114 @@ export class WebStorage {
   async budgets_as_admin(issuer: string, subject: string, defaults: BudgetDefaults): Promise<BudgetOverview> {
     return this.write(async c => {
       await this.require_admin(c, issuer, subject);
-      const text = await this.reserved_text_cost(c), speech = await this.speech_usage(c);
+      const text = await this.text_budget_totals(c), speech = await this.speech_usage(c);
       const users: BudgetOverview["users"] = [];
       for (const row of (await c.execute("SELECT issuer, subject FROM application_users ORDER BY issuer, subject")).rows) {
         users.push({ issuer: String(row.issuer), subject: String(row.subject), ...await this.user_budget(c, String(row.subject)) });
       }
-      let unattributed = new Money(0);
-      for (const row of (await c.execute("SELECT reserved_usd FROM lyric_reservations WHERE owner IS NULL")).rows) {
-        unattributed = unattributed.plus(this.budget_amount(String(row.reserved_usd)));
-      }
       return {
-        text: this.balance(await this.effective_limit(c, "text", defaults.text), text),
+        text: {
+          ...this.balance(await this.effective_limit(c, "text", defaults.text), text.charged),
+          lyric_reserved_usd: text.lyric_reserved.toFixed(),
+          lyric_actual_usd: text.lyric_actual.toFixed(),
+        },
         speech: this.balance(await this.effective_limit(c, "speech", defaults.speech), speech.charged),
         actuals: { speech_usd: speech.actual.toFixed(), ai_usd: speech.ai_actual.toFixed(), unreconciled_speech_attempts: speech.pending },
-        unattributed_text_usd: unattributed.toFixed(), users,
+        unattributed_text_usd: text.unattributed.toFixed(),
+        lyric_reservations: await this.lyric_reservation_records(c),
+        users,
       };
+    });
+  }
+  /** Settles a pending hold only when an administrator supplies attributable cost evidence and a reason. */
+  async settle_lyric_reservation_as_admin(
+    issuer: string, subject: string, reservation_id: string, actual_cost_usd: Decimal.Value,
+    evidence_reference: string, reason: string,
+  ): Promise<LyricReservationRecord> {
+    WebStorage.validate_identity(issuer, subject);
+    const actual = this.budget_amount(actual_cost_usd);
+    const evidence = required_ledger_text(evidence_reference, "Evidence reference", 500);
+    const settlement_reason = required_ledger_text(reason, "Settlement reason", 1000);
+    const id = required_ledger_text(reservation_id, "Reservation ID", 128);
+    return this.write(async c => {
+      await this.require_admin(c, issuer, subject);
+      const current = (await c.execute(
+        "SELECT settlement_status FROM lyric_reservations WHERE reservation_id = ?", [id],
+      )).rows[0];
+      if (!current) throw new StorageNotFound("Lyric reservation was not found");
+      if (current.settlement_status !== "pending") throw new StorageConflict("Only pending lyric reservations can be settled");
+      const settled_at = new Date().toISOString();
+      const update = await c.execute(`UPDATE lyric_reservations
+        SET settlement_status = 'settled', actual_cost_usd = ?, evidence_reference = ?,
+            settled_by_issuer = ?, settled_by_subject = ?, settled_at = ?
+        WHERE reservation_id = ? AND settlement_status = 'pending'`,
+      [actual.toFixed(), evidence, issuer, subject, settled_at, id]);
+      if (update.rowcount !== 1) throw new StorageConflict("Lyric reservation changed before settlement");
+      await c.execute(`INSERT INTO lyric_reservation_events
+        (event_id, reservation_id, event_type, previous_status, new_status, previous_actual_usd, new_actual_usd,
+         actor_issuer, actor_subject, evidence_reference, reason, created_at)
+        VALUES (?, ?, 'settled', 'pending', 'settled', NULL, ?, ?, ?, ?, ?, ?)`,
+      [randomUUID(), id, actual.toFixed(), issuer, subject, evidence, settlement_reason, settled_at]);
+      return this.lyric_reservation_record(c, id);
+    });
+  }
+  /** Corrects an already-settled cost while preserving the previous value in the event history. */
+  async correct_lyric_reservation_as_admin(
+    issuer: string, subject: string, reservation_id: string, actual_cost_usd: Decimal.Value,
+    evidence_reference: string, reason: string,
+  ): Promise<LyricReservationRecord> {
+    WebStorage.validate_identity(issuer, subject);
+    const actual = this.budget_amount(actual_cost_usd);
+    const evidence = required_ledger_text(evidence_reference, "Evidence reference", 500);
+    const correction_reason = required_ledger_text(reason, "Correction reason", 1000);
+    const id = required_ledger_text(reservation_id, "Reservation ID", 128);
+    return this.write(async c => {
+      await this.require_admin(c, issuer, subject);
+      const record = await this.lyric_reservation_record(c, id);
+      if (record.settlement_status !== "settled" || record.actual_cost_usd === null) {
+        throw new StorageConflict("Only settled lyric reservations can be corrected");
+      }
+      const corrected_at = new Date().toISOString();
+      const update = await c.execute(`UPDATE lyric_reservations
+        SET actual_cost_usd = ?, evidence_reference = ?, settled_by_issuer = ?,
+            settled_by_subject = ?, settled_at = ?
+        WHERE reservation_id = ? AND settlement_status = 'settled' AND actual_cost_usd = ?`,
+      [actual.toFixed(), evidence, issuer, subject, corrected_at, id, record.actual_cost_usd]);
+      if (update.rowcount !== 1) throw new StorageConflict("Lyric reservation changed before correction");
+      await c.execute(`INSERT INTO lyric_reservation_events
+        (event_id, reservation_id, event_type, previous_status, new_status, previous_actual_usd, new_actual_usd,
+         actor_issuer, actor_subject, evidence_reference, reason, created_at)
+        VALUES (?, ?, 'corrected', 'settled', 'settled', ?, ?, ?, ?, ?, ?, ?)`,
+      [randomUUID(), id, record.actual_cost_usd, actual.toFixed(), issuer, subject, evidence, correction_reason, corrected_at]);
+      return this.lyric_reservation_record(c, id);
+    });
+  }
+  /** Reopens a settled hold for verification and restores its full reserved amount to budget accounting. */
+  async reopen_lyric_reservation_as_admin(
+    issuer: string, subject: string, reservation_id: string, reason: string,
+  ): Promise<LyricReservationRecord> {
+    WebStorage.validate_identity(issuer, subject);
+    const reopen_reason = required_ledger_text(reason, "Reopening reason", 1000);
+    const id = required_ledger_text(reservation_id, "Reservation ID", 128);
+    return this.write(async c => {
+      await this.require_admin(c, issuer, subject);
+      const record = await this.lyric_reservation_record(c, id);
+      if (record.settlement_status !== "settled" || record.actual_cost_usd === null) {
+        throw new StorageConflict("Only settled lyric reservations can be reopened");
+      }
+      const reopened_at = new Date().toISOString();
+      const update = await c.execute(`UPDATE lyric_reservations
+        SET settlement_status = 'pending', actual_cost_usd = NULL, evidence_reference = NULL,
+            settled_by_issuer = NULL, settled_by_subject = NULL, settled_at = NULL
+        WHERE reservation_id = ? AND settlement_status = 'settled' AND actual_cost_usd = ?`,
+      [id, record.actual_cost_usd]);
+      if (update.rowcount !== 1) throw new StorageConflict("Lyric reservation changed before reopening");
+      await c.execute(`INSERT INTO lyric_reservation_events
+        (event_id, reservation_id, event_type, previous_status, new_status, previous_actual_usd, new_actual_usd,
+         actor_issuer, actor_subject, evidence_reference, reason, created_at)
+        VALUES (?, ?, 'reopened', 'settled', 'pending', ?, NULL, ?, ?, NULL, ?, ?)`,
+      [randomUUID(), id, record.actual_cost_usd, issuer, subject, reopen_reason, reopened_at]);
+      return this.lyric_reservation_record(c, id);
     });
   }
   /** Persists a finite total cap without modifying consumption, including when below current usage. */
@@ -338,7 +523,19 @@ export class WebStorage {
     await connection.executescript(`
       CREATE TABLE IF NOT EXISTS lyric_reservations (
         reservation_id TEXT PRIMARY KEY, action TEXT NOT NULL CHECK (action IN ('discuss','write','options')),
-        reserved_usd TEXT NOT NULL, created_at TEXT NOT NULL);
+        reserved_usd TEXT NOT NULL, created_at TEXT NOT NULL,
+        settlement_status TEXT NOT NULL DEFAULT 'pending' CHECK (settlement_status IN ('pending','settled')),
+        actual_cost_usd TEXT, evidence_reference TEXT, settled_by_issuer TEXT, settled_by_subject TEXT, settled_at TEXT);
+      CREATE TABLE IF NOT EXISTS lyric_reservation_events (
+        event_id TEXT PRIMARY KEY, reservation_id TEXT NOT NULL REFERENCES lyric_reservations(reservation_id),
+        event_type TEXT NOT NULL CHECK (event_type IN ('settled','corrected','reopened')),
+        previous_status TEXT NOT NULL CHECK (previous_status IN ('pending','settled')),
+        new_status TEXT NOT NULL CHECK (new_status IN ('pending','settled')),
+        previous_actual_usd TEXT, new_actual_usd TEXT,
+        actor_issuer TEXT NOT NULL, actor_subject TEXT NOT NULL,
+        evidence_reference TEXT, reason TEXT NOT NULL, created_at TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS lyric_reservation_events_reservation_created
+        ON lyric_reservation_events(reservation_id, created_at);
       CREATE TABLE IF NOT EXISTS score_reservations (
         reservation_id TEXT PRIMARY KEY, owner TEXT NOT NULL,
         action TEXT NOT NULL CHECK (action = 'compose'), logical_job_id TEXT NOT NULL,
@@ -354,6 +551,22 @@ export class WebStorage {
       CREATE TABLE IF NOT EXISTS score_schema_migrations (
         version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
     `);
+    const lyricColumns = connection instanceof SqliteConnection
+      ? (await connection.execute("PRAGMA table_info(lyric_reservations)")).rows.map(row => String(row.name))
+      : (await connection.execute(
+        "SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'lyric_reservations'",
+      )).rows.map(row => String(row.column_name));
+    const settlementColumns = [
+      ["settlement_status", "TEXT NOT NULL DEFAULT 'pending'"],
+      ["actual_cost_usd", "TEXT"],
+      ["evidence_reference", "TEXT"],
+      ["settled_by_issuer", "TEXT"],
+      ["settled_by_subject", "TEXT"],
+      ["settled_at", "TEXT"],
+    ] as const;
+    for (const [name, definition] of settlementColumns) {
+      if (!lyricColumns.includes(name)) await connection.execute(`ALTER TABLE lyric_reservations ADD COLUMN ${name} ${definition}`);
+    }
     const columns = connection instanceof SqliteConnection
       ? (await connection.execute("PRAGMA table_info(score_reservations)")).rows.map(row => String(row.name))
       : (await connection.execute(
@@ -365,6 +578,10 @@ export class WebStorage {
       "INSERT INTO score_schema_migrations (version, applied_at) VALUES (2, ?) ON CONFLICT (version) DO NOTHING",
       [new Date().toISOString()],
     );
+    await connection.execute(
+      "INSERT INTO score_schema_migrations (version, applied_at) VALUES (3, ?) ON CONFLICT (version) DO NOTHING",
+      [new Date().toISOString()],
+    );
   }
 
   /** Confirms the explicit PostgreSQL upgrade without running DDL from the web app. */
@@ -372,22 +589,24 @@ export class WebStorage {
     return this.read(async c => {
       if (this.database_url !== null) {
         const lyric = await c.execute("SELECT to_regclass(?) AS name", ["lyric_reservations"]);
+        const events = await c.execute("SELECT to_regclass(?) AS name", ["lyric_reservation_events"]);
         const score = await c.execute("SELECT to_regclass(?) AS name", ["score_reservations"]);
         const reconciliation = await c.execute("SELECT to_regclass(?) AS name", ["score_reconciliations"]);
         const migration_table = await c.execute("SELECT to_regclass(?) AS name", ["score_schema_migrations"]);
         const migration = migration_table.rows[0]?.name
-          ? await c.execute("SELECT version FROM score_schema_migrations WHERE version = 2")
+          ? await c.execute("SELECT version FROM score_schema_migrations WHERE version = 3")
           : { rows: [] };
-        return Boolean(lyric.rows[0]?.name && score.rows[0]?.name && reconciliation.rows[0]?.name && migration.rows.length);
+        return Boolean(lyric.rows[0]?.name && events.rows[0]?.name && score.rows[0]?.name && reconciliation.rows[0]?.name && migration.rows.length);
       }
       const lyric = await c.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'lyric_reservations'");
+      const events = await c.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'lyric_reservation_events'");
       const score = await c.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'score_reservations'");
       const reconciliation = await c.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'score_reconciliations'");
       const migration_table = await c.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'score_schema_migrations'");
       const migration = migration_table.rows.length
-        ? await c.execute("SELECT version FROM score_schema_migrations WHERE version = 2")
+        ? await c.execute("SELECT version FROM score_schema_migrations WHERE version = 3")
         : { rows: [] };
-      return Boolean(lyric.rows.length && score.rows.length && reconciliation.rows.length && migration.rows.length);
+      return Boolean(lyric.rows.length && events.rows.length && score.rows.length && reconciliation.rows.length && migration.rows.length);
     });
   }
 
@@ -404,17 +623,7 @@ export class WebStorage {
     });
   }
   private async reserved_text_cost(c: Connection, owner?: string): Promise<Decimal> {
-    let total = new Money(0);
-    for (const row of (await c.execute(
-      owner === undefined ? "SELECT reserved_usd FROM lyric_reservations UNION ALL SELECT reserved_usd FROM score_reservations"
-        : "SELECT reserved_usd FROM lyric_reservations WHERE owner = ? UNION ALL SELECT reserved_usd FROM score_reservations WHERE owner = ?",
-      owner === undefined ? [] : [owner, owner],
-    )).rows) {
-      const amount = new Money(String(row.reserved_usd));
-      if (!amount.isFinite() || amount.lte(0)) throw new Error("Invalid shared text budget reservation");
-      total = total.plus(amount);
-    }
-    return total;
+    return (await this.text_budget_totals(c, owner)).charged;
   }
   /** Checks the full jingle quote before the first billable text call. Individual reservations still enforce the cap atomically. */
   async check_jingle_text_budget(cost: Decimal, total: Decimal): Promise<void> {
@@ -618,6 +827,88 @@ export class WebStorage {
         option_id, brief_id: String(row.brief_id), request: JSON.parse(String(row.request_json)) as LyricRequest,
         result: JSON.parse(String(row.result_json)) as LyricResult,
       } : null;
+    });
+  }
+  private async lyric_reservation_record(c: Connection, reservation_id: string): Promise<LyricReservationRecord> {
+    const records = await this.lyric_reservation_records(c, reservation_id);
+    if (!records[0]) throw new StorageNotFound("Lyric reservation was not found");
+    return records[0];
+  }
+  private async lyric_reservation_records(c: Connection, reservation_id?: string): Promise<LyricReservationRecord[]> {
+    const reservation_filter = reservation_id === undefined ? "" : " WHERE reservation_id = ?";
+    const parameters = reservation_id === undefined ? [] : [reservation_id];
+    const rows = (await c.execute(
+      `SELECT reservation_id, action, owner, reserved_usd, settlement_status, actual_cost_usd,
+              evidence_reference, settled_by_issuer, settled_by_subject, settled_at, created_at
+       FROM lyric_reservations${reservation_filter} ORDER BY created_at DESC, reservation_id`,
+      parameters,
+    )).rows;
+    const eventRows = (await c.execute(
+      `SELECT event_id, reservation_id, event_type, previous_status, new_status, previous_actual_usd,
+              new_actual_usd, actor_issuer, actor_subject, evidence_reference, reason, created_at
+       FROM lyric_reservation_events${reservation_filter} ORDER BY created_at, event_id`,
+      parameters,
+    )).rows;
+    const eventsByReservation = new Map<string, LyricReservationEvent[]>();
+    for (const row of eventRows) {
+      const event_type = String(row.event_type), previous_status = String(row.previous_status), new_status = String(row.new_status);
+      if (!is_lyric_event_type(event_type) || !is_lyric_reservation_status(previous_status) || !is_lyric_reservation_status(new_status)) {
+        throw new Error("Lyric reservation event has an invalid transition");
+      }
+      const key = String(row.reservation_id);
+      const events = eventsByReservation.get(key) ?? [];
+      if (row.reason == null) throw new Error("Lyric reservation event has no reason");
+      events.push({
+        event_id: String(row.event_id),
+        reservation_id: key,
+        event_type,
+        previous_status,
+        new_status,
+        previous_actual_usd: row.previous_actual_usd == null ? null : String(row.previous_actual_usd),
+        new_actual_usd: row.new_actual_usd == null ? null : String(row.new_actual_usd),
+        actor_issuer: String(row.actor_issuer),
+        actor_subject: String(row.actor_subject),
+        evidence_reference: row.evidence_reference == null ? null : String(row.evidence_reference),
+        reason: String(row.reason),
+        created_at: String(row.created_at),
+      });
+      eventsByReservation.set(key, events);
+    }
+    return rows.map(row => {
+      const action = String(row.action), settlement_status = String(row.settlement_status);
+      if (!is_paid_lyric_action(action) || !is_lyric_reservation_status(settlement_status)) {
+        throw new Error("Lyric reservation has invalid ledger state");
+      }
+      const actual_cost_usd = row.actual_cost_usd == null ? null : String(row.actual_cost_usd);
+      const evidence_reference = row.evidence_reference == null ? null : String(row.evidence_reference);
+      const settled_by_issuer = row.settled_by_issuer == null ? null : String(row.settled_by_issuer);
+      const settled_by_subject = row.settled_by_subject == null ? null : String(row.settled_by_subject);
+      const settled_at = row.settled_at == null ? null : String(row.settled_at);
+      if ((settlement_status === "pending" && (actual_cost_usd !== null || evidence_reference !== null ||
+          settled_by_issuer !== null || settled_by_subject !== null || settled_at !== null)) ||
+          (settlement_status === "settled" && (actual_cost_usd === null || evidence_reference === null ||
+          settled_by_issuer === null || settled_by_subject === null || settled_at === null))) {
+        throw new Error("Lyric reservation settlement fields are inconsistent");
+      }
+      if ((settled_by_issuer === null) !== (settled_by_subject === null)) {
+        throw new Error("Lyric reservation settlement actor is incomplete");
+      }
+      const owner = row.owner == null ? null : String(row.owner);
+      return {
+        reservation_id: String(row.reservation_id),
+        action,
+        owner,
+        reserved_usd: String(row.reserved_usd),
+        settlement_status,
+        actual_cost_usd,
+        evidence_reference,
+        settled_by: settled_by_issuer === null || settled_by_subject === null
+          ? null
+          : { issuer: settled_by_issuer, subject: settled_by_subject },
+        settled_at,
+        created_at: String(row.created_at),
+        events: eventsByReservation.get(String(row.reservation_id)) ?? [],
+      };
     });
   }
   private async read<T>(operation: (connection: Connection) => Promise<T>): Promise<T> {

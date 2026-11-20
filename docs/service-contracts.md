@@ -100,11 +100,21 @@ billable units in that request. Use metered deployments with verifiable prices.
 
 The API reserves the entire action cost before contacting either provider.
 Requests larger than 64 KiB after serialization are blocked by the web
-adapter. Failed and partial actions keep their reservation. The cumulative
-allowance is shared by all users of the database, persists across restarts,
-and does not automatically reset or credit unused calls. It is an app-side
-upper-bound ledger, not Azure invoice tracking or a subscription-wide cap.
-Standalone MCP does not use this web ledger.
+adapter. Failed and partial actions retain their reservation until the
+applicable reconciliation path completes. For lyric generation, a failed or
+partial result and provider token counts do not verify billed dollars. An
+administrator can replace a pending lyric reservation with an actual amount
+only when attributable billing evidence supports it. The app stores the
+evidence reference but does not fetch or independently verify Azure billing
+data. If evidence cannot establish a request-specific amount, the reservation
+stays pending at its original cap. Settlement replaces the reserve with the
+recorded actual; correction and reopening append audit events, and reopening
+restores the pending hold.
+
+The cumulative allowance is shared by all users of the database, persists
+across restarts, and does not automatically reset or credit unused calls. It is
+an app-side upper-bound ledger, not Azure invoice tracking or a
+subscription-wide cap. Standalone MCP does not use this web ledger.
 
 The web app's deterministic `/api/arrangements` previews and `/api/chat` `compose`
 action do not call the score model. Paid score composition is separate and
