@@ -44,7 +44,7 @@ export class LyricWriter {
   }
 
   private async write_candidate(request: LyricRequest, on_screen?: () => void): Promise<LyricResult> {
-    let attempts = 0, feedback: string[] = [], pronunciation_line: number | undefined;
+    let attempts = 0, feedback: string[] = [], failure_reasons: string[] = [], pronunciation_line: number | undefined;
     let step: "preflight" | "generate" | "assess" | "screen" = "preflight";
     const text = brief_text(request);
     const result = (status: LyricResult["status"], reasons: string[], output: LyricDraft | null = null): LyricResult => {
@@ -54,6 +54,7 @@ export class LyricWriter {
     };
     const retry = (reason: string, failed_step: "generate" | "assess" = "generate") => {
       feedback = [reason];
+      failure_reasons.push(reason);
       jingle_diagnostic({ event: "lyric_attempt_failed", step: failed_step, attempt: attempts, reason });
     };
     if (IMITATION.test(text)) return result("rejected", ["artist_imitation"]);
@@ -109,7 +110,7 @@ export class LyricWriter {
       throw error;
     }
     attempts = 4;
-    return result("retry_exhausted", feedback);
+    return result("retry_exhausted", [...new Set(failure_reasons)]);
   }
 }
 

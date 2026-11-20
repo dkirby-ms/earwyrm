@@ -320,7 +320,7 @@ describe('Jingle workspace', () => {
     await user.click(screen.getByText('Brand pronunciation hints (optional)'))
     await user.type(screen.getByLabelText('Pronunciation hints'), 'zyvox = zee fox')
     await user.click(screen.getByRole('button', { name: 'Generate jingle' }))
-    expect(await screen.findByRole('alert')).toHaveTextContent('Partial provider calls may be charged')
+    expect(await screen.findByRole('alert')).toHaveTextContent('Some AI or speech calls may still be charged')
     expect(screen.getByLabelText('Describe your jingle')).toHaveValue('Bike shop')
     expect(screen.getByLabelText('Pronunciation hints')).toHaveValue('zyvox = zee fox')
     const submitted = fetchMock.mock.calls.find(([input, init]) => String(input).endsWith('/api/jingles') && init?.method === 'POST')

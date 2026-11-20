@@ -97,10 +97,15 @@ application permissions. Operators can also use
    It does not substitute seeded music if a stage fails.
 3. Follow the generation timeline. It highlights the current step as the
    server reports it; short steps may pass between updates. If updates become
-   unavailable, the page still waits for the original generation request.
+   unavailable, the page still waits for the original generation request. If
+   lyric retries run out, the error lists the distinct checks that failed.
+   Other failures name the last confirmed stage and a known recovery action.
+   Share the diagnostic ID with an administrator for server-side details.
 4. Listen and review the demo on the same page. Generation is not broadcast
-   approval. If the connection drops, check the page for a result before making
-   another request. A failed generation can still incur provider charges.
+   approval. If the connection drops, check Your jingles for a completed
+   result. When the error says a music-score provider outcome is uncertain, do
+   not generate again until an administrator verifies the score job reference.
+   A failed generation can still incur provider charges.
 
 Common curly quotes and apostrophes, dash variants, nonbreaking spaces and
 ellipses are normalized for validation and Speech input. Stored/displayed lyrics

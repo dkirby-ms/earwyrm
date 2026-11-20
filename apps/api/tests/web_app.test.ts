@@ -1192,17 +1192,19 @@ describe('one-page AI jingles', () => {
     });
   });
 
-  it.each(['exhausted', 'refused', 'unknown', 'screened'] as const)('correlates jingle diagnostics for a %s request without retaining content', async scenario => {
+  it.each(['exhausted', 'refused', 'unknown', 'screened', 'score_unknown'] as const)('correlates jingle diagnostics for a %s request without retaining content', async scenario => {
     const root = root_dir();
     const [brief, script] = load_inputs()[0]!;
     const cta = script.split(/(?<=[.!?])\s+/).at(-1)!;
-    const hook = `${brief.name}, a tune up for your ride`;
+    const hook = `${brief.name}, a tune up for your very next ride`;
     const marker = 'private-test-marker';
     const completion = (content: string) => Response.json({ choices: [{ finish_reason: 'stop', message: { content } }] });
     let attempts = 0;
     const send = vi.fn(async (url: string, init: RequestInit) => {
       if (url.includes(':analyze')) return Response.json({
-        categoriesAnalysis: ['Hate', 'SelfHarm', 'Sexual', 'Violence'].map(category => ({ category, severity: category === 'Hate' ? 2 : 0 })),
+        categoriesAnalysis: ['Hate', 'SelfHarm', 'Sexual', 'Violence'].map(category => ({
+          category, severity: category === 'Hate' && scenario !== 'score_unknown' ? 2 : 0,
+        })),
       });
       if (url.includes(':detectProtectedMaterial')) return Response.json({ protectedMaterialAnalysis: { detected: false } });
       const { response_format } = JSON.parse(String(init.body));
@@ -1215,6 +1217,7 @@ describe('one-page AI jingles', () => {
       attempts++;
       if (scenario === 'refused') return Response.json({ error: { code: 'content_filter', message: marker } }, { status: 400 });
       if (scenario === 'screened') return completion(JSON.stringify({ hook }));
+      if (scenario === 'score_unknown') return completion(JSON.stringify({ hook }));
       if (attempts === 1) return Response.json({ error: marker }, { status: 429 });
       if (attempts === 2) return completion(marker);
       return completion(JSON.stringify({ hook: cta }));
@@ -1222,7 +1225,10 @@ describe('one-page AI jingles', () => {
     const lyric_backend = new AzureLyricBackend({
       foundry_endpoint: 'https://foundry.example.test', safety_endpoint: 'https://safety.example.test', deployment: 'test',
     }, { getToken: async () => ({ token: marker, expiresOnTimestamp: Date.now() + 60000 }) }, send);
-    const score = vi.fn();
+    const score = vi.fn(async () => {
+      if (scenario === 'score_unknown') throw new CloudFailure('cloud_transport_failed');
+      return test_score;
+    });
     const logs = vi.spyOn(console, 'info').mockImplementation(() => {});
     const { app, store, access_token } = await fixture({
       data_dir: root,
@@ -1242,25 +1248,49 @@ describe('one-page AI jingles', () => {
     const result = await request(app).post('/api/jingles').auth(access_token, { type: 'bearer' }).send(body);
     const id = result.headers['x-earwyrm-diagnostic-id'];
     expect(id).toMatch(/^[a-f0-9-]{36}$/);
-    expect(result.status).toBe(scenario === 'unknown' ? 503 : 422);
-    expect(result.body).toEqual({ detail: scenario === 'unknown'
-      ? 'AI generation could not complete. No fallback audio was generated.'
-      : 'The lyrics did not pass screening or fit the jingle. Try a short, pronounceable business name and leave the call to action open.' });
-    expect(score).not.toHaveBeenCalled();
+    expect(result.status, JSON.stringify(result.body)).toBe(['unknown', 'score_unknown'].includes(scenario) ? 503 : 422);
+    if (scenario === 'exhausted') {
+      expect(result.body.detail).toContain('tried 4 drafts');
+      expect(result.body.detail).toContain('the AI service is temporarily unavailable');
+      expect(result.body.detail).toContain('the AI service returned a response in an unusable format');
+      expect(result.body.detail).toContain('the call to action must stay on the closing line');
+    } else if (scenario === 'refused') {
+      expect(result.body.detail).toContain('the AI service declined the request');
+    } else if (scenario === 'screened') {
+      expect(result.body.detail).toContain('content screening did not approve the lyrics');
+    } else if (scenario === 'unknown') {
+      expect(result.body.detail).toContain('while writing and checking the lyrics');
+      expect(result.body.detail).toContain('more specific reason');
+    } else {
+      expect(result.body.detail).toContain('Do not generate again yet');
+      expect(result.body.detail).toContain('application administrator');
+      expect(result.body.detail).toMatch(/score job score-[a-f0-9]{64}/);
+    }
+    expect(JSON.stringify(result.body)).not.toContain(marker);
+    if (scenario === 'score_unknown') expect(score).toHaveBeenCalledTimes(1);
+    else expect(score).not.toHaveBeenCalled();
     const lines = logs.mock.calls.map(([line]) => String(line));
     expect(lines.join('\n')).not.toContain(marker);
     expect(lines.join('\n')).not.toContain(brief.name);
     const events = lines.map(line => JSON.parse(line));
     expect(events.every(event => event.diagnostic_id === id)).toBe(true);
     expect(events.at(-1)).toMatchObject({ event: 'request_finished', http_status: result.status,
-      stage: scenario === 'unknown' ? 'brief' : scenario === 'screened' ? 'safety' : 'lyrics' });
+      stage: scenario === 'score_unknown' ? 'score' : scenario === 'screened' ? 'safety' : 'lyrics' });
     const budget = await request(app).get('/api/admin/budgets').auth(access_token, { type: 'bearer' });
     expect(budget.body.lyric_reservations.length).toBeGreaterThan(0);
     expect(budget.body.lyric_reservations.every((row: { settlement_status: string }) => row.settlement_status === 'pending')).toBe(true);
-    expect(budget.body.text.charged_usd).toBe(budget.body.text.lyric_reserved_usd);
+    if (scenario === 'score_unknown') {
+      expect(budget.body.text.charged_usd).not.toBe(budget.body.text.lyric_reserved_usd);
+    } else {
+      expect(budget.body.text.charged_usd).toBe(budget.body.text.lyric_reserved_usd);
+    }
     expect(budget.body.text.lyric_actual_usd).toBe('0');
     expect((await store.get_user_budget('user-a')).lyric_reserved_usd).toBe(budget.body.text.lyric_reserved_usd);
-    if (scenario === 'unknown') {
+    if (scenario === 'score_unknown') {
+      expect(events).toContainEqual(expect.objectContaining({
+        event: 'score_failed', reason: 'cloud_transport_failed', logical_job_id: expect.stringMatching(/^score-[a-f0-9]{64}$/),
+      }));
+    } else if (scenario === 'unknown') {
       expect(events[0]).toMatchObject({ event: 'request_failed', reason: 'unknown_reason' });
       expect(send).not.toHaveBeenCalled();
     } else if (scenario === 'screened') {
@@ -1451,6 +1481,8 @@ describe('guarded paid score composition', () => {
     const blocked = await send_uncertain();
     expect(blocked.status).toBe(503);
     expect(blocked.body).toMatchObject({ code: 'provider_outcome_unknown', logical_job_id: expect.any(String), retryable: false });
+    expect(blocked.body.detail).toContain(blocked.body.logical_job_id);
+    expect(blocked.body.detail).toContain('Do not generate again yet');
     expect(failing_composer.compose).toHaveBeenCalledTimes(1);
     const uncertain_db = new DatabaseSync(uncertain.store.database_path);
     try {

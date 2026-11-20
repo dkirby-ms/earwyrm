@@ -313,8 +313,10 @@ function App() {
           setHistoryUncertain(true)
           refreshMessage = ' Run status could not be refreshed; reload it before generating again.'
         }
-        const diagnostic = error instanceof ApiError && error.diagnosticId ? ` Diagnostic ID: ${error.diagnosticId}.` : ''
-        throw new Error(`${errorText(error, 'The jingle could not be generated.')} Partial provider calls may be charged. Check history before trying again.${refreshMessage}${diagnostic}`)
+        const diagnostic = error instanceof ApiError && error.diagnosticId
+          ? ` Diagnostic ID: ${error.diagnosticId}. Share it with an application administrator if you need help.`
+          : ''
+        throw new Error(`${errorText(error, 'The jingle could not be generated.')} Some AI or speech calls may still be charged. Check Your jingles for any completed result.${refreshMessage}${diagnostic}`)
       }
       controller.abort()
       clearTimeout(timer)
@@ -600,7 +602,7 @@ function App() {
                 <p className="generation-summary">
                   {generation.status === 'idle' && 'Steps light up as the server reports progress.'}
                   {generation.status === 'running' && (generation.delayed ? 'Live updates are temporarily unavailable.' : generation.step < 0 ? 'Waiting for the server to start.' : `Step ${generation.step + 1} of ${generationSteps.length}`)}
-                  {generation.status === 'failed' && 'Generation did not complete. Check the message above before trying again.'}
+                  {generation.status === 'failed' && 'The list shows the last progress update received. See the message above for the failure reason and next step.'}
                   {generation.status === 'done' && 'Both mixes are ready in Your jingles.'}
                 </p>
                 <ol role="list" aria-labelledby="generation-flow-heading" className="generation-steps">

@@ -12,7 +12,7 @@ import { lyric_allowance, lyric_budget, type PaidLyricGenerationAction } from '.
 import { AzureLyricBackend, CloudFailure, LyricCloudSettings, type LyricBackend } from './lyric_cloud.js';
 import { IMITATION, LyricWriter } from './lyric_service.js';
 import { JINGLE_VOICE_MAX_CHARACTERS, JingleDescription, JingleDirection, type JingleEstimate } from './jingle_prompt.js';
-import { jingle_diagnostic, set_jingle_diagnostic_stage, trace_jingle } from './jingle_diagnostics.js';
+import { jingle_diagnostic, safe_jingle_reason, set_jingle_diagnostic_stage, trace_jingle, type JingleStage } from './jingle_diagnostics.js';
 import { AzureScoreComposer, score_prompt, ScoreProviderProvenance, type ScoreComposer } from './score_cloud.js';
 import { ArrangementScore, score_lyric_timing, type ArrangementScore as Arrangement } from './score_dsl.js';
 import { brand_pronunciations, has_cta_rhyme, LyricRequest, LyricResult, LyricRuleError, normalize_spoken_text, validate_draft } from './lyrics.js';
@@ -118,6 +118,66 @@ class HttpError extends Error {
   constructor(readonly status: number, readonly detail: unknown) { super(typeof detail === 'string' ? detail : 'Request failed'); }
 }
 
+const lyric_failure_explanations: Record<string, string> = {
+  artist_imitation: 'the description asks to imitate a named artist or song',
+  unsupported_language: 'the description is not in a supported language',
+  unsupported_output_language: 'the generated lyrics are not in English',
+  unsupported_claims: 'the draft includes claims not supported by the description',
+  moderation_rejected: 'content screening did not approve the lyrics',
+  protected_material: 'the lyrics were flagged as matching protected material',
+  risky_claims_require_human_review: 'the description or lyrics include claims that need human review',
+  model_refusal: 'the AI service declined the request',
+  malformed_lyric_output: 'the AI service returned a response in an unusable format',
+  line_format: 'the draft does not fit the required two-line format',
+  cta_placement: 'the call to action must stay on the closing line',
+  hook_placement: 'the opening line does not fit the required format',
+  use_pronounceable_words: 'the draft contains words the pronunciation checker cannot validate',
+  unknown_pronunciation: 'the draft contains a word missing from the pronunciation dictionary',
+  syllable_labels: 'the checker could not map syllables to words',
+  unstressed_rhyme: 'the required rhyme does not fall on stressed syllables',
+  arrangement_meter: 'the draft does not match the required musical meter',
+  meter: 'the draft does not fit the required syllable count',
+  syllable_metadata: 'the draft contains inconsistent syllable information',
+  rhyme_metadata: 'the draft contains inconsistent rhyme information',
+  rhyme: 'the draft does not match the required rhyme pattern',
+  brand_count: 'the business name does not appear the required number of times',
+  cloud_authentication_failed: 'the AI service could not be authenticated; an administrator must check its configuration',
+  cloud_transport_failed: 'the connection to the AI service failed',
+  cloud_temporarily_unavailable: 'the AI service is temporarily unavailable',
+  cloud_request_failed: 'the AI service could not complete the request',
+  malformed_cloud_response: 'the AI service returned an unusable response',
+  malformed_model_envelope: 'the AI service returned an unusable response',
+  incomplete_model_output: 'the AI service returned an incomplete response',
+  missing_model_output: 'the AI service returned no lyric draft',
+  malformed_assessment: 'the lyric assessment service returned an unusable response',
+  malformed_safety_response: 'the safety service returned an unusable response',
+  incomplete_safety_response: 'the safety service returned an incomplete response',
+  invalid_cloud_endpoint: 'the AI service endpoint is not configured correctly',
+  invalid_model_deployment: 'the AI model is not configured correctly',
+  missing_lyric_cloud_configuration: 'the AI service is not configured',
+  invalid_lyric_budget: 'the AI spending limit is not configured correctly',
+  lyric_call_limit: 'the request exceeded its configured AI call limit',
+  lyric_request_too_large: 'the request is too large for the lyric service',
+  missing_jingle_direction_adapter: 'the jingle description service is not configured',
+  unknown_reason: 'the service could not provide a more specific reason',
+};
+
+function explain_lyric_failure(reasons: readonly string[]): string {
+  const explanations = [...new Set(reasons.map(reason =>
+    lyric_failure_explanations[safe_jingle_reason(reason)] ?? lyric_failure_explanations.unknown_reason))];
+  return explanations.length ? explanations.join('; ') : lyric_failure_explanations.unknown_reason;
+}
+
+const stage_labels: Record<JingleStage, string> = {
+  brief: 'reading the description',
+  lyrics: 'writing and checking the lyrics',
+  safety: 'screening the lyrics',
+  score: 'composing the music score',
+  backing: 'rendering the backing track',
+  voice: 'generating the voice',
+  mix: 'mixing and saving the audio',
+};
+
 function expand_path(value: string): string {
   return resolve(REPOSITORY_ROOT, value === '~' ? homedir() : value.startsWith('~/') ? join(homedir(), value.slice(2)) : value);
 }
@@ -217,7 +277,6 @@ function identity(response: Response): { issuer: string; subject: string } {
   return { issuer: claims.iss, subject: claims.sub };
 }
 
-type JingleStage = 'brief' | 'lyrics' | 'safety' | 'score' | 'backing' | 'voice' | 'mix';
 
 function actual_request_cost(output: OutputRecord): Decimal | null {
   const attempt = output.attempt;
@@ -966,7 +1025,7 @@ export function create_app(options: CreateAppOptions = {}): Express {
       if (claim.status === 'outcome_unknown') {
         return { status: 503, body: {
           code: 'provider_outcome_unknown', logical_job_id, retryable: false,
-          detail: 'The score provider outcome is uncertain; an operator must reconcile it before another submission.',
+          detail: `The music-score service may have accepted this request, but Earwyrm could not confirm the result. Do not generate again yet. Ask an application administrator to verify score job ${logical_job_id} with the provider before retrying.`,
         } } as const;
       }
       if (claim.status !== 'committed' || claim.score_json === null) {
@@ -987,13 +1046,15 @@ export function create_app(options: CreateAppOptions = {}): Express {
         );
         await store.commit_score_compose(owner, logical_job_id, request_sha256, score, provider_provenance, claim.attempt_count);
       } catch (error) {
-        if (jingle) jingle_diagnostic({ event: 'score_failed', reason: error instanceof CloudFailure ? error.code : 'unexpected_error' });
+        if (jingle) jingle_diagnostic({
+          event: 'score_failed', logical_job_id, reason: error instanceof CloudFailure ? error.code : 'unexpected_error',
+        });
         try { await store.finish_score_compose(owner, logical_job_id, request_sha256, 'outcome_unknown', claim.attempt_count); }
         catch { console.error('ERROR: Paid score outcome could not be persisted'); }
         console.error('ERROR: Paid score composition failed');
         return { status: 503, body: {
           code: 'provider_outcome_unknown', logical_job_id, retryable: false,
-          detail: 'The score provider outcome is uncertain; an operator must reconcile it before another submission.',
+          detail: `The music-score service may have accepted this request, but Earwyrm could not confirm the result. Do not generate again yet. Ask an application administrator to verify score job ${logical_job_id} with the provider before retrying.`,
         } } as const;
       }
     } else {
@@ -1020,7 +1081,7 @@ export function create_app(options: CreateAppOptions = {}): Express {
         console.error('ERROR: Paid score artifacts could not be committed');
         return { status: 503, body: {
           code: 'score_render_unavailable', logical_job_id, retryable: true,
-          detail: 'The committed score could not be rendered. Retry this same score job to recover it.',
+          detail: `The score was saved, but Earwyrm could not finish rendering the backing track. Ask an application administrator to recover score job ${logical_job_id}; generating a new jingle would submit a new score request.`,
         } } as const;
       }
       throw error;
@@ -1296,14 +1357,16 @@ export function create_app(options: CreateAppOptions = {}): Express {
     jingle_active = true;
     const progress = progress_id === undefined ? null : { id: progress_id, ...identity(response), stage: 'brief' as JingleStage };
     jingle_progress = progress;
+    let current_stage: JingleStage = 'brief';
     const set_stage = (stage: JingleStage) => {
+      current_stage = stage;
       set_jingle_diagnostic_stage(stage);
       if (progress) progress.stage = stage;
     };
     try {
       const estimate = await jingle_quote(response);
       const backend = await paid_lyric_backend('jingle_write', identity(response).subject);
-      if (progress) progress.stage = 'lyrics';
+      set_stage('lyrics');
       const direction = parse(JingleDirection, await (options.jingle_direction
         ? options.jingle_direction(description)
         : backend instanceof AzureLyricBackend
@@ -1345,16 +1408,26 @@ export function create_app(options: CreateAppOptions = {}): Express {
         if (lyrics.reasons.includes('fixed_pronunciation_required')) throw new HttpError(422, 'The dictionary does not contain a word in the business name or closing line. Add a pronunciation hint for a brand word, or explicitly supply a spoken spelling in your description. Your exact wording was not changed.');
         if (lyrics.reasons.includes('cta_meter')) throw new HttpError(422, 'The exact closing line cannot fit: spoken closing lines must contain one to twenty syllables. Shorten it explicitly or leave the call to action open. Your wording was not changed.');
         if (lyrics.reasons.includes('cta_brand_count')) throw new HttpError(422, 'The closing line repeats the business name more than twice. Supply different exact wording or leave the call to action open.');
-        if (lyrics.status === 'unavailable') throw new HttpError(503, 'The AI lyric service could not complete generation.');
-        if (lyrics.status === 'human_review_required') throw new HttpError(422, 'The description or lyrics include claims that require human review. Try describing the business without prices, guarantees, or regulated claims.');
-        throw new HttpError(422, 'The lyrics did not pass screening or fit the jingle. Try a short, pronounceable business name and leave the call to action open.');
+        if (lyrics.status === 'retry_exhausted') {
+          throw new HttpError(422, `The lyric writer tried ${lyrics.attempts} drafts but could not pass these checks: ${explain_lyric_failure(lyrics.reasons)}. No jingle was generated. Revise the description or closing line to address them, then try again.`);
+        }
+        if (lyrics.status === 'unavailable') {
+          throw new HttpError(503, `The lyric service could not complete generation: ${explain_lyric_failure(lyrics.reasons)}. No jingle was generated.`);
+        }
+        if (lyrics.status === 'human_review_required') {
+          throw new HttpError(422, `The lyrics need human review before a jingle can be made: ${explain_lyric_failure(lyrics.reasons)}.`);
+        }
+        throw new HttpError(422, `The lyrics were stopped by a generation check: ${explain_lyric_failure(lyrics.reasons)}. No jingle was generated. Revise the description or wording and try again.`);
       }
       const saved = await store.save_lyric_option(owner, lyric_request, lyrics);
       const brief_id = custom.brief.brief_id;
       const selection = { brief_ids: [brief_id], custom_briefs: [custom] };
       set_stage('score');
       const score = await compose_score({ ...selection, option_id: saved.option_id, confirm_paid_generation: true }, response, true, () => set_stage('backing'));
-      if (score.status !== 200) throw new HttpError(score.status, score.body.detail);
+      if (score.status !== 200) {
+        set_stage(score.body.code === 'provider_outcome_unknown' ? 'score' : 'backing');
+        throw new HttpError(score.status, score.body.detail);
+      }
       response.json(await render_selection({
         ...selection, mode: 'azure',
         lyric_selections: [{ brief_id, option_id: saved.option_id }],
@@ -1363,7 +1436,7 @@ export function create_app(options: CreateAppOptions = {}): Express {
     } catch (error) {
       if (error instanceof CloudFailure) {
         jingle_diagnostic({ event: 'request_failed', reason: error.code });
-        throw new HttpError(503, 'AI generation could not complete. No fallback audio was generated.');
+        throw new HttpError(503, `AI generation could not complete while ${stage_labels[current_stage]}: ${explain_lyric_failure([error.code])}. No fallback audio was generated.`);
       }
       if (!(error instanceof HttpError) && !(error instanceof z.ZodError) &&
           !(error instanceof StorageConflict) && !(error instanceof StorageAccessDenied)) {

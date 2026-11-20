@@ -2,12 +2,15 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import type { Response } from 'express';
 
-type Stage = 'brief' | 'lyrics' | 'safety' | 'score' | 'backing' | 'voice' | 'mix';
+/** Pipeline stages included in content-free jingle diagnostics. */
+export type JingleStage = 'brief' | 'lyrics' | 'safety' | 'score' | 'backing' | 'voice' | 'mix';
+type Stage = JingleStage;
 type ProviderOperation = 'extract_direction' | 'preflight' | 'generate' | 'assess' | 'suggest' | 'moderation' | 'protected_material' | 'compose_score';
 
 type DiagnosticEvent =
   | { event: 'request_finished'; http_status: number; duration_ms: number }
-  | { event: 'request_failed' | 'score_failed'; reason: string }
+  | { event: 'request_failed'; reason: string }
+  | { event: 'score_failed'; logical_job_id: string; reason: string }
   | { event: 'lyric_attempt_failed'; step: 'generate' | 'assess'; attempt: number; reason: string }
   | { event: 'lyric_outcome'; step: 'preflight' | 'generate' | 'assess' | 'screen'; attempts: number; outcome: 'accepted' | 'rejected' | 'retry_exhausted' | 'unavailable' | 'human_review_required'; reasons: string[] }
   | { event: 'provider_http'; operation: ProviderOperation; duration_ms: number; http_status?: number };
@@ -26,10 +29,12 @@ const safe_reasons = new Set([
   'invalid_cloud_endpoint', 'invalid_model_deployment', 'missing_lyric_cloud_configuration',
   'invalid_lyric_budget', 'lyric_call_limit', 'lyric_request_too_large', 'missing_jingle_direction_adapter',
   'score_request_too_large', 'score_output_too_large', 'invalid_score_output', 'malformed_score_output',
+  'provider_outcome_unknown', 'score_render_unavailable',
   'unexpected_error',
 ]);
 
-function safe_reason(code: string): string {
+/** Return an allowlisted reason code without exposing provider-supplied text. */
+export function safe_jingle_reason(code: string): string {
   return safe_reasons.has(code) ? code : 'unknown_reason';
 }
 
@@ -37,8 +42,8 @@ function safe_reason(code: string): string {
 export function jingle_diagnostic(entry: DiagnosticEvent): void {
   const context = active.getStore();
   if (!context) return;
-  const fields = 'reason' in entry ? { ...entry, reason: safe_reason(entry.reason) }
-    : 'reasons' in entry ? { ...entry, reasons: entry.reasons.map(safe_reason) } : entry;
+  const fields = 'reason' in entry ? { ...entry, reason: safe_jingle_reason(entry.reason) }
+    : 'reasons' in entry ? { ...entry, reasons: entry.reasons.map(safe_jingle_reason) } : entry;
   console.info(JSON.stringify({ timestamp: new Date().toISOString(), scope: 'earwyrm.jingle', ...context, ...fields }));
 }
 
