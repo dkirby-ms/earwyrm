@@ -13,7 +13,7 @@ import { canonical_json, STATIC_ROOT, StorageConflict, WebStorage } from '../src
 import { acquire_writer_lock, prepare_databases } from '../src/cloud_web.js';
 import { SAMPLE_RATE, write_wav } from '../src/dsp.js';
 import { load_inputs, render_brief } from '../src/render.js';
-import { CloudFailure, type LyricBackend } from '../src/lyric_cloud.js';
+import { AzureLyricBackend, CloudFailure, type LyricBackend } from '../src/lyric_cloud.js';
 import { LyricRequest, LyricResult, WORD } from '../src/lyrics.js';
 import { CompositionUnavailable, MelodyService } from '../src/melody_service.js';
 import { ArrangementScore, compile_score, score_lyric_timing } from '../src/score_dsl.js';
@@ -1076,6 +1076,90 @@ describe('one-page AI jingles', () => {
     expect(history.body.runs[0].attempt).toMatchObject({
       actual_cost_usd: '0.0004', jingle_ai_actual_cost_usd: '0.003',
     });
+  });
+
+  it.each(['exhausted', 'refused', 'unknown', 'screened'] as const)('correlates jingle diagnostics for a %s request without retaining content', async scenario => {
+    const root = root_dir();
+    const [brief, script] = load_inputs()[0]!;
+    const cta = script.split(/(?<=[.!?])\s+/).at(-1)!;
+    const hook = `${brief.name}, a tune up for your ride`;
+    const marker = 'private-test-marker';
+    const draft = { hook, lyrics: `${hook}\n${cta}`, syllables_per_line: [12, 16], rhyme_scheme: '--', brand_count: 2, cta };
+    const completion = (content: string) => Response.json({ choices: [{ finish_reason: 'stop', message: { content } }] });
+    let attempts = 0;
+    const send = vi.fn(async (url: string, init: RequestInit) => {
+      if (url.includes(':analyze')) return Response.json({
+        categoriesAnalysis: ['Hate', 'SelfHarm', 'Sexual', 'Violence'].map(category => ({ category, severity: category === 'Hate' ? 2 : 0 })),
+      });
+      if (url.includes(':detectProtectedMaterial')) return Response.json({ protectedMaterialAnalysis: { detected: false } });
+      const { response_format } = JSON.parse(String(init.body));
+      if (response_format.json_schema.name === 'Preflight') {
+        return completion(JSON.stringify({ english: true, risky_claims: false, artist_imitation: false }));
+      }
+      if (response_format.json_schema.name === 'Assessment') {
+        return completion(JSON.stringify({ english: true, grounded: true, risky_claims: false }));
+      }
+      attempts++;
+      if (scenario === 'refused') return Response.json({ error: { code: 'content_filter', message: marker } }, { status: 400 });
+      if (scenario === 'screened') return completion(JSON.stringify(draft));
+      if (attempts === 1) return Response.json({ error: marker }, { status: 429 });
+      if (attempts === 2) return completion(marker);
+      return completion(JSON.stringify({ ...draft, cta: marker }));
+    });
+    const lyric_backend = new AzureLyricBackend({
+      foundry_endpoint: 'https://foundry.example.test', safety_endpoint: 'https://safety.example.test', deployment: 'test',
+    }, { getToken: async () => ({ token: marker, expiresOnTimestamp: Date.now() + 60000 }) }, send);
+    const score = vi.fn();
+    const logs = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const { app, access_token } = await fixture({
+      data_dir: root,
+      environ: { ...speech_environment(root, { SPEECH_TOTAL_BUDGET_USD: '2' }), ...lyric_limits, LYRIC_ENABLED: 'true' },
+      jingle_direction: async () => {
+        if (scenario === 'unknown') throw new CloudFailure(marker);
+        return { name: brief.name, offer: 'tune ups', cta, tone: 'upbeat' };
+      },
+      lyric_backend, score_composer: { compose: score },
+    });
+    const body = { description: `Write a jingle for ${brief.name}, with tune ups. End with "${cta}" ${marker}` };
+    const unauthenticated = await request(app).post('/api/jingles').send(body);
+    expect(unauthenticated.status).toBe(401);
+    expect(unauthenticated.headers['x-earwyrm-diagnostic-id']).toBeUndefined();
+    expect(logs).not.toHaveBeenCalled();
+
+    const result = await request(app).post('/api/jingles').auth(access_token, { type: 'bearer' }).send(body);
+    const id = result.headers['x-earwyrm-diagnostic-id'];
+    expect(id).toMatch(/^[a-f0-9-]{36}$/);
+    expect(result.status).toBe(scenario === 'unknown' ? 503 : 422);
+    expect(result.body).toEqual({ detail: scenario === 'unknown'
+      ? 'AI generation could not complete. No fallback audio was generated.'
+      : 'The lyrics did not pass screening or fit the jingle. Try a short, pronounceable business name and leave the call to action open.' });
+    expect(score).not.toHaveBeenCalled();
+    const lines = logs.mock.calls.map(([line]) => String(line));
+    expect(lines.join('\n')).not.toContain(marker);
+    expect(lines.join('\n')).not.toContain(brief.name);
+    const events = lines.map(line => JSON.parse(line));
+    expect(events.every(event => event.diagnostic_id === id)).toBe(true);
+    expect(events.at(-1)).toMatchObject({ event: 'request_finished', http_status: result.status,
+      stage: scenario === 'unknown' ? 'brief' : scenario === 'screened' ? 'safety' : 'lyrics' });
+    if (scenario === 'unknown') {
+      expect(events[0]).toMatchObject({ event: 'request_failed', reason: 'unknown_reason' });
+      expect(send).not.toHaveBeenCalled();
+    } else if (scenario === 'screened') {
+      expect(attempts).toBe(1);
+      expect(events).toContainEqual(expect.objectContaining({ event: 'lyric_outcome', step: 'screen', outcome: 'rejected', reasons: ['moderation_rejected'] }));
+      expect(events.filter(event => event.stage === 'safety' && event.event === 'provider_http').map(event => event.operation))
+        .toEqual(['moderation', 'protected_material']);
+    } else if (scenario === 'refused') {
+      expect(attempts).toBe(1);
+      expect(events).toContainEqual(expect.objectContaining({ event: 'lyric_outcome', outcome: 'rejected', reasons: ['model_refusal'] }));
+      expect(events).toContainEqual(expect.objectContaining({ event: 'provider_http', operation: 'generate', http_status: 400, duration_ms: expect.any(Number) }));
+    } else {
+      expect(attempts).toBe(4);
+      expect(events.filter(event => event.event === 'lyric_attempt_failed').map(event => [event.attempt, event.reason]))
+        .toEqual([[1, 'cloud_temporarily_unavailable'], [2, 'malformed_lyric_output'], [3, 'cta_placement'], [4, 'cta_placement']]);
+      expect(events).toContainEqual(expect.objectContaining({ event: 'lyric_outcome', outcome: 'retry_exhausted', attempts: 4 }));
+      expect(events).toContainEqual(expect.objectContaining({ event: 'provider_http', operation: 'generate', http_status: 429, duration_ms: expect.any(Number) }));
+    }
   });
 
   it('does not render a fallback when a score provider fails', async () => {

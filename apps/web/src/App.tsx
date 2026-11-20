@@ -308,7 +308,8 @@ function App() {
           setHistoryUncertain(true)
           refreshMessage = ' Run status could not be refreshed; reload it before generating again.'
         }
-        throw new Error(`${errorText(error, 'The jingle could not be generated.')} Partial provider calls may be charged. Check history before trying again.${refreshMessage}`)
+        const diagnostic = error instanceof ApiError && error.diagnosticId ? ` Diagnostic ID: ${error.diagnosticId}.` : ''
+        throw new Error(`${errorText(error, 'The jingle could not be generated.')} Partial provider calls may be charged. Check history before trying again.${refreshMessage}${diagnostic}`)
       }
       controller.abort()
       clearTimeout(timer)

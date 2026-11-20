@@ -1,0 +1,44 @@
+{
+  "task_id": "jingle-diagnostic-tracing",
+  "task_slug": "jingle-diagnostic-tracing",
+  "session_name": "Jingle diagnostic tracing",
+  "parent_task": null,
+  "child_tasks": [],
+  "mode": "automatic",
+  "active_phase": "Follow-up",
+  "status": "completed",
+  "session_status": "stopped",
+  "artifact_paths": {
+    "research": ".copilot-tracking/research/2026-11-20/jingle-diagnostic-tracing-research.md",
+    "plan": ".copilot-tracking/plans/2026-11-20/jingle-diagnostic-tracing-plan.md",
+    "critique": ".copilot-tracking/reviews/plans/2026-11-20/jingle-diagnostic-tracing-plan-critique.md",
+    "changes": ".copilot-tracking/changes/2026-11-20/jingle-diagnostic-tracing-changes.md",
+    "review": ".copilot-tracking/reviews/logs/2026-11-20/jingle-diagnostic-tracing-review.md",
+    "refinement": ".copilot-tracking/reviews/logs/2026-11-20/jingle-diagnostic-tracing-refinement.md"
+  },
+  "documents": {
+    "research": [".copilot-tracking/research/2026-11-20/jingle-diagnostic-tracing-research.md"],
+    "plan": [".copilot-tracking/plans/2026-11-20/jingle-diagnostic-tracing-plan.md"],
+    "critique": [".copilot-tracking/reviews/plans/2026-11-20/jingle-diagnostic-tracing-plan-critique.md"],
+    "changes": [".copilot-tracking/changes/2026-11-20/jingle-diagnostic-tracing-changes.md"],
+    "review": [".copilot-tracking/reviews/logs/2026-11-20/jingle-diagnostic-tracing-review.md"],
+    "refinement": [".copilot-tracking/reviews/logs/2026-11-20/jingle-diagnostic-tracing-refinement.md"]
+  },
+  "confirmed_decisions": [
+    { "decision": "Canvas", "status": "current", "evidence": "Instance rpi-jingle-diagnostic-tracing, handle JGES, provider plugin:hve-core:rpi-workflow." },
+    { "decision": "Automatic session scope", "status": "current", "evidence": "User request on 2026-11-20 to implement diagnostic tracing. This root task covers paid browser jingle correlation, lyric attempt and provider outcomes without content, operator docs and offline validation. No deployment, live paid generation, or screening changes." },
+    { "decision": "Automatic progression boundary", "status": "through-review", "evidence": "User selected end-to-end." },
+    { "decision": "Research decision participation", "status": "agent-owned", "evidence": "End-to-end choice." },
+    { "decision": "Planning decision participation", "status": "agent-owned", "evidence": "End-to-end choice." },
+    { "decision": "Review decision participation", "status": "agent-owned", "evidence": "End-to-end choice." },
+    { "decision": "Follow-up decision participation", "status": "agent-owned", "evidence": "End-to-end choice." },
+    { "decision": "Planning critique", "status": "standard", "evidence": "Initial-pass default." },
+    { "decision": "Review step", "status": "run", "evidence": "Initial-pass default." },
+    { "decision": "Research disposition", "status": "executed", "evidence": "Planning Ready; C1–C5 in jingle-diagnostic-tracing-research.md." },
+    { "decision": "Plan disposition", "status": "planned", "evidence": "Draft from the current research, not a supplied plan." },
+    { "decision": "Review disposition", "status": "executed", "evidence": "Initial acceptance and refinement review in this session." }
+  ],
+  "blockers": [],
+  "next_action": { "phase": "Follow-up", "action": "Complete. No required follow-up; this change has not been deployed." },
+  "prioritized_follow_ups": []
+}

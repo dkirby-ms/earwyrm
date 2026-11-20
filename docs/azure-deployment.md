@@ -470,6 +470,31 @@ SDK resource attributes before relying on it. No in-process exporter or
 destination is configured by the app. Offline tests verify content-free spans,
 duration measurements and reported token counts, not export delivery.
 
+#### Diagnose a failed browser jingle
+
+Copy the **Diagnostic ID** from the failure message. It is also available as
+`X-Earwyrm-Diagnostic-Id` on `POST /api/jingles` in the browser's Network tab.
+Search for that ID in the local API terminal or the container **console** logs
+in Azure Container Apps. For older requests, use your configured log
+destination if it retained the console stream. This does not require an
+OpenTelemetry exporter.
+
+The matching JSON lines have `scope: "earwyrm.jingle"`. Start with
+`request_finished` for the final stage and HTTP status. Then check:
+
+* `lyric_outcome` for the lyric step, result, and reason codes. For example,
+  `rejected` with `model_refusal` is different from `retry_exhausted`
+  with `cta_placement`.
+* `lyric_attempt_failed` for the reason each candidate failed, including the
+  final attempt.
+* `provider_http` for the operation, elapsed milliseconds, and upstream HTTP
+  status when a response was received. HTTP 200 does not mean that the model
+  output passed validation.
+
+The logs do not include prompts, draft lyrics, provider responses, credentials,
+or account IDs. They do not confirm charges and cannot explain requests made
+before the diagnostic feature was deployed.
+
 The `azure.yaml` web service selects `Dockerfile.web`. That image installs
 FluidSynth and `fluid-soundfont-gm`, sets `EARWYRM_SOUNDFONT` to
 `/usr/share/sounds/sf2/FluidR3_GM.sf2`, and retains the package notice at

@@ -12,11 +12,13 @@ interface ApiRequestOptions {
 /** An HTTP error response, including the status needed to handle specific API outcomes. */
 export class ApiError extends Error {
   readonly status: number
+  readonly diagnosticId?: string
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, diagnosticId?: string) {
     super(message)
     this.name = 'ApiError'
     this.status = status
+    this.diagnosticId = diagnosticId
   }
 }
 
@@ -75,7 +77,9 @@ async function requestApi(
     } catch (error) {
       if (!(error instanceof SyntaxError)) throw error
     }
-    throw new ApiError(response.status, detail)
+    const diagnosticId = response.headers.get('X-Earwyrm-Diagnostic-Id')
+    throw new ApiError(response.status, detail,
+      diagnosticId && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(diagnosticId) ? diagnosticId : undefined)
   }
 
   return response

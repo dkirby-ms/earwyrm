@@ -112,7 +112,9 @@ function installMocks(options: {
         await options.waitForGeneration
         generated = true
         history = { estimate: null, unavailable_reason: 'Awaiting reconciliation', runs: [run] }
-        return options.failGenerate ? Response.json({ detail: 'Provider failed' }, { status: 502 }) : Response.json(run)
+        return options.failGenerate ? Response.json({ detail: 'Provider failed' }, {
+          status: 502, headers: { 'X-Earwyrm-Diagnostic-Id': 'a08940a6-6b20-42b0-98ab-66b98b51e013' },
+        }) : Response.json(run)
       }
       if (generated && options.failRefreshAfterGenerate) return Response.json({ detail: 'Status unavailable' }, { status: 503 })
       return Response.json(history)
@@ -197,6 +199,7 @@ describe('Jingle workspace', () => {
     await waitFor(() => expect(safety).toHaveAttribute('aria-current', 'step'))
     finish()
     expect(await screen.findByRole('alert')).toHaveTextContent('Provider failed')
+    expect(screen.getByRole('alert')).toHaveTextContent('Diagnostic ID: a08940a6-6b20-42b0-98ab-66b98b51e013')
     expect(safety).toHaveTextContent('Last reported')
     expect(safety).not.toHaveAttribute('aria-current')
     expect(score).not.toHaveTextContent('Done')

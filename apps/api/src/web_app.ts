@@ -12,6 +12,7 @@ import { lyric_allowance, lyric_budget, type PaidLyricGenerationAction } from '.
 import { AzureLyricBackend, CloudFailure, LyricCloudSettings, type LyricBackend } from './lyric_cloud.js';
 import { IMITATION, LyricWriter } from './lyric_service.js';
 import { JINGLE_VOICE_MAX_CHARACTERS, JingleDescription, JingleDirection, type JingleEstimate } from './jingle_prompt.js';
+import { jingle_diagnostic, set_jingle_diagnostic_stage, trace_jingle } from './jingle_diagnostics.js';
 import { AzureScoreComposer, score_prompt, ScoreProviderProvenance, type ScoreComposer } from './score_cloud.js';
 import { ArrangementScore, score_lyric_timing, type ArrangementScore as Arrangement } from './score_dsl.js';
 import { has_cta_rhyme, LyricRequest, LyricResult, LyricRuleError, validate_draft } from './lyrics.js';
@@ -935,7 +936,8 @@ export function create_app(options: CreateAppOptions = {}): Express {
           provider.provenance ?? { provider: 'injected', deployment: null },
         );
         await store.commit_score_compose(owner, logical_job_id, request_sha256, score, provider_provenance, claim.attempt_count);
-      } catch {
+      } catch (error) {
+        if (jingle) jingle_diagnostic({ event: 'score_failed', reason: error instanceof CloudFailure ? error.code : 'unexpected_error' });
         try { await store.finish_score_compose(owner, logical_job_id, request_sha256, 'outcome_unknown', claim.attempt_count); }
         catch { console.error('ERROR: Paid score outcome could not be persisted'); }
         console.error('ERROR: Paid score composition failed');
@@ -1234,18 +1236,21 @@ export function create_app(options: CreateAppOptions = {}): Express {
     response.json({ stage });
   });
 
-  app.post('/api/jingles', ...authorized('renders.write'), async (request, response) => {
+  app.post('/api/jingles', ...authorized('renders.write'), (request, response) => trace_jingle(response, async () => {
     const { description, progress_id } = parse(z.strictObject({ description: JingleDescription, progress_id: z.uuid().optional() }), request.body);
     if (IMITATION.test(description)) throw new HttpError(422, 'Describe an original mood or genre without asking to imitate an artist or song.');
     if (jingle_active || render_active || lyrics_active) throw new HttpError(409, 'Another generation is in progress. Try again when it finishes.');
     jingle_active = true;
     const progress = progress_id === undefined ? null : { id: progress_id, ...identity(response), stage: 'brief' as JingleStage };
     jingle_progress = progress;
-    const set_stage = (stage: JingleStage) => { if (progress) progress.stage = stage; };
+    const set_stage = (stage: JingleStage) => {
+      set_jingle_diagnostic_stage(stage);
+      if (progress) progress.stage = stage;
+    };
     try {
       const estimate = await jingle_quote(response);
       const backend = await paid_lyric_backend('jingle_write', identity(response).subject);
-      set_stage('lyrics');
+      if (progress) progress.stage = 'lyrics';
       const direction = parse(JingleDirection, await (options.jingle_direction
         ? options.jingle_direction(description)
         : backend instanceof AzureLyricBackend
@@ -1269,6 +1274,7 @@ export function create_app(options: CreateAppOptions = {}): Express {
         throw error;
       }
       const lyric_request = LyricRequest.parse({ ...custom, product_path: 'spoken', creative_direction: description });
+      set_stage('lyrics');
       const lyrics = await new LyricWriter(backend).write(lyric_request, () => set_stage('safety'));
       const store = await storage();
       const owner = identity(response).subject;
@@ -1289,13 +1295,20 @@ export function create_app(options: CreateAppOptions = {}): Express {
         composition_selections: [{ brief_id, job_id: score.body.job_id }],
       }, response, estimate, set_stage));
     } catch (error) {
-      if (error instanceof CloudFailure) throw new HttpError(503, 'AI generation could not complete. No fallback audio was generated.');
+      if (error instanceof CloudFailure) {
+        jingle_diagnostic({ event: 'request_failed', reason: error.code });
+        throw new HttpError(503, 'AI generation could not complete. No fallback audio was generated.');
+      }
+      if (!(error instanceof HttpError) && !(error instanceof z.ZodError) &&
+          !(error instanceof StorageConflict) && !(error instanceof StorageAccessDenied)) {
+        jingle_diagnostic({ event: 'request_failed', reason: 'unexpected_error' });
+      }
       throw error;
     } finally {
       jingle_progress = null;
       jingle_active = false;
     }
-  });
+  }));
   app.get('/api/renders/:run_id', ...authorized('renders.read'), async (request, response) => {
     const run = await (await storage()).get_run(String(request.params.run_id), identity(response).subject);
     if (!run) throw new HttpError(404, 'Render run was not found');

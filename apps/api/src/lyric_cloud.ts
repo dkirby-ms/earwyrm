@@ -6,6 +6,7 @@ import { z } from "zod";
 import { GuidedLyricCandidate, LyricDraft, LyricRequest, POLICIES } from "./lyrics.js";
 import { JingleSuggestion, type JingleAdvisor, type JingleDiscussion } from "./jingle_chat.js";
 import { JingleDirection } from "./jingle_prompt.js";
+import { trace_jingle_provider } from "./jingle_diagnostics.js";
 
 export const SCOPE = "https://cognitiveservices.azure.com/.default";
 export const CATEGORIES = new Set(["Hate", "SelfHarm", "Sexual", "Violence"]);
@@ -87,6 +88,12 @@ export function wire_schema(model: z.ZodType): unknown {
 /** Fetch-compatible transport; injected tests must not make paid requests. */
 export type CloudTransport = (input: string, init: RequestInit) => Promise<Response>;
 
+const MODEL_OPERATIONS = {
+  JingleDirection: "extract_direction", Preflight: "preflight", LyricDraft: "generate",
+  Assessment: "assess", JingleSuggestion: "suggest",
+} as const;
+type ModelSchemaName = keyof typeof MODEL_OPERATIONS;
+
 /** Single-attempt Azure HTTP adapter with bounded waits and content-free failures. */
 export class AzureLyricBackend implements LyricBackend, JingleAdvisor {
   constructor(
@@ -95,7 +102,7 @@ export class AzureLyricBackend implements LyricBackend, JingleAdvisor {
     private readonly consume?: (kind: 'model' | 'safety') => void,
   ) {}
 
-  private async post(kind: 'model' | 'safety', url: string, body: Record<string, unknown>): Promise<unknown> {
+  private async post(kind: 'model' | 'safety', operation: (typeof MODEL_OPERATIONS)[ModelSchemaName] | "moderation" | "protected_material", url: string, body: Record<string, unknown>): Promise<unknown> {
     const payload = JSON.stringify(body);
     if (this.consume && Buffer.byteLength(payload) > 65536) throw new CloudFailure('lyric_request_too_large');
     this.consume?.(kind);
@@ -111,7 +118,7 @@ export class AzureLyricBackend implements LyricBackend, JingleAdvisor {
         if (!token) throw new CloudFailure("cloud_authentication_failed");
         let response: Response;
         try {
-          response = await this.client(url, { method: "POST", redirect: "manual", signal: AbortSignal.timeout(30000), headers: { Authorization: `Bearer ${token.token}`, "Content-Type": "application/json" }, body: payload });
+          response = await trace_jingle_provider(operation, () => this.client(url, { method: "POST", redirect: "manual", signal: AbortSignal.timeout(30000), headers: { Authorization: `Bearer ${token.token}`, "Content-Type": "application/json" }, body: payload }));
         } catch (error) {
           if (!(error instanceof TypeError) && !(error instanceof DOMException)) throw error;
           throw new CloudFailure("cloud_transport_failed", { retryable: true });
@@ -140,8 +147,8 @@ export class AzureLyricBackend implements LyricBackend, JingleAdvisor {
     });
   }
 
-  private async complete(system: string, data: Record<string, unknown>, model: z.ZodType, name: string): Promise<string> {
-    const raw = await this.post('model', `${endpoint(this.settings.foundry_endpoint)}/openai/v1/chat/completions`, {
+  private async complete(system: string, data: Record<string, unknown>, model: z.ZodType, name: ModelSchemaName): Promise<string> {
+    const raw = await this.post('model', MODEL_OPERATIONS[name], `${endpoint(this.settings.foundry_endpoint)}/openai/v1/chat/completions`, {
       model: this.settings.deployment,
       messages: [{ role: "system", content: system }, { role: "user", content: JSON.stringify(data) }],
       response_format: { type: "json_schema", json_schema: { name, strict: true, schema: wire_schema(model) } },
@@ -156,7 +163,7 @@ export class AzureLyricBackend implements LyricBackend, JingleAdvisor {
     return choice.message.content;
   }
 
-  private async assessment<T>(system: string, data: Record<string, unknown>, model: z.ZodType<T>, name: string): Promise<T> {
+  private async assessment<T>(system: string, data: Record<string, unknown>, model: z.ZodType<T>, name: ModelSchemaName): Promise<T> {
     const text = await this.complete(system, data, model, name);
     let raw: unknown;
     try { raw = JSON.parse(text); }
@@ -217,8 +224,8 @@ export class AzureLyricBackend implements LyricBackend, JingleAdvisor {
   /** Require exactly four valid moderation categories and a separate protected-material verdict. */
   async screen(text: string): Promise<Screening> {
     const base = `${endpoint(this.settings.safety_endpoint)}/contentsafety`;
-    const moderation_data = await this.post('safety', `${base}/text:analyze?api-version=2024-09-01`, { text, categories: [...CATEGORIES].sort(), outputType: "FourSeverityLevels" });
-    const protected_data = await this.post('safety', `${base}/text:detectProtectedMaterial?api-version=2024-09-01`, { text });
+    const moderation_data = await this.post('safety', "moderation", `${base}/text:analyze?api-version=2024-09-01`, { text, categories: [...CATEGORIES].sort(), outputType: "FourSeverityLevels" });
+    const protected_data = await this.post('safety', "protected_material", `${base}/text:detectProtectedMaterial?api-version=2024-09-01`, { text });
     const moderation = Moderation.safeParse(moderation_data), protected_material = Protected.safeParse(protected_data);
     if (!moderation.success || !protected_material.success) throw new CloudFailure("malformed_safety_response");
     const categories = moderation.data.categoriesAnalysis;

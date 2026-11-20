@@ -7,6 +7,7 @@ import {
   context, defaultTextMapSetter, metrics, propagation, SpanKind, SpanStatusCode, trace, type AttributeValue, type Attributes, type SpanStatus,
 } from "@opentelemetry/api";
 import { z } from "zod";
+import { trace_jingle_provider } from "./jingle_diagnostics.js";
 import { ArrangementScore, type ArrangementScore as Arrangement } from "./score_dsl.js";
 import { CloudFailure, LyricCloudSettings, ModelRefusal, SCOPE, wire_schema, type CloudTransport } from "./lyric_cloud.js";
 import { LyricRequest, LyricResult, Text, validate_draft, type LyricRequest as Request, type LyricResult as Result } from "./lyrics.js";
@@ -225,13 +226,13 @@ export class AzureScoreComposer implements ScoreComposer {
         "Content-Type": "application/json",
       };
       propagation.inject(context.active(), headers, defaultTextMapSetter);
-      response = await this.client(`${this.settings.foundry_endpoint.replace(/\/$/, "")}/openai/v1/chat/completions`, {
+      response = await trace_jingle_provider("compose_score", () => this.client(`${this.settings.foundry_endpoint.replace(/\/$/, "")}/openai/v1/chat/completions`, {
         method: "POST",
         redirect: "manual",
         signal: AbortSignal.timeout(30000),
         headers,
         body: payload,
-      });
+      }));
     } catch (error) {
       if (!(error instanceof TypeError) && !(error instanceof DOMException)) throw error;
       throw new CloudFailure("cloud_transport_failed", { retryable: true });
