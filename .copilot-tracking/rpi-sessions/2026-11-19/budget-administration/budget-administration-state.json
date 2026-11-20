@@ -1,0 +1,44 @@
+{
+  "task_id": "budget-administration",
+  "task_slug": "budget-administration",
+  "session_name": "Budget administration",
+  "parent_task": null,
+  "child_tasks": [],
+  "mode": "automatic",
+  "active_phase": "Follow-up",
+  "status": "completed",
+  "session_status": "stopped",
+  "artifact_paths": {
+    "research": ".copilot-tracking/research/2026-11-19/budget-administration-research.md",
+    "plan": ".copilot-tracking/plans/2026-11-19/budget-administration-plan.md",
+    "critique": ".copilot-tracking/reviews/plans/2026-11-19/budget-administration-plan-critique.md",
+    "changes": ".copilot-tracking/changes/2026-11-19/budget-administration-changes.md",
+    "review": ".copilot-tracking/reviews/logs/2026-11-19/budget-administration-review.md",
+    "refinement": ".copilot-tracking/reviews/logs/2026-11-19/budget-administration-refinement.md"
+  },
+  "documents": {
+    "research": [".copilot-tracking/research/2026-11-19/budget-administration-research.md"],
+    "plan": [".copilot-tracking/plans/2026-11-19/budget-administration-plan.md"],
+    "critique": [".copilot-tracking/reviews/plans/2026-11-19/budget-administration-plan-critique.md"],
+    "changes": [".copilot-tracking/changes/2026-11-19/budget-administration-changes.md"],
+    "review": [".copilot-tracking/reviews/logs/2026-11-19/budget-administration-review.md"],
+    "refinement": [".copilot-tracking/reviews/logs/2026-11-19/budget-administration-refinement.md"]
+  },
+  "confirmed_decisions": [
+    {"decision":"Automatic session scope","status":"current","evidence":"User request: admin budget visibility and modification, per-user $5 total trial budgets, future subscription groundwork. Root task budget-administration. Local code, tests, and directly related documentation only; no deployment, live budget changes, payment integration, or subscription billing."},
+    {"decision":"Automatic progression boundary","status":"through-review","evidence":"User selected Handle it end to end on 2026-11-19."},
+    {"decision":"Research decision participation","status":"agent-owned","evidence":"Handle it end to end"},
+    {"decision":"Planning decision participation","status":"agent-owned","evidence":"Handle it end to end"},
+    {"decision":"Review decision participation","status":"agent-owned","evidence":"Handle it end to end"},
+    {"decision":"Follow-up decision participation","status":"agent-owned","evidence":"Handle it end to end"},
+    {"decision":"Planning critique","status":"standard","evidence":"Initial-pass default"},
+    {"decision":"Review step","status":"run","evidence":"Initial-pass default"},
+    {"decision":"Canvas","status":"current","evidence":"instance rpi-budget-administration, handle 5BXG, extensionId plugin:hve-core:rpi-workflow"},
+    {"decision":"Research disposition","status":"executed","evidence":"C1-C5, D1-D5; Planning Readiness Ready in research artifact"},
+    {"decision":"Plan disposition","status":"planned","evidence":"Task-centered plan drafted here; standard critique Complete/Pass."},
+    {"decision":"Review disposition","status":"executed","evidence":"Initial standard acceptance and subtractive refinement reviews; direct comparison, no helpers."}
+  ],
+  "blockers": [],
+  "next_action": {"phase":"Follow-up","action":"Complete. No user action required. Changes are local and validated; deployment and subscription billing remain out of scope."},
+  "prioritized_follow_ups": []
+}

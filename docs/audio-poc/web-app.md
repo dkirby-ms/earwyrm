@@ -102,6 +102,53 @@ only when both amounts are recorded. For the shared budget, a jingle counts for
 at least its Speech estimate even after reconciliation. An uncertain Speech
 attempt blocks further generation until it is reconciled.
 
+## Manage budgets
+
+Open **Manage access**, then **Budgets and usage**. Administrators can inspect
+shared AI/safety and Speech usage, recorded actual charges, and individual
+lifetime balances. Select **Edit AI budget**, **Edit Speech budget**, or
+**Edit budget for** a user, enter the new total in USD, and save.
+Use **Refresh budgets** to reload current usage.
+
+Every user, including administrators and existing enabled users, defaults to a
+$5 lifetime trial allowance across paid chat, lyrics, score composition, and
+Speech. Existing attributable usage counts toward that allowance. The creation
+workspace shows the current balance. Free previews remain free.
+
+An allowance is a total spending ceiling, not a top-up amount. To grant another
+$5 to a user with a $5 limit, set the limit to $10. Limits accept zero and up to
+12 decimal places. Lowering a limit below current usage leaves history intact,
+shows zero remaining, and prevents further paid reservations. Allowances do not
+reset monthly. Subscription billing and automatic premium grants are not
+implemented.
+
+Shared limits initially use `LYRIC_TOTAL_BUDGET_USD` and
+`SPEECH_TOTAL_BUDGET_USD`. Saved database overrides take precedence over those
+totals on subsequent reservations and survive restarts. Shared and per-user
+limits both apply; changing them does not enable disabled services, grant
+permissions, change price estimates, bypass reconciliation, or raise
+per-operation safety caps.
+
+Charged or reserved usage is conservative, not an invoice: text reservations
+retain their worst-case ceilings, and jingle Speech retains at least its
+estimate after reconciliation. Recorded actuals include only submitted billing
+evidence. Historical text reservations without owner information remain in the
+shared total and are shown separately; they are not assigned to a guessed user.
+Actual records are read-only here. Use the existing reconciliation workflow to
+record provider charges, rather than altering historical usage to grant credit.
+
+Budget endpoints are `GET /api/budget` for the caller's own balance and
+`GET/PUT /api/admin/budgets` for administrators. Writes require `renders.write`
+and current enabled administrator permission. The strict write body contains
+`scope` (`text`, `speech`, or `user`) and decimal-string `limit_usd`; user updates
+also require an existing user's `owner` subject. Actual charges and usage
+counters are not writable through this endpoint.
+
+SQLite adds budget storage and nullable lyric ownership on initialization.
+PostgreSQL uses the existing additive upgrade path; see the
+[Azure runbook](../azure-deployment.md#shared-ai-configuration). Neither upgrade
+resets usage or grants new permissions.
+
 ## Configure generation
 
 Configure Foundry, Content Safety, and Speech using the

@@ -3,7 +3,7 @@ import type { IPublicClientApplication } from '@azure/msal-browser'
 import { ApiError, apiBlob, apiJson } from './api'
 import { initializeAuth } from './auth'
 import type {
-  Access, AccessRequestStatus, AdminAccessRequest, EvaluationDraft, JingleHistory,
+  Access, AccessRequestStatus, AdminAccessRequest, BudgetBalance, BudgetOverview, EvaluationDraft, JingleHistory,
   Output, PaidAttempt, PublicConfig, RenderRun, UserAccess, UserAccessDraft,
 } from './types'
 
@@ -64,6 +64,9 @@ function App() {
   const [generation, setGeneration] = useState<{ status: 'idle' | 'running' | 'failed' | 'done'; step: number; delayed?: boolean }>({ status: 'idle', step: -1 })
   const [adminUsers, setAdminUsers] = useState<readonly UserAccess[]>([])
   const [adminRequests, setAdminRequests] = useState<readonly AdminAccessRequest[]>([])
+  const [budget, setBudget] = useState<BudgetBalance | null>(null)
+  const [adminBudgets, setAdminBudgets] = useState<BudgetOverview | null>(null)
+  const [budgetDraft, setBudgetDraft] = useState<{ scope: 'text' | 'speech' | 'user'; owner: string; limit_usd: string }>({ scope: 'text', owner: '', limit_usd: '' })
   const [userDraft, setUserDraft] = useState<UserAccessDraft>(emptyDraft)
   const [evaluations, setEvaluations] = useState<Readonly<Record<string, EvaluationDraft>>>({})
   const [evidence, setEvidence] = useState<Readonly<Record<string, string>>>({})
@@ -93,8 +96,12 @@ function App() {
   }
 
   async function refreshHistory(authClient: IPublicClientApplication, publicConfig: PublicConfig): Promise<void> {
-    const result = await apiJson<JingleHistory>(authClient, publicConfig, '/api/jingles', scopes.read)
+    const [result, balance] = await Promise.all([
+      apiJson<JingleHistory>(authClient, publicConfig, '/api/jingles', scopes.read),
+      apiJson<BudgetBalance>(authClient, publicConfig, '/api/budget', scopes.read),
+    ])
     setHistory(result)
+    setBudget(balance)
     setHistoryUncertain(false)
   }
 
@@ -210,6 +217,9 @@ function App() {
       setAccess(null)
       setRequestStatus(null)
       setHistory(null)
+      setBudget(null)
+      setAdminBudgets(null)
+      setBudgetDraft({ scope: 'text', owner: '', limit_usd: '' })
       setHistoryUncertain(false)
       setDescription('')
       setGeneration({ status: 'idle', step: -1 })
@@ -363,12 +373,31 @@ function App() {
 
   async function loadAdmin(): Promise<void> {
     if (!client || !config) return
-    const [users, requests] = await Promise.all([
+    const [users, requests, budgets] = await Promise.all([
       apiJson<{ users: UserAccess[] }>(client, config, '/api/admin/users', scopes.read),
       apiJson<{ requests: AdminAccessRequest[] }>(client, config, '/api/admin/access-requests', scopes.read),
+      apiJson<BudgetOverview>(client, config, '/api/admin/budgets', scopes.read),
     ])
     setAdminUsers(users.users)
     setAdminRequests(requests.requests)
+    setAdminBudgets(budgets)
+    setBudgetDraft(current => current.limit_usd ? current : { scope: 'text', owner: '', limit_usd: budgets.text.limit_usd ?? '' })
+  }
+
+  async function saveBudget(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault()
+    if (!client || !config) return
+    const submitted = budgetDraft.scope === 'user' ? budgetDraft : { scope: budgetDraft.scope, limit_usd: budgetDraft.limit_usd }
+    await runAction('Saving budget limit', async () => {
+      await apiJson(client, config, '/api/admin/budgets', scopes.write, { method: 'PUT', body: submitted })
+      setAnnouncement('Budget limit saved. Refreshing balances.')
+      try {
+        await Promise.all([loadAdmin(), refreshHistory(client, config)])
+      } catch (error) {
+        throw new Error(`The budget limit was saved, but balances could not be refreshed: ${errorText(error, 'Reload to check current balances.')}`)
+      }
+      setAnnouncement('Budget limit saved. Existing usage has not changed.')
+    })
   }
 
   function openAdmin(): void {
@@ -407,6 +436,7 @@ function App() {
       if (identity && submitted.issuer === identity.issuer && submitted.subject === identity.subject && (!submitted.enabled || !submitted.admin)) {
         setAdminUsers([])
         setAdminRequests([])
+        setAdminBudgets(null)
         setAccess(submitted.enabled ? { ...identity, admin: false, paid_speech: submitted.paid_speech } : null)
         setView('workspace')
         setAnnouncement('Access saved. Your administrator access has been removed.')
@@ -476,6 +506,7 @@ function App() {
                 <p id="description-help" className="description-help">Include the business or product name and the sound you want. Add an offer or a call to action if you have one.</p>
                 <textarea id="description" value={description} onChange={event => setDescription(event.currentTarget.value)} maxLength={400} required disabled={busy} placeholder="An upbeat jingle for Cedar Loop Bike Repair, with a bright synth hook for spring tune-ups." aria-describedby="description-help" />
                 <p className="character-count">{description.length} / 400 characters</p>
+                {budget && <p className="budget-balance">Lifetime allowance: ${budget.limit_usd}. Charged or reserved: ${budget.charged_usd}. Remaining: ${budget.remaining_usd}. Contact an administrator to adjust your allowance.</p>}
                 {history?.estimate && <div className="estimate-summary">
                   <strong>Maximum estimated cost: ${history.estimate.total_max_usd}</strong>
                   <p>AI and safety: ${history.estimate.model_and_safety_max_usd} · Speech: ${history.estimate.speech_max_usd}. Hosting is not included.</p>
@@ -579,6 +610,38 @@ function App() {
           <section className="panel workspace-view" aria-labelledby="admin-heading" hidden={view !== 'admin' || !access.admin}>
             <h2 id="admin-heading" ref={adminHeading} tabIndex={-1}>Manage application access</h2>
             <p>Granting enables baseline access. Jingle generation also depends on service and budget settings. Paid Speech access applies only to legacy endpoints.</p>
+            <section className="budget-admin" aria-labelledby="budgets-heading">
+              <div className="section-heading">
+                <h3 id="budgets-heading">Budgets and usage</h3>
+                <button className="button button-secondary" type="button" disabled={busy} onClick={() => void runAction('Refreshing budgets', loadAdmin)}>Refresh budgets</button>
+              </div>
+              <p>All amounts are USD. Limits are lifetime totals, not additional credits. Lowering a limit never removes usage; zero stops new spending.</p>
+              {adminBudgets ? <>
+                <dl className="budget-summary">
+                  <div><dt>Shared AI and safety</dt><dd>Limit: {adminBudgets.text.limit_usd === null ? 'Not configured' : `$${adminBudgets.text.limit_usd}`}. Charged or reserved: ${adminBudgets.text.charged_usd}. Remaining: {adminBudgets.text.remaining_usd === null ? 'Unavailable' : `$${adminBudgets.text.remaining_usd}`}.</dd>
+                    <dd><button className="button button-secondary" type="button" disabled={busy} onClick={() => setBudgetDraft({ scope: 'text', owner: '', limit_usd: adminBudgets.text.limit_usd ?? '' })}>Edit AI budget</button></dd></div>
+                  <div><dt>Shared Speech</dt><dd>Limit: {adminBudgets.speech.limit_usd === null ? 'Not configured' : `$${adminBudgets.speech.limit_usd}`}. Charged or reserved: ${adminBudgets.speech.charged_usd}. Remaining: {adminBudgets.speech.remaining_usd === null ? 'Unavailable' : `$${adminBudgets.speech.remaining_usd}`}.</dd>
+                    <dd><button className="button button-secondary" type="button" disabled={busy} onClick={() => setBudgetDraft({ scope: 'speech', owner: '', limit_usd: adminBudgets.speech.limit_usd ?? '' })}>Edit Speech budget</button></dd></div>
+                </dl>
+                <p>Recorded actual charges: Speech ${adminBudgets.actuals.speech_usd}; AI and safety ${adminBudgets.actuals.ai_usd}. Speech attempts awaiting reconciliation: {adminBudgets.actuals.unreconciled_speech_attempts}.</p>
+                <p className="muted">Actuals include only recorded billing evidence, not all provider usage. Text uses worst-case reservations. Historical text charges without a user: ${adminBudgets.unattributed_text_usd}, included in the shared AI total.</p>
+                <h4>User lifetime allowances</h4>
+                <p>Users start with a $5 trial allowance shared across paid features. Existing attributable usage counts. Allowances do not reset automatically.</p>
+                <ul className="stack budget-users">{adminBudgets.users.map(user => <li key={`${user.issuer}:${user.subject}`}>
+                  <p><code>{user.subject}</code>: limit ${user.limit_usd}; charged or reserved ${user.charged_usd}; remaining ${user.remaining_usd}.</p>
+                  <button className="button button-secondary" type="button" disabled={busy} onClick={() => setBudgetDraft({ scope: 'user', owner: user.subject, limit_usd: user.limit_usd ?? '' })}>Edit budget for {user.subject}</button>
+                </li>)}</ul>
+                <form className="budget-limit-form" onSubmit={event => void saveBudget(event)}>
+                  <fieldset disabled={busy}>
+                    <legend>Edit budget limit</legend>
+                    <p className="budget-target">Editing: {budgetDraft.scope === 'user' ? `Lifetime allowance for ${budgetDraft.owner}` : budgetDraft.scope === 'text' ? 'Shared AI and safety' : 'Shared Speech'}</p>
+                    <label>Budget limit (USD)<input type="text" inputMode="decimal" pattern="[0-9]{1,8}(\.[0-9]{1,12})?" maxLength={21} required value={budgetDraft.limit_usd} aria-describedby="budget-limit-help" onChange={event => { const limit_usd = event.currentTarget.value; setBudgetDraft(current => ({ ...current, limit_usd })) }} /></label>
+                    <p id="budget-limit-help">Enter the new total limit, for example 5 or 10.50. Raising a shared limit does not enable disabled services or change per-action caps.</p>
+                    <button className="button button-primary" type="submit">Save budget limit</button>
+                  </fieldset>
+                </form>
+              </> : <p role="status">Budget data has not loaded. Use Refresh budgets to retry.</p>}
+            </section>
             <section aria-labelledby="access-requests-heading">
               <h3 id="access-requests-heading">Pending access requests</h3>
               {adminRequests.length ? <ul className="stack">{adminRequests.map(request => <li key={request.request_id}>

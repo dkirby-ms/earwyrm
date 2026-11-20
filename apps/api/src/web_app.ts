@@ -85,6 +85,12 @@ export const UserAccessSubmission = z.object({
 });
 export type UserAccessSubmission = z.infer<typeof UserAccessSubmission>;
 const AccessRequestBody = z.strictObject({});
+const BudgetLimit = z.string().regex(/^\d{1,8}(?:\.\d{1,12})?$/, 'Use a nonnegative USD decimal with up to 12 decimal places');
+const BudgetSubmission = z.discriminatedUnion('scope', [
+  z.strictObject({ scope: z.literal('text'), limit_usd: BudgetLimit }),
+  z.strictObject({ scope: z.literal('speech'), limit_usd: BudgetLimit }),
+  z.strictObject({ scope: z.literal('user'), owner: z.string().min(1).max(1024).refine(value => value === value.trim()), limit_usd: BudgetLimit }),
+]);
 const AccessRequestDecisionBody = z.strictObject({ decision: z.enum(['approved', 'denied']) });
 const ScoreReconciliationSubmission = z.strictObject({
   owner: z.string().trim().min(1).max(200),
@@ -263,6 +269,7 @@ function normalize_answer(value: string): string { return value.trim().toLowerCa
 /** Async storage surface accepted by the HTTP layer; injected stores retain the same owner checks. */
 export type WebAppStorage = Pick<WebStorage,
   'root' | 'work_dir' | 'database_url' | 'get_user' | 'list_users_as_admin' | 'set_user_as_admin' |
+  'budgets_as_admin' | 'set_budget_as_admin' | 'get_user_budget' | 'check_user_jingle_budget' |
   'get_access_request' | 'request_access' | 'list_access_requests_as_admin' | 'decide_access_request_as_admin' |
   'has_unreconciled_paid_attempt' | 'create_run' | 'reserve_paid_run' | 'mark_attempt_submitted' |
   'save_output' | 'set_run_status' | 'finish_attempt' | 'get_run' | 'list_runs' | 'list_outputs' |
@@ -346,11 +353,11 @@ export function create_app(options: CreateAppOptions = {}): Express {
     return store.has_lyric_budget();
   }
 
-  async function paid_lyric_backend(action: PaidLyricGenerationAction | 'jingle_write') {
+  async function paid_lyric_backend(action: PaidLyricGenerationAction | 'jingle_write', owner: string) {
     const settings = lyric_settings();
     const budget = lyric_budget(source);
     const allowance = lyric_allowance(action, budget);
-    await (await storage()).reserve_lyric_action(action === 'jingle_write' ? 'write' : action, allowance.cost, budget.per_action, budget.total);
+    await (await storage()).reserve_lyric_action(action === 'jingle_write' ? 'write' : action, allowance.cost, budget.per_action, budget.total, owner);
     if (options.lyric_backend) return options.lyric_backend;
     const clientId = source.LYRIC_MANAGED_IDENTITY_CLIENT_ID;
     const authOptions = { retryOptions: { maxRetries: 0 } };
@@ -565,6 +572,8 @@ export function create_app(options: CreateAppOptions = {}): Express {
     [/^\/api\/lyrics\/options$/, ['GET', 'POST']],
     [/^\/api\/chat$/, ['GET', 'POST']],
     [/^\/api\/admin\/users$/, ['GET', 'PUT']],
+    [/^\/api\/admin\/budgets$/, ['GET', 'PUT']],
+    [/^\/api\/budget$/, ['GET']],
     [/^\/api\/admin\/access-requests$/, ['GET']],
     [/^\/api\/admin\/access-requests\/[^/]+\/decision$/, ['POST']],
     [/^\/api\/admin\/score-reservations\/reconcile$/, ['POST']],
@@ -649,6 +658,40 @@ export function create_app(options: CreateAppOptions = {}): Express {
       if (error instanceof StorageNotFound) throw new HttpError(404, 'Access request was not found');
       throw error;
     }
+  });
+  function budget_defaults() {
+    const configured = (name: string): string | null => {
+      const value = source[name]?.trim();
+      if (value === undefined) return null;
+      if (name === 'LYRIC_TOTAL_BUDGET_USD' && !/^\d{1,8}(?:\.\d{1,12})?$/.test(value)) {
+        throw new HttpError(503, 'Budget configuration is invalid');
+      }
+      try { return decimal(value).toFixed(); }
+      catch (error) {
+        if (error instanceof HttpError) throw new HttpError(503, 'Budget configuration is invalid');
+        throw error;
+      }
+    };
+    return { text: configured('LYRIC_TOTAL_BUDGET_USD'), speech: configured('SPEECH_TOTAL_BUDGET_USD') };
+  }
+  app.get('/api/budget', ...authorized('renders.read'), async (_request, response) => {
+    response.json(await (await storage()).get_user_budget(identity(response).subject));
+  });
+  app.get('/api/admin/budgets', ...authorized('renders.read'), async (_request, response) => {
+    const { issuer, subject } = identity(response);
+    response.json(await (await storage()).budgets_as_admin(issuer, subject, budget_defaults()));
+  });
+  app.put('/api/admin/budgets', ...authorized('renders.write'), async (request, response) => {
+    const payload = parse(BudgetSubmission, request.body);
+    const { issuer, subject } = identity(response);
+    try {
+      await (await storage()).set_budget_as_admin(issuer, subject, payload.scope,
+        payload.scope === 'user' ? payload.owner : '', payload.limit_usd);
+    } catch (error) {
+      if (error instanceof StorageNotFound) throw new HttpError(404, 'Budget user was not found');
+      throw error;
+    }
+    response.json({ status: 'updated' });
   });
   app.get('/api/admin/users', ...authorized('renders.read'), async (_request, response) => {
     const { issuer, subject } = identity(response);
@@ -787,7 +830,7 @@ export function create_app(options: CreateAppOptions = {}): Express {
           ...(action.action === 'write' ? { creative_direction: action.creative_direction } : {}),
         });
         if (action.action === 'discuss' && action.messages.at(-1)?.role !== 'user') throw new HttpError(422, 'The last chat message must be from the user');
-        const tools = await jingle_tools(await paid_lyric_backend(action.action));
+        const tools = await jingle_tools(await paid_lyric_backend(action.action, owner));
         if (action.action === 'discuss') {
           response.json({ tool: 'suggest_jingle', ...await tools.discuss({ request: lyric_request, messages: action.messages }) });
         } else {
@@ -981,7 +1024,7 @@ export function create_app(options: CreateAppOptions = {}): Express {
           },
         } : {}),
       });
-      const writer = new LyricWriter(await paid_lyric_backend('options'));
+      const writer = new LyricWriter(await paid_lyric_backend('options', identity(response).subject));
       const alternatives = [];
       const seen = new Set<string>();
       for (let index = 0; index < 3; index++) {
@@ -1159,6 +1202,7 @@ export function create_app(options: CreateAppOptions = {}): Express {
     const store = await storage();
     await store.check_jingle_text_budget(ai, budget.total);
     await store.check_jingle_speech_budget(speech, speech_budget);
+    await store.check_user_jingle_budget(identity(response).subject, ai.plus(speech));
     return {
       model_and_safety_max_usd: ai.toFixed(), speech_max_usd: speech.toFixed(), total_max_usd: ai.plus(speech).toFixed(),
     };
@@ -1200,7 +1244,7 @@ export function create_app(options: CreateAppOptions = {}): Express {
     const set_stage = (stage: JingleStage) => { if (progress) progress.stage = stage; };
     try {
       const estimate = await jingle_quote(response);
-      const backend = await paid_lyric_backend('jingle_write');
+      const backend = await paid_lyric_backend('jingle_write', identity(response).subject);
       set_stage('lyrics');
       const direction = parse(JingleDirection, await (options.jingle_direction
         ? options.jingle_direction(description)

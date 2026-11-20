@@ -491,6 +491,16 @@ This command can be repeated and refuses an uninitialized or incomplete
 store. Do not use `initialize-fresh` to upgrade an existing store; it resets
 application records and known runtime files.
 
+The additive upgrade also creates persistent budget-limit overrides and adds
+nullable owner attribution to historical lyric reservations. It preserves
+usage and permissions. Administrators can then use **Manage access** >
+**Budgets and usage** to edit shared totals and per-user lifetime allowances.
+Environment totals remain defaults until an administrator saves an override;
+per-action caps and service-enable settings remain operator controlled.
+All users default to a $5 lifetime trial allowance, with attributable history
+counted. See [budget administration](audio-poc/web-app.md#manage-budgets) for
+accounting semantics and the protected API.
+
 ### Diagnose container startup failures
 
 The supervisor logs `Cloud web startup or worker failed` with the failing

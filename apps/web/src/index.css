@@ -178,6 +178,14 @@ audio { display: block; width: 100%; min-width: 0; height: 2.6rem; margin-top: 0
 .batch-help { grid-column: 1 / -1; margin: 0; }
 .batch-content p { font-size: 0.9rem; }
 .workspace-view { padding: 2rem clamp(1.5rem, 5vw, 5rem); }
+.budget-admin { margin-block: 2rem; padding-block: 1.5rem; border-block: 1px solid var(--line); }
+.budget-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr)); gap: 1.5rem; }
+.budget-summary dt { font-weight: 700; }
+.budget-summary dd { margin: 0.4rem 0 0; }
+.budget-users, .budget-target { overflow-wrap: anywhere; }
+.budget-balance, .budget-summary, .budget-users { font-variant-numeric: tabular-nums; }
+.budget-limit-form { max-width: 44rem; margin-top: 1.5rem; }
+.budget-limit-form label { display: grid; gap: 0.4rem; font-size: 1rem; font-weight: 700; }
 .workspace-view form { max-width: 44rem; }
 .architecture-view { max-width: 90rem; }
 .architecture-intro { font-size: 1.1rem; }

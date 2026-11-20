@@ -149,7 +149,7 @@ describe("operator transactions and read-only import", () => {
   it("recreates the application tables and owner without creating local databases", async () => {
     const db = postgres_target(), root = directory();
     await initialize_fresh(root, local, { issuer: "issuer", subject: "owner" });
-    expect(user_tables(db)).toHaveLength(16);
+    expect(user_tables(db)).toHaveLength(17);
     expect(db.prepare("SELECT issuer, subject, enabled, admin, paid_speech FROM application_users").get()).toMatchObject({
       issuer: "issuer", subject: "owner", enabled: 1, admin: 1, paid_speech: 1,
     });
@@ -159,7 +159,7 @@ describe("operator transactions and read-only import", () => {
     db.prepare("INSERT INTO application_users VALUES ('issuer', 'former-user', 0, 0, 0, 'old')").run();
     db.prepare("INSERT INTO runs VALUES ('old-run', 'owner', 'instrumental', '[]', 'complete', 'old')").run();
     await initialize_fresh(root, local, { issuer: "issuer", subject: "owner" });
-    expect(user_tables(db)).toHaveLength(16);
+    expect(user_tables(db)).toHaveLength(17);
     expect(db.prepare("SELECT count(*) AS count FROM application_users").get()!.count).toBe(1);
     expect(db.prepare("SELECT count(*) AS count FROM runs").get()!.count).toBe(0);
     expect(db.prepare("SELECT enabled, admin, paid_speech FROM application_users").get()).toEqual({
@@ -192,10 +192,10 @@ describe("operator transactions and read-only import", () => {
     writeFileSync(join(root, ".earwyrm-initialized"), "");
     await initialize_fresh(root, local, { issuer: "issuer", subject: "owner" });
     expect(readdirSync(root)).toEqual([".earwyrm-writer.lock"]);
-    expect(user_tables(db)).toHaveLength(16);
+    expect(user_tables(db)).toHaveLength(17);
     writeFileSync(join(root, "unrecognized.txt"), "preserve");
     await expect(initialize_fresh(root, local, { issuer: "issuer", subject: "owner" })).rejects.toThrow("unrecognized data directory entries");
-    expect(user_tables(db)).toHaveLength(16);
+    expect(user_tables(db)).toHaveLength(17);
     rmSync(join(root, "unrecognized.txt"));
     const release = acquire_writer_lock(root);
     await expect(initialize_fresh(root, local, { issuer: "issuer", subject: "owner" })).rejects.toThrow("active writer");
@@ -240,14 +240,28 @@ describe("operator transactions and read-only import", () => {
       sourceDb.exec("DROP TABLE access_requests");
       sourceDb.close();
     }
-    if (hasLyrics) await web.reserve_lyric_action("discuss", new Decimal("0.001"), new Decimal(1), new Decimal(1));
+    if (hasLyrics) {
+      await web.reserve_lyric_action("discuss", new Decimal("0.001"), new Decimal(1), new Decimal(1), "owner");
+      await web.set_budget_as_admin("issuer", "owner", "user", "owner", "7.5");
+    }
+    if (hasLyrics && !hasEmail) {
+      const sourceDb = new DatabaseSync(web.database_path);
+      sourceDb.exec("ALTER TABLE lyric_reservations DROP COLUMN owner");
+      sourceDb.close();
+    }
     const webBytes = readFileSync(web.database_path), melodyBytes = readFileSync(melody.database_path);
     const audio = readFileSync(join(web.audio_dir, output.file)), wav = readFileSync(join(melody.artifact_dir, job.job_id, "backing.wav"));
     const db = postgres_target();
-    expect(await import_sqlite(root, local)).toEqual({ runs: 1, paid_attempts: 0, outputs: 1, evaluations: 0, application_identity: 1, application_users: 1, ...(hasAccessRequests ? { access_requests: 1 } : {}), ...(hasLyrics ? { lyric_options: 0, lyric_reservations: 1, score_reservations: 0, score_reconciliations: 0, preview_reservations: 0 } : {}), render_jobs: 1, local_outputs: 0 });
+    expect(await import_sqlite(root, local)).toEqual({ runs: 1, paid_attempts: 0, outputs: 1, evaluations: 0, application_identity: 1, application_users: 1, ...(hasAccessRequests ? { access_requests: 1 } : {}), ...(hasLyrics ? { lyric_options: 0, lyric_reservations: 1, score_reservations: 0, score_reconciliations: 0, preview_reservations: 0 } : {}), budget_limits: hasLyrics ? 1 : 0, render_jobs: 1, local_outputs: 0 });
     if (hasAccessRequests) expect(db.prepare("SELECT subject, status, email FROM access_requests").get())
       .toEqual({ subject: "requester", status: "pending", email: hasEmail ? "requester@example.test" : null });
     if (hasLyrics) expect(db.prepare("SELECT reserved_usd FROM lyric_reservations").get()?.reserved_usd).toBe("0.001");
+    if (hasLyrics) {
+      const imported = new WebStorage(root, { database_url: local });
+      expect(await imported.get_user_budget("owner")).toEqual({
+        limit_usd: "7.5", charged_usd: hasEmail ? "0.001" : "0", remaining_usd: hasEmail ? "7.499" : "7.5",
+      });
+    }
     expect(db.prepare("SELECT job_id FROM render_jobs").get()!.job_id).toBe(job.job_id);
     const original = new DatabaseSync(melody.database_path, { readOnly: true });
     const stored = original.prepare("SELECT request_json,result_json FROM render_jobs").get()!; original.close();
@@ -336,6 +350,11 @@ describe("operator transactions and read-only import", () => {
       expect.objectContaining({ subject: "requester", email: "requester@example.test" }),
     ]);
     await store.reserve_lyric_action("discuss", new Decimal(1), new Decimal(1), new Decimal(1));
+    await store.set_budget_as_admin("issuer", "owner", "user", "owner", "8");
+    db.exec("ALTER TABLE lyric_reservations DROP COLUMN owner");
+    await prepare_databases(root, { database_url: local, upgrade_postgres: false });
+    expect((await store.budgets_as_admin("issuer", "owner", { text: "1", speech: "1" })).unattributed_text_usd).toBe("1");
+    expect((await store.get_user_budget("owner")).limit_usd).toBe("8");
     db.exec("DROP TABLE score_reconciliations; DROP TABLE score_schema_migrations; DROP TABLE lyric_options; DROP TABLE lyric_reservations; DROP TABLE score_reservations");
     expect(await store.has_lyric_budget()).toBe(false);
     await expect(validate_postgres_store(local)).rejects.toThrow("explicit database upgrade");

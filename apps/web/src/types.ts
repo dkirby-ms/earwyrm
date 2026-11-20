@@ -62,6 +62,22 @@ export interface UserAccess {
   readonly paid_speech: boolean
 }
 
+/** Exact USD budget values; shared limits can be unconfigured, but user limits are lifetime allowances. */
+export interface BudgetBalance {
+  readonly limit_usd: string | null
+  readonly charged_usd: string
+  readonly remaining_usd: string | null
+}
+
+/** Admin-only usage combines conservative ceilings without mislabeling them as actual provider charges. */
+export interface BudgetOverview {
+  readonly text: BudgetBalance
+  readonly speech: BudgetBalance
+  readonly actuals: { readonly speech_usd: string; readonly ai_usd: string; readonly unreconciled_speech_attempts: number }
+  readonly unattributed_text_usd: string
+  readonly users: readonly (BudgetBalance & { readonly issuer: string; readonly subject: string })[]
+}
+
 /** A component and its rights or provenance evidence. */
 export interface AudioComponent {
   readonly component?: string

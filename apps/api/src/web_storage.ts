@@ -26,6 +26,19 @@ export class StorageNotFound extends Error {}
 export class StorageAccessDenied extends Error {}
 /** Explicit PostgreSQL selection; omission retains SQLite without fallback. */
 export interface StorageOptions { database_url?: string | null }
+/** Exact USD totals; null limits mean the service has no configured default. */
+export interface BudgetBalance {
+  limit_usd: string | null; charged_usd: string; remaining_usd: string | null;
+}
+/** Shared ceilings retain environment defaults; user ceilings default to $5 for life. */
+export interface BudgetDefaults { text: string | null; speech: string | null }
+/** Administrator view separates confirmed charges from conservative reservation accounting. */
+export interface BudgetOverview {
+  text: BudgetBalance; speech: BudgetBalance;
+  actuals: { speech_usd: string; ai_usd: string; unreconciled_speech_attempts: number };
+  unattributed_text_usd: string;
+  users: (BudgetBalance & { issuer: string; subject: string })[];
+}
 /** Operator-managed application permissions, not identity-provider accounts. */
 export interface UserPermissions { enabled: boolean; admin: boolean; paid_speech: boolean }
 /** The persisted authorization row uses integer flags for schema compatibility. */
@@ -197,7 +210,108 @@ export class WebStorage {
     await WebStorage._create_access_request_schema(connection);
     await WebStorage._create_lyric_schema(connection);
     await WebStorage._create_lyric_budget_schema(connection);
+    await WebStorage._create_budget_schema(connection);
     await create_preview_schema(connection);
+  }
+
+  /** Adds limit overrides and nullable historical lyric attribution without resetting spend. */
+  static async _create_budget_schema(connection: Connection): Promise<void> {
+    await connection.executescript(`
+      CREATE TABLE IF NOT EXISTS budget_limits (
+        scope TEXT NOT NULL CHECK (scope IN ('text','speech','user')), owner TEXT NOT NULL,
+        limit_usd TEXT NOT NULL, updated_by TEXT NOT NULL, updated_at TEXT NOT NULL,
+        PRIMARY KEY (scope, owner));
+    `);
+    const columns = connection instanceof SqliteConnection
+      ? (await connection.execute("PRAGMA table_info(lyric_reservations)")).rows.map(row => String(row.name))
+      : (await connection.execute(
+        "SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'lyric_reservations'",
+      )).rows.map(row => String(row.column_name));
+    if (columns.length && !columns.includes("owner")) await connection.execute("ALTER TABLE lyric_reservations ADD COLUMN owner TEXT");
+  }
+
+  private budget_amount(value: Decimal.Value): Decimal {
+    const amount = new Money(value);
+    if (!amount.isFinite() || amount.isNegative()) throw new TypeError("Budget amounts must be finite nonnegative USD");
+    return amount;
+  }
+  private async effective_limit(c: Connection, scope: "text" | "speech" | "user", fallback: string | null, owner = ""): Promise<Decimal | null> {
+    const row = (await c.execute("SELECT limit_usd FROM budget_limits WHERE scope = ? AND owner = ?", [scope, owner])).rows[0];
+    const value = row ? String(row.limit_usd) : fallback;
+    return value === null ? null : this.budget_amount(value);
+  }
+  private balance(limit: Decimal | null, charged: Decimal): BudgetBalance {
+    return { limit_usd: limit?.toFixed() ?? null, charged_usd: charged.toFixed(),
+      remaining_usd: limit === null ? null : Money.max(0, limit.minus(charged)).toFixed() };
+  }
+  private async speech_usage(c: Connection, owner?: string) {
+    const rows = (await c.execute(`SELECT * FROM paid_attempts${owner === undefined ? "" : " WHERE owner = ?"}`, owner === undefined ? [] : [owner])).rows;
+    let charged = new Money(0), actual = new Money(0), ai_actual = new Money(0), pending = 0;
+    for (const row of rows) {
+      const evidence = JSON.parse(String(row.evidence_json)) as Record<string, unknown>;
+      const estimate = this.budget_amount(String(row.estimated_cost_usd));
+      const reconciled = row.status === "reconciled";
+      const cost = reconciled ? this.budget_amount(String(row.actual_cost_usd)) : estimate;
+      charged = charged.plus(evidence.jingle_estimate ? Money.max(cost, estimate) : cost);
+      if (reconciled) actual = actual.plus(cost);
+      else pending++;
+      if (typeof evidence.jingle_ai_actual_cost_usd === "string") ai_actual = ai_actual.plus(this.budget_amount(evidence.jingle_ai_actual_cost_usd));
+    }
+    return { charged, actual, ai_actual, pending };
+  }
+  private async user_budget(c: Connection, owner: string): Promise<BudgetBalance> {
+    const charged = (await this.reserved_text_cost(c, owner)).plus((await this.speech_usage(c, owner)).charged);
+    return this.balance(await this.effective_limit(c, "user", "5", owner), charged);
+  }
+  private async check_user_budget(c: Connection, owner: string, cost: Decimal): Promise<void> {
+    const budget = await this.user_budget(c, owner);
+    if (new Money(budget.charged_usd).plus(cost).gt(budget.limit_usd!)) {
+      throw new StorageConflict("Your lifetime budget is exhausted. Contact an administrator to adjust your allowance.");
+    }
+  }
+  /** Returns only the caller's lifetime allowance; existing attributable history counts. */
+  async get_user_budget(owner: string): Promise<BudgetBalance> {
+    return this.write(c => this.user_budget(c, owner));
+  }
+  /** Preflights the complete jingle; individual stages must still reserve atomically. */
+  async check_user_jingle_budget(owner: string, cost: Decimal): Promise<void> {
+    await this.write(c => this.check_user_budget(c, owner, this.budget_amount(cost)));
+  }
+  /** Rechecks current administrator access before exposing shared and per-user totals. */
+  async budgets_as_admin(issuer: string, subject: string, defaults: BudgetDefaults): Promise<BudgetOverview> {
+    return this.write(async c => {
+      await this.require_admin(c, issuer, subject);
+      const text = await this.reserved_text_cost(c), speech = await this.speech_usage(c);
+      const users: BudgetOverview["users"] = [];
+      for (const row of (await c.execute("SELECT issuer, subject FROM application_users ORDER BY issuer, subject")).rows) {
+        users.push({ issuer: String(row.issuer), subject: String(row.subject), ...await this.user_budget(c, String(row.subject)) });
+      }
+      let unattributed = new Money(0);
+      for (const row of (await c.execute("SELECT reserved_usd FROM lyric_reservations WHERE owner IS NULL")).rows) {
+        unattributed = unattributed.plus(this.budget_amount(String(row.reserved_usd)));
+      }
+      return {
+        text: this.balance(await this.effective_limit(c, "text", defaults.text), text),
+        speech: this.balance(await this.effective_limit(c, "speech", defaults.speech), speech.charged),
+        actuals: { speech_usd: speech.actual.toFixed(), ai_usd: speech.ai_actual.toFixed(), unreconciled_speech_attempts: speech.pending },
+        unattributed_text_usd: unattributed.toFixed(), users,
+      };
+    });
+  }
+  /** Persists a finite total cap without modifying consumption, including when below current usage. */
+  async set_budget_as_admin(issuer: string, subject: string, scope: "text" | "speech" | "user", owner: string, limit_usd: string): Promise<void> {
+    if (!["text", "speech", "user"].includes(scope) || (scope === "user" ? !owner.trim() : owner !== "") ||
+        !/^\d{1,8}(?:\.\d{1,12})?$/.test(limit_usd)) throw new TypeError("Invalid budget limit");
+    const limit = this.budget_amount(limit_usd);
+    await this.write(async c => {
+      await this.require_admin(c, issuer, subject);
+      if (scope === "user" && !(await c.execute("SELECT 1 FROM application_users WHERE issuer = ? AND subject = ?", [issuer, owner])).rows.length) {
+        throw new StorageNotFound("Budget user was not found");
+      }
+      await c.execute(`INSERT INTO budget_limits (scope, owner, limit_usd, updated_by, updated_at) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT (scope, owner) DO UPDATE SET limit_usd = excluded.limit_usd, updated_by = excluded.updated_by, updated_at = excluded.updated_at`,
+      [scope, owner, limit.toFixed(), subject, new Date().toISOString()]);
+    });
   }
 
   /** Adds the current access-request record without changing existing permissions. */
@@ -278,19 +392,23 @@ export class WebStorage {
   }
 
   /** Commits the full upper bound before provider calls; no attempt is automatically refunded. */
-  async reserve_lyric_action(action: PaidLyricGenerationAction, cost: Decimal, cap: Decimal, total: Decimal): Promise<void> {
+  async reserve_lyric_action(action: PaidLyricGenerationAction, cost: Decimal, cap: Decimal, total: Decimal, owner: string | null = null): Promise<void> {
+    if (!cost.isFinite() || cost.lte(0)) throw new TypeError("Text reservation must be finite positive USD");
     if (cost.gt(cap)) throw new StorageConflict('This text action exceeds the per-action spending limit.');
     await this.write(async c => {
       const projected = (await this.reserved_text_cost(c)).plus(cost);
-      if (projected.gt(total)) throw new StorageConflict('The shared chat, lyrics, and compose budget is exhausted.');
-      await c.execute('INSERT INTO lyric_reservations VALUES (?, ?, ?, ?)',
-        [randomUUID(), action, cost.toFixed(), new Date().toISOString()]);
+      if (projected.gt((await this.effective_limit(c, "text", total.toFixed()))!)) throw new StorageConflict('The shared chat, lyrics, and compose budget is exhausted.');
+      if (owner !== null) await this.check_user_budget(c, owner, cost);
+      await c.execute('INSERT INTO lyric_reservations (reservation_id, action, reserved_usd, created_at, owner) VALUES (?, ?, ?, ?, ?)',
+        [randomUUID(), action, cost.toFixed(), new Date().toISOString(), owner]);
     });
   }
-  private async reserved_text_cost(c: Connection): Promise<Decimal> {
+  private async reserved_text_cost(c: Connection, owner?: string): Promise<Decimal> {
     let total = new Money(0);
     for (const row of (await c.execute(
-      "SELECT reserved_usd FROM lyric_reservations UNION ALL SELECT reserved_usd FROM score_reservations",
+      owner === undefined ? "SELECT reserved_usd FROM lyric_reservations UNION ALL SELECT reserved_usd FROM score_reservations"
+        : "SELECT reserved_usd FROM lyric_reservations WHERE owner = ? UNION ALL SELECT reserved_usd FROM score_reservations WHERE owner = ?",
+      owner === undefined ? [] : [owner, owner],
     )).rows) {
       const amount = new Money(String(row.reserved_usd));
       if (!amount.isFinite() || amount.lte(0)) throw new Error("Invalid shared text budget reservation");
@@ -301,7 +419,7 @@ export class WebStorage {
   /** Checks the full jingle quote before the first billable text call. Individual reservations still enforce the cap atomically. */
   async check_jingle_text_budget(cost: Decimal, total: Decimal): Promise<void> {
     await this.read(async c => {
-      if ((await this.reserved_text_cost(c)).plus(cost).gt(total)) {
+      if ((await this.reserved_text_cost(c)).plus(cost).gt((await this.effective_limit(c, "text", total.toFixed()))!)) {
         throw new StorageConflict("The shared AI generation budget is exhausted.");
       }
     });
@@ -336,9 +454,10 @@ export class WebStorage {
           const reserved = new Money(String(existing.reserved_usd));
           if (!reserved.isFinite() || reserved.lte(0)) throw new Error("Invalid score budget reservation");
           const ceiling = Money.max(reserved, cost);
-          if ((await this.reserved_text_cost(c)).plus(ceiling.minus(reserved)).gt(total)) {
+          if ((await this.reserved_text_cost(c)).plus(ceiling.minus(reserved)).gt((await this.effective_limit(c, "text", total.toFixed()))!)) {
             throw new StorageConflict("The shared chat, lyrics, and compose budget is exhausted.");
           }
+          await this.check_user_budget(c, options.owner, ceiling.minus(reserved));
           await c.execute(
             "UPDATE score_reservations SET status = 'submitted', score_json = NULL, provider_json = NULL, reserved_usd = ?, attempt_count = attempt_count + 1, updated_at = ? WHERE reservation_id = ? AND status = 'failed'",
             [ceiling.toFixed(), new Date().toISOString(), existing.reservation_id],
@@ -358,7 +477,8 @@ export class WebStorage {
 
       if (cost.gt(cap)) throw new StorageConflict("This score action exceeds the per-action spending limit.");
       const projected = await this.reserved_text_cost(c);
-      if (projected.plus(cost).gt(total)) throw new StorageConflict("The shared chat, lyrics, and compose budget is exhausted.");
+      if (projected.plus(cost).gt((await this.effective_limit(c, "text", total.toFixed()))!)) throw new StorageConflict("The shared chat, lyrics, and compose budget is exhausted.");
+      await this.check_user_budget(c, options.owner, cost);
       const reservation_id = randomUUID(), now = new Date().toISOString();
       await c.execute(
         "INSERT INTO score_reservations (reservation_id, owner, action, logical_job_id, request_sha256, reserved_usd, status, score_json, created_at, updated_at, provider_json, attempt_count) VALUES (?, ?, 'compose', ?, ?, ?, 'submitted', NULL, ?, ?, NULL, 1)",
@@ -694,7 +814,7 @@ export class WebStorage {
       // Entering billing evidence does not let a workspace user free reserved spend.
       spent = spent.plus(is_jingle ? Money.max(cost, String(row.estimated_cost_usd)) : cost);
     }
-    if (spent.plus(estimate).gt(budget)) throw new StorageConflict("Cumulative Speech budget would be exceeded");
+    if (spent.plus(estimate).gt((await this.effective_limit(c, "speech", budget.toFixed()))!)) throw new StorageConflict("Cumulative Speech budget would be exceeded");
   }
   /** Estimates of completed jingle voice calls remain reserved until reconciled; uncertain calls still block spending. */
   async check_jingle_speech_budget(estimate: Decimal, budget: Decimal): Promise<void> {
@@ -713,6 +833,7 @@ export class WebStorage {
         [o.issuer, o.owner],
       )).rows.length) throw new StorageAccessDenied(jingle ? "Application access denied" : "Paid Speech access is not enabled");
       await this.check_speech_budget(c, estimate, budget, jingle);
+      await this.check_user_budget(c, o.owner, estimate);
       const now = new Date().toISOString();
       await c.execute("INSERT INTO runs VALUES (?, ?, ?, ?, ?, ?)", [o.run_id, o.owner, "azure", canonical_json(o.brief_ids), "rendering", now]);
       await c.execute(`INSERT INTO paid_attempts (attempt_id, run_id, owner, brief_ids_json, per_brief_estimates_json, estimated_cost_usd, submitted_characters, status, evidence_json, created_at)

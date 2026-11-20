@@ -21,7 +21,8 @@ export const WEB_TABLE_COLUMNS: Record<string, readonly string[]> = {
   application_users: ["issuer", "subject", "enabled", "admin", "paid_speech", "created_at"],
   access_requests: ["request_id", "issuer", "subject", "status", "created_at", "updated_at", "email"],
   lyric_options: ["option_id", "owner", "brief_id", "request_json", "result_json", "created_at"],
-  lyric_reservations: ["reservation_id", "action", "reserved_usd", "created_at"],
+  lyric_reservations: ["reservation_id", "action", "reserved_usd", "created_at", "owner"],
+  budget_limits: ["scope", "owner", "limit_usd", "updated_by", "updated_at"],
   score_reservations: ["reservation_id", "owner", "action", "logical_job_id", "request_sha256", "reserved_usd", "status", "score_json", "created_at", "updated_at", "provider_json", "attempt_count"],
   score_reconciliations: ["reservation_id", "attempt_number", "evidence_reference", "reconciled_at"],
   score_schema_migrations: ["version", "applied_at"],
@@ -66,7 +67,7 @@ function require_root(root: string): string {
   return realpathSync(root);
 }
 const RESET_TABLES = [
-  "preview_reservations", "score_reconciliations", "score_schema_migrations", "score_reservations", "lyric_reservations", "lyric_options", "access_requests", "application_users", "application_identity", "evaluations", "outputs", "paid_attempts",
+  "budget_limits", "preview_reservations", "score_reconciliations", "score_schema_migrations", "score_reservations", "lyric_reservations", "lyric_options", "access_requests", "application_users", "application_identity", "evaluations", "outputs", "paid_attempts",
   "runs", "local_outputs", "render_jobs", "earwyrm_store_metadata",
 ] as const;
 const RESET_DATA_ENTRIES = ["audio", "work", "melody", "earwyrm.sqlite3", ".earwyrm-initialized"] as const;
@@ -252,6 +253,7 @@ async function validate_melody(c: Connection, root: string): Promise<void> {
 export async function _copy_sqlite_table(source: Connection, target: Connection, table: string, columns: readonly string[]): Promise<number> {
   const supported = WEB_TABLE_COLUMNS[table] ?? MELODY_TABLE_COLUMNS[table];
   const legacy = table === "access_requests" ? supported?.filter(column => column !== "email")
+    : table === "lyric_reservations" ? supported?.filter(column => column !== "owner")
     : table === "score_reservations" ? LEGACY_SCORE_RESERVATION_COLUMNS : undefined;
   if (!supported || (JSON.stringify(columns) !== JSON.stringify(supported) &&
       (!legacy || JSON.stringify(columns) !== JSON.stringify(legacy)))) throw new TypeError("Unsupported import table");
@@ -279,8 +281,12 @@ export async function import_sqlite(directory: string, database_url: string): Pr
     web = new SqliteConnection(webPath, true);
     melody = new SqliteConnection(melodyPath, true);
     const sourceColumns = { ...WEB_TABLE_COLUMNS };
-    for (const table of ["access_requests", "lyric_options", "lyric_reservations", "score_reservations", "score_reconciliations", "score_schema_migrations", "preview_reservations"]) {
+    for (const table of ["budget_limits", "access_requests", "lyric_options", "lyric_reservations", "score_reservations", "score_reconciliations", "score_schema_migrations", "preview_reservations"]) {
       if (!(await web.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", [table])).rows.length) delete sourceColumns[table];
+    }
+    if (sourceColumns.lyric_reservations &&
+        !(await web.execute("PRAGMA table_info(lyric_reservations)")).rows.some(row => row.name === "owner")) {
+      sourceColumns.lyric_reservations = sourceColumns.lyric_reservations.filter(column => column !== "owner");
     }
     if (sourceColumns.score_reservations) {
       const scoreColumns = (await web.execute("PRAGMA table_info(score_reservations)")).rows.map(row => String(row.name));
@@ -325,7 +331,7 @@ export async function upgrade_postgres_store(
   await transaction(new PostgresConnection(database_url, 0x4557524d01), async c => {
     const marker = (await c.execute("SELECT schema_version FROM earwyrm_store_metadata WHERE singleton = 1")).rows;
     if (marker.length !== 1 || marker[0]!.schema_version !== 1) throw new TypeError("Upgrade requires an initialized version-one store");
-    for (const table of REQUIRED_TABLES.filter(name => name !== "access_requests" && name !== "lyric_options")) {
+    for (const table of REQUIRED_TABLES.filter(name => name !== "access_requests" && name !== "lyric_options" && name !== "budget_limits")) {
       if (!(await c.execute("SELECT to_regclass(?) AS name", [table])).rows[0]?.name) throw new TypeError("Upgrade requires a complete existing store");
     }
     await WebStorage._create_access_request_schema(c);
@@ -334,6 +340,7 @@ export async function upgrade_postgres_store(
       await WebStorage._create_lyric_schema(c);
       await WebStorage._create_lyric_budget_schema(c);
     }
+    await WebStorage._create_budget_schema(c);
   });
   await validate_postgres_store(database_url);
 }

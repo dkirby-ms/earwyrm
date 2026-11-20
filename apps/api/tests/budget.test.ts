@@ -1,0 +1,95 @@
+import { randomUUID } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { Decimal } from "decimal.js";
+import { afterEach, describe, expect, it } from "vitest";
+import { StorageAccessDenied, WebStorage } from "../src/web_storage.js";
+
+const roots: string[] = [];
+afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+async function fixture() {
+  const root = mkdtempSync(join(process.cwd(), ".budget-test-")); roots.push(root);
+  const store = new WebStorage(root);
+  await store.bootstrap_owner("issuer", "admin");
+  await store.set_user("issuer", "user", { enabled: true, admin: false, paid_speech: true });
+  return store;
+}
+const d = (value: string | number) => new Decimal(value);
+const defaults = { text: "100", speech: "100" };
+const reserve = (store: WebStorage, cost: string, owner = "user") =>
+  store.reserve_lyric_action("write", d(cost), d(100), d(100), owner);
+
+describe("persistent lifetime and shared budgets", () => {
+  it("defaults to $5, combines feature reservations, and serializes concurrent calls", async () => {
+    const store = await fixture();
+    expect(await store.get_user_budget("user")).toEqual({ limit_usd: "5", charged_usd: "0", remaining_usd: "5" });
+    await reserve(store, "4.8");
+    await store.claim_score_compose({ owner: "user", logical_job_id: "job", request_sha256: "a".repeat(64), cost: "0.1", cap: "1", total: "100" });
+    const outcomes = await Promise.allSettled([reserve(store, "0.1"), reserve(new WebStorage(store.root), "0.1")]);
+    expect(outcomes.filter(result => result.status === "fulfilled")).toHaveLength(1);
+    expect(await store.get_user_budget("user")).toEqual({ limit_usd: "5", charged_usd: "5", remaining_usd: "0" });
+    await reserve(store, "0.2", "admin");
+    await expect(reserve(store, "0.000000000001")).rejects.toThrow("lifetime budget");
+    const replay = await store.claim_score_compose({ owner: "user", logical_job_id: "job", request_sha256: "a".repeat(64), cost: "0.1", cap: "1", total: "100" });
+    expect(replay.claimed).toBe(false);
+  });
+
+  it("combines Speech and text, keeps confirmed actuals separate, and never resets spend on limit edits", async () => {
+    const store = await fixture();
+    await reserve(store, "4.9");
+    await store.reserve_paid_run({ run_id: "run", attempt_id: "attempt", owner: "user", brief_ids: [],
+      per_brief_estimates: {}, estimated_cost_usd: "0.1", submitted_characters: 1, total_budget_usd: "100", evidence: {} });
+    await expect(reserve(store, "0.01")).rejects.toThrow("lifetime budget");
+    await store.reconcile_attempt({ attempt_id: "attempt", owner: "user", actual_cost_usd: "0.05", evidence_reference: "test-meter" });
+    await store.set_budget_as_admin("issuer", "admin", "user", "user", "0");
+    expect(await store.get_user_budget("user")).toEqual({ limit_usd: "0", charged_usd: "4.95", remaining_usd: "0" });
+    await store.set_budget_as_admin("issuer", "admin", "user", "user", "6");
+    await reserve(store, "0.05");
+    const summary = await store.budgets_as_admin("issuer", "admin", defaults);
+    expect(summary.actuals).toEqual({ speech_usd: "0.05", ai_usd: "0", unreconciled_speech_attempts: 0 });
+    expect(summary.text.charged_usd).toBe("4.95");
+    expect((await new WebStorage(store.root).get_user_budget("user")).limit_usd).toBe("6");
+  });
+
+  it("honors shared overrides in reservations and preflight without weakening per-action caps", async () => {
+    const store = await fixture();
+    await store.set_budget_as_admin("issuer", "admin", "text", "", "0");
+    await expect(reserve(store, "0.1")).rejects.toThrow("shared");
+    await expect(store.check_jingle_text_budget(d("0.1"), d(100))).rejects.toThrow("shared");
+    await store.set_budget_as_admin("issuer", "admin", "text", "", "2");
+    await store.reserve_lyric_action("write", d("0.2"), d(1), d("0.1"), "user");
+    await expect(store.reserve_lyric_action("write", d(2), d(1), d(100), "user")).rejects.toThrow("per-action");
+    await store.set_budget_as_admin("issuer", "admin", "speech", "", "0");
+    await expect(store.check_jingle_speech_budget(d("0.1"), d(100))).rejects.toThrow("Speech budget");
+    await expect(store.check_user_jingle_budget("user", d("4.81"))).rejects.toThrow("lifetime budget");
+  });
+
+  it("rejects nonadmins, revoked admins, unknown users and malformed limits", async () => {
+    const store = await fixture();
+    await expect(store.budgets_as_admin("issuer", "user", defaults)).rejects.toBeInstanceOf(StorageAccessDenied);
+    await expect(store.set_budget_as_admin("issuer", "user", "text", "", "1")).rejects.toBeInstanceOf(StorageAccessDenied);
+    await expect(store.set_budget_as_admin("issuer", "admin", "user", "absent", "1")).rejects.toThrow("not found");
+    for (const value of ["-1", "NaN", "Infinity", "1e2", "100000000", "0.0000000000001", " 1"]) {
+      await expect(store.set_budget_as_admin("issuer", "admin", "text", "", value)).rejects.toThrow("Invalid budget");
+    }
+    await store.set_user("issuer", "admin", { enabled: false, admin: true, paid_speech: true });
+    await expect(store.set_budget_as_admin("issuer", "admin", "text", "", "1")).rejects.toBeInstanceOf(StorageAccessDenied);
+  });
+
+  it("adds nullable ownership to historical lyrics and preserves global usage on reinitialization", async () => {
+    const store = await fixture();
+    const db = new DatabaseSync(store.database_path);
+    db.exec("ALTER TABLE lyric_reservations DROP COLUMN owner");
+    db.prepare("INSERT INTO lyric_reservations VALUES (?, 'write', '1.23', 'old')").run(randomUUID());
+    db.close();
+    const upgraded = new WebStorage(store.root);
+    await upgraded.init();
+    const summary = await upgraded.budgets_as_admin("issuer", "admin", defaults);
+    expect(summary.unattributed_text_usd).toBe("1.23");
+    expect(summary.text.charged_usd).toBe("1.23");
+    expect((await upgraded.get_user_budget("user")).charged_usd).toBe("0");
+    await reserve(upgraded, "0.1");
+    expect((await upgraded.get_user_budget("user")).charged_usd).toBe("0.1");
+  });
+});

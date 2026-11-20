@@ -125,6 +125,65 @@ async function save_accepted_lyric_option(store: WebStorage, owner = 'user-a') {
 }
 
 describe('same-origin Express API', () => {
+  it('exposes own budgets and restricts persistent budget administration to enabled administrators', async () => {
+    const { app, store, access_token } = await fixture({ environ: lyric_limits });
+    const auth = { type: 'bearer' as const };
+    expect((await request(app).get('/api/budget')).status).toBe(401);
+    const other = await token('user-b');
+    expect((await request(app).get('/api/budget').auth(other, auth)).body).toEqual({ limit_usd: '5', charged_usd: '0', remaining_usd: '5' });
+    expect((await request(app).get('/api/admin/budgets').auth(other, auth)).status).toBe(403);
+    expect((await request(app).put('/api/admin/budgets').auth(other, auth).send({ scope: 'text', limit_usd: '10' })).status).toBe(403);
+    expect((await request(app).get('/api/budget').auth(await token('disabled'), auth)).status).toBe(403);
+    for (const body of [
+      { scope: 'text', limit_usd: 10 }, { scope: 'speech', limit_usd: '-1' },
+      { scope: 'speech', limit_usd: '1e2' },
+      { scope: 'user', limit_usd: '10' }, { scope: 'text', limit_usd: 'Infinity' },
+      { scope: 'text', limit_usd: '1', owner: 'user-b' }, { scope: 'user', owner: ' user-b', limit_usd: '1' },
+    ]) expect((await request(app).put('/api/admin/budgets').auth(access_token, auth).send(body)).status).toBe(422);
+    expect((await request(app).put('/api/admin/budgets').auth(access_token, auth).send({ scope: 'user', owner: 'missing', limit_usd: '10' })).status).toBe(404);
+    expect((await request(app).put('/api/admin/budgets').auth(access_token, auth).send({ scope: 'user', owner: 'user-b', limit_usd: '0' })).status).toBe(200);
+    expect((await request(app).get('/api/budget').auth(other, auth)).body.remaining_usd).toBe('0');
+    const overview = await request(app).get('/api/admin/budgets').auth(access_token, auth);
+    expect(overview.status).toBe(200);
+    expect(overview.body.text.limit_usd).toBe('5');
+    expect(overview.body.speech.limit_usd).toBeNull();
+    expect(overview.body.users.find((user: { subject: string }) => user.subject === 'user-b').limit_usd).toBe('0');
+    await store.set_user(issuer, 'user-a', { enabled: true, admin: false, paid_speech: true });
+    expect((await request(app).put('/api/admin/budgets').auth(access_token, auth).send({ scope: 'text', limit_usd: '10' })).status).toBe(403);
+  });
+
+  it.each([['1e2', '100'], ['.5', '0.5']])('normalizes existing Speech budget default %s for administration', async (value, expected) => {
+    const { app, access_token } = await fixture({ environ: { ...lyric_limits, SPEECH_TOTAL_BUDGET_USD: value } });
+    const response = await request(app).get('/api/admin/budgets').auth(access_token, { type: 'bearer' });
+    expect(response.status).toBe(200);
+    expect(response.body.speech).toEqual({ limit_usd: expected, charged_usd: '0', remaining_usd: expected });
+  });
+
+  it('reports malformed Speech budget defaults as configuration failures', async () => {
+    const { app, access_token } = await fixture({ environ: { ...lyric_limits, SPEECH_TOTAL_BUDGET_USD: 'Infinity' } });
+    const response = await request(app).get('/api/admin/budgets').auth(access_token, { type: 'bearer' });
+    expect(response.status).toBe(503);
+    expect(response.body.detail).toBe('Budget configuration is invalid');
+  });
+
+  it('rejects a jingle above its lifetime allowance before any paid text call', async () => {
+    const root = root_dir();
+    const generate = vi.fn<LyricBackend['generate']>();
+    const { app, store, access_token } = await fixture({ data_dir: root,
+      environ: { ...speech_environment(root, { SPEECH_TOTAL_BUDGET_USD: '100' }), ...lyric_limits, LYRIC_ENABLED: 'true' },
+      lyric_backend: { generate, preflight: async () => ({ english: true, risky_claims: false, artist_imitation: false }),
+        assess: async () => ({ english: true, grounded: true, risky_claims: false }),
+        screen: async () => ({ moderation_passed: true, protected_material_detected: false }) },
+      jingle_direction: vi.fn(), score_composer: { compose: vi.fn() },
+    });
+    await store.set_budget_as_admin(issuer, 'user-a', 'user', 'user-a', '0');
+    const response = await request(app).post('/api/jingles').auth(access_token, { type: 'bearer' }).send({ description: 'A bike shop jingle' });
+    expect(response.status).toBe(409);
+    expect(response.body.detail).toContain('lifetime budget');
+    expect(generate).not.toHaveBeenCalled();
+    expect((await store.get_user_budget('user-a')).charged_usd).toBe('0');
+  });
+
   const custom_details = {
     name: 'Bright Bike', offer: 'Bike tune ups', location: 'Lakeview',
     contact_details: { email: 'shop@example.com', phone: '+1-202-555-0101' },
@@ -1099,7 +1158,7 @@ describe('guarded paid score composition', () => {
 
     const db = new DatabaseSync(store.database_path);
     try {
-      db.prepare('INSERT INTO lyric_reservations VALUES (?, ?, ?, ?)').run('prior', 'write', '0.01', new Date().toISOString());
+      db.prepare('INSERT INTO lyric_reservations (reservation_id, action, reserved_usd, created_at) VALUES (?, ?, ?, ?)').run('prior', 'write', '0.01', new Date().toISOString());
     } finally { db.close(); }
     const exhausted = await post(body_for(accepted.option_id));
     expect(exhausted.status).toBe(409);

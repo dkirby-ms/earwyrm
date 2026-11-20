@@ -30,6 +30,8 @@ function installMocks(options: {
   progressStage?: () => string | null
   failRefreshAfterGenerate?: boolean
   email?: string | null
+  failBudgetSave?: boolean
+  failBudgetLoad?: boolean
 } = {}) {
   let denied = Boolean(options.denied)
   let status = options.status ?? 'none'
@@ -40,6 +42,14 @@ function installMocks(options: {
     { issuer: 'https://identity.example.test/tenant/v2.0', subject: 'existing-user', enabled: true, admin: true, paid_speech: true },
     { issuer: 'https://identity.example.test/tenant/v2.0', subject: 'current-user', enabled: true, admin: true, paid_speech: true },
   ]
+  const balance = { limit_usd: '5', charged_usd: '1.25', remaining_usd: '3.75' }
+  const budgets = {
+    text: { limit_usd: '20', charged_usd: '1', remaining_usd: '19' },
+    speech: { limit_usd: '10', charged_usd: '0.25', remaining_usd: '9.75' },
+    actuals: { speech_usd: '0.1', ai_usd: '0', unreconciled_speech_attempts: 1 },
+    unattributed_text_usd: '0.5',
+    users: users.map(user => ({ issuer: user.issuer, subject: user.subject, ...balance })),
+  }
   const logoutPopup = vi.fn(async () => undefined)
   class Client {
     activeAccount: typeof account | null = null
@@ -64,6 +74,18 @@ function installMocks(options: {
     if (path === '/api/access') {
       if (denied) return Response.json({ detail: 'Application access denied' }, { status: 403 })
       return Response.json({ issuer: users[0]!.issuer, subject: 'current-user', admin: options.admin !== false, paid_speech: false })
+    }
+    if (path === '/api/budget') return Response.json(balance)
+    if (path === '/api/admin/budgets') {
+      if (init?.method === 'PUT') {
+        if (options.failBudgetSave) return Response.json({ detail: 'Administrator access is required' }, { status: 403 })
+        const body = JSON.parse(String(init.body)) as { scope: 'user' | 'text' | 'speech'; owner?: string; limit_usd: string }
+        const target = body.scope === 'user' ? budgets.users.find(user => user.subject === body.owner)! : budgets[body.scope]
+        target.limit_usd = body.limit_usd
+        return Response.json({ status: 'updated' })
+      }
+      if (options.failBudgetLoad) return Response.json({ detail: 'Persistent storage is unavailable' }, { status: 503 })
+      return Response.json(budgets)
     }
     if (path === '/api/access-requests') {
       if (init?.method === 'POST') status = 'pending'
@@ -253,6 +275,58 @@ describe('Jingle workspace', () => {
 })
 
 describe('Authentication and access administration', () => {
+  it('displays the lifetime balance and saves an exact per-user allowance without changing usage', async () => {
+    const user = userEvent.setup()
+    const { fetchMock } = installMocks()
+    render(<App />)
+    await signIn(user)
+    expect(await screen.findByText(/Lifetime allowance: \$5.*Remaining: \$3.75/)).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Manage access' }))
+    await user.click(await screen.findByRole('button', { name: 'Edit budget for existing-user' }))
+    expect(screen.getByText('Editing: Lifetime allowance for existing-user')).toBeVisible()
+    await user.clear(screen.getByLabelText('Budget limit (USD)'))
+    await user.type(screen.getByLabelText('Budget limit (USD)'), '12.500000000001')
+    await user.click(screen.getByRole('button', { name: 'Save budget limit' }))
+    expect(await screen.findByText('Budget limit saved. Existing usage has not changed.')).toBeVisible()
+    const call = fetchMock.mock.calls.find(([input, init]) => String(input).endsWith('/api/admin/budgets') && init?.method === 'PUT')
+    expect(JSON.parse(String(call?.[1]?.body))).toEqual({ scope: 'user', owner: 'existing-user', limit_usd: '12.500000000001' })
+    expect(screen.getByText(/limit \$12.500000000001; charged or reserved \$1.25/)).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Edit Speech budget' }))
+    await user.clear(screen.getByLabelText('Budget limit (USD)'))
+    await user.type(screen.getByLabelText('Budget limit (USD)'), '0')
+    await user.click(screen.getByRole('button', { name: 'Save budget limit' }))
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([input, init]) => String(input).endsWith('/api/admin/budgets') && init?.method === 'PUT')).toHaveLength(2))
+    const last = fetchMock.mock.calls.filter(([input, init]) => String(input).endsWith('/api/admin/budgets') && init?.method === 'PUT').at(-1)
+    expect(JSON.parse(String(last?.[1]?.body))).toEqual({ scope: 'speech', limit_usd: '0' })
+  })
+
+  it('surfaces a rejected budget save without claiming success or dropping the entered value', async () => {
+    const user = userEvent.setup()
+    installMocks({ failBudgetSave: true })
+    render(<App />)
+    await signIn(user)
+    await user.click(await screen.findByRole('button', { name: 'Manage access' }))
+    const input = await screen.findByLabelText('Budget limit (USD)')
+    await user.clear(input)
+    await user.type(input, '25')
+    await user.click(screen.getByRole('button', { name: 'Save budget limit' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Administrator access is required')
+    expect(input).toHaveValue('25')
+    expect(screen.queryByText('Budget limit saved. Existing usage has not changed.')).not.toBeInTheDocument()
+  })
+
+  it('offers retry rather than showing zero when budget loading fails', async () => {
+    const user = userEvent.setup()
+    installMocks({ failBudgetLoad: true })
+    render(<App />)
+    await signIn(user)
+    await user.click(await screen.findByRole('button', { name: 'Manage access' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Persistent storage is unavailable')
+    expect(screen.getByText('Budget data has not loaded. Use Refresh budgets to retry.')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Refresh budgets' })).toBeEnabled()
+    expect(screen.queryByLabelText('Budget limit (USD)')).not.toBeInTheDocument()
+  })
+
   it('requests access, including resubmission after denial', async () => {
     const user = userEvent.setup()
     const { fetchMock } = installMocks({ denied: true, status: 'denied' })
