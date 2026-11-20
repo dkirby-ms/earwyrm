@@ -184,8 +184,8 @@ audio { display: block; width: 100%; min-width: 0; height: 2.6rem; margin-top: 0
 .budget-summary dd { margin: 0.4rem 0 0; }
 .budget-users, .budget-target { overflow-wrap: anywhere; }
 .budget-balance, .budget-summary, .budget-users { font-variant-numeric: tabular-nums; }
-.budget-limit-form { max-width: 44rem; margin-top: 1.5rem; }
-.budget-limit-form label { display: grid; gap: 0.4rem; font-size: 1rem; font-weight: 700; }
+.budget-limit-form p, .budget-limit-form .button-row { margin: 0; }
+.budget-limit-form button[aria-disabled="true"] { opacity: 0.6; cursor: not-allowed; }
 .workspace-view form { max-width: 44rem; }
 .architecture-view { max-width: 90rem; }
 .architecture-intro { font-size: 1.1rem; }

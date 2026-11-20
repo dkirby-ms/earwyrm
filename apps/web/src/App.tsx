@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react'
 import type { IPublicClientApplication } from '@azure/msal-browser'
 import { ApiError, apiBlob, apiJson } from './api'
 import { initializeAuth } from './auth'
@@ -66,7 +66,7 @@ function App() {
   const [adminRequests, setAdminRequests] = useState<readonly AdminAccessRequest[]>([])
   const [budget, setBudget] = useState<BudgetBalance | null>(null)
   const [adminBudgets, setAdminBudgets] = useState<BudgetOverview | null>(null)
-  const [budgetDraft, setBudgetDraft] = useState<{ scope: 'text' | 'speech' | 'user'; owner: string; limit_usd: string }>({ scope: 'text', owner: '', limit_usd: '' })
+  const [budgetDraft, setBudgetDraft] = useState<{ scope: 'text' | 'speech' | 'user'; owner: string; limit_usd: string } | null>(null)
   const [userDraft, setUserDraft] = useState<UserAccessDraft>(emptyDraft)
   const [evaluations, setEvaluations] = useState<Readonly<Record<string, EvaluationDraft>>>({})
   const [evidence, setEvidence] = useState<Readonly<Record<string, string>>>({})
@@ -81,6 +81,15 @@ function App() {
   const busyRef = useRef(false)
   const audioUrls = useRef(new Map<string, { url: string; timer: number }>())
   const adminHeading = useRef<HTMLHeadingElement>(null)
+  const budgetDialog = useRef<HTMLDialogElement>(null)
+  const budgetEditing = budgetDraft !== null
+
+  useLayoutEffect(() => {
+    const dialog = budgetDialog.current
+    if (!dialog) return
+    if (budgetEditing) dialog.showModal()
+    else if (dialog.open) dialog.close()
+  }, [budgetEditing])
 
   function releaseAudio(outputId: string): void {
     const item = audioUrls.current.get(outputId)
@@ -219,7 +228,7 @@ function App() {
       setHistory(null)
       setBudget(null)
       setAdminBudgets(null)
-      setBudgetDraft({ scope: 'text', owner: '', limit_usd: '' })
+      setBudgetDraft(null)
       setHistoryUncertain(false)
       setDescription('')
       setGeneration({ status: 'idle', step: -1 })
@@ -381,15 +390,29 @@ function App() {
     setAdminUsers(users.users)
     setAdminRequests(requests.requests)
     setAdminBudgets(budgets)
-    setBudgetDraft(current => current.limit_usd ? current : { scope: 'text', owner: '', limit_usd: budgets.text.limit_usd ?? '' })
+  }
+
+  function editBudget(trigger: HTMLButtonElement, scope: 'text' | 'speech' | 'user', limit: string | null, owner = ''): void {
+    // Clicks don't focus buttons in every browser; set the native dialog's return target.
+    trigger.focus({ preventScroll: true })
+    setErrorMessage('')
+    setBudgetDraft({ scope, owner, limit_usd: limit ?? '' })
+  }
+
+  function cancelBudgetEdit(): void {
+    if (busyRef.current) return
+    setErrorMessage('')
+    setBudgetDraft(null)
   }
 
   async function saveBudget(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault()
-    if (!client || !config) return
+    if (!client || !config || !budgetDraft || busyRef.current) return
     const submitted = budgetDraft.scope === 'user' ? budgetDraft : { scope: budgetDraft.scope, limit_usd: budgetDraft.limit_usd }
+    let saved = false
     await runAction('Saving budget limit', async () => {
       await apiJson(client, config, '/api/admin/budgets', scopes.write, { method: 'PUT', body: submitted })
+      saved = true
       setAnnouncement('Budget limit saved. Refreshing balances.')
       try {
         await Promise.all([loadAdmin(), refreshHistory(client, config)])
@@ -398,6 +421,7 @@ function App() {
       }
       setAnnouncement('Budget limit saved. Existing usage has not changed.')
     })
+    if (saved) setBudgetDraft(null)
   }
 
   function openAdmin(): void {
@@ -467,8 +491,8 @@ function App() {
       <main id="main" tabIndex={-1} aria-busy={booting || workspaceLoading}>
         <p className="visually-hidden" aria-live="polite" aria-atomic="true">{announcement}</p>
         {(booting || workspaceLoading) && <p className="loading-message" role="status">Loading your workspace…</p>}
-        {busy && generation.status !== 'running' && <p className="working-message">{announcement}</p>}
-        {errorMessage && <p className="alert" role="alert">{errorMessage}</p>}
+        {busy && !budgetEditing && generation.status !== 'running' && <p className="working-message">{announcement}</p>}
+        {errorMessage && !budgetEditing && <p className="alert" role="alert">{errorMessage}</p>}
         {config && config.setup_status !== 'ready' && <section className="panel sign-in-panel">
           <h2>Sign-in setup required</h2>
           <p>{config.setup_status === 'setup-needed' ? 'Configure the existing Entra External ID tenant values on the API, then reload this page.' : 'The API could not validate the External ID configuration. Check the server setup and reload this page.'}</p>
@@ -619,9 +643,9 @@ function App() {
               {adminBudgets ? <>
                 <dl className="budget-summary">
                   <div><dt>Shared AI and safety</dt><dd>Limit: {adminBudgets.text.limit_usd === null ? 'Not configured' : `$${adminBudgets.text.limit_usd}`}. Charged or reserved: ${adminBudgets.text.charged_usd}. Remaining: {adminBudgets.text.remaining_usd === null ? 'Unavailable' : `$${adminBudgets.text.remaining_usd}`}.</dd>
-                    <dd><button className="button button-secondary" type="button" disabled={busy} onClick={() => setBudgetDraft({ scope: 'text', owner: '', limit_usd: adminBudgets.text.limit_usd ?? '' })}>Edit AI budget</button></dd></div>
+                    <dd><button className="button button-secondary" type="button" aria-haspopup="dialog" disabled={busy} onClick={event => editBudget(event.currentTarget, 'text', adminBudgets.text.limit_usd)}>Edit AI budget</button></dd></div>
                   <div><dt>Shared Speech</dt><dd>Limit: {adminBudgets.speech.limit_usd === null ? 'Not configured' : `$${adminBudgets.speech.limit_usd}`}. Charged or reserved: ${adminBudgets.speech.charged_usd}. Remaining: {adminBudgets.speech.remaining_usd === null ? 'Unavailable' : `$${adminBudgets.speech.remaining_usd}`}.</dd>
-                    <dd><button className="button button-secondary" type="button" disabled={busy} onClick={() => setBudgetDraft({ scope: 'speech', owner: '', limit_usd: adminBudgets.speech.limit_usd ?? '' })}>Edit Speech budget</button></dd></div>
+                    <dd><button className="button button-secondary" type="button" aria-haspopup="dialog" disabled={busy} onClick={event => editBudget(event.currentTarget, 'speech', adminBudgets.speech.limit_usd)}>Edit Speech budget</button></dd></div>
                 </dl>
                 <p>Recorded actual charges: Speech ${adminBudgets.actuals.speech_usd}; AI and safety ${adminBudgets.actuals.ai_usd}. Speech attempts awaiting reconciliation: {adminBudgets.actuals.unreconciled_speech_attempts}.</p>
                 <p className="muted">Actuals include only recorded billing evidence, not all provider usage. Text uses worst-case reservations. Historical text charges without a user: ${adminBudgets.unattributed_text_usd}, included in the shared AI total.</p>
@@ -629,18 +653,36 @@ function App() {
                 <p>Users start with a $5 trial allowance shared across paid features. Existing attributable usage counts. Allowances do not reset automatically.</p>
                 <ul className="stack budget-users">{adminBudgets.users.map(user => <li key={`${user.issuer}:${user.subject}`}>
                   <p><code>{user.subject}</code>: limit ${user.limit_usd}; charged or reserved ${user.charged_usd}; remaining ${user.remaining_usd}.</p>
-                  <button className="button button-secondary" type="button" disabled={busy} onClick={() => setBudgetDraft({ scope: 'user', owner: user.subject, limit_usd: user.limit_usd ?? '' })}>Edit budget for {user.subject}</button>
+                  <button className="button button-secondary" type="button" aria-haspopup="dialog" disabled={busy} onClick={event => editBudget(event.currentTarget, 'user', user.limit_usd, user.subject)}>Edit budget for {user.subject}</button>
                 </li>)}</ul>
-                <form className="budget-limit-form" onSubmit={event => void saveBudget(event)}>
-                  <fieldset disabled={busy}>
-                    <legend>Edit budget limit</legend>
-                    <p className="budget-target">Editing: {budgetDraft.scope === 'user' ? `Lifetime allowance for ${budgetDraft.owner}` : budgetDraft.scope === 'text' ? 'Shared AI and safety' : 'Shared Speech'}</p>
-                    <label>Budget limit (USD)<input type="text" inputMode="decimal" pattern="[0-9]{1,8}(\.[0-9]{1,12})?" maxLength={21} required value={budgetDraft.limit_usd} aria-describedby="budget-limit-help" onChange={event => { const limit_usd = event.currentTarget.value; setBudgetDraft(current => ({ ...current, limit_usd })) }} /></label>
-                    <p id="budget-limit-help">Enter the new total limit, for example 5 or 10.50. Raising a shared limit does not enable disabled services or change per-action caps.</p>
-                    <button className="button button-primary" type="submit">Save budget limit</button>
-                  </fieldset>
-                </form>
               </> : <p role="status">Budget data has not loaded. Use Refresh budgets to retry.</p>}
+              <dialog
+                ref={budgetDialog}
+                aria-labelledby="budget-dialog-title"
+                aria-describedby="budget-limit-target"
+                onCancel={event => { event.preventDefault(); cancelBudgetEdit() }}
+                onKeyDown={event => {
+                  if (event.key === 'Escape' && !event.nativeEvent.isComposing && !event.defaultPrevented) {
+                    event.preventDefault()
+                    cancelBudgetEdit()
+                  }
+                }}
+              >
+                {budgetDraft && <div className="dialog-content">
+                  <h4 id="budget-dialog-title">Edit budget limit</h4>
+                  <p id="budget-limit-target" className="budget-target">Editing: {budgetDraft.scope === 'user' ? `Lifetime allowance for ${budgetDraft.owner}` : budgetDraft.scope === 'text' ? 'Shared AI and safety' : 'Shared Speech'}</p>
+                  <form className="budget-limit-form" onSubmit={event => void saveBudget(event)}>
+                    <label>Budget limit (USD)<input type="text" inputMode="decimal" pattern="[0-9]{1,8}(\.[0-9]{1,12})?" maxLength={21} required readOnly={busy} value={budgetDraft.limit_usd} aria-describedby="budget-limit-help" onChange={event => setBudgetDraft({ ...budgetDraft, limit_usd: event.currentTarget.value })} /></label>
+                    <p id="budget-limit-help">Enter the new total limit, for example 5 or 10.50. Raising a shared limit does not enable disabled services or change per-action caps.</p>
+                    {busy && <p role="status">{announcement}</p>}
+                    {errorMessage && <p className="alert" role="alert">{errorMessage}</p>}
+                    <div className="button-row">
+                      <button className="button button-primary" type="submit" aria-disabled={busy}>Save budget limit</button>
+                      <button className="button button-secondary" type="button" aria-disabled={busy} onClick={cancelBudgetEdit}>Cancel</button>
+                    </div>
+                  </form>
+                </div>}
+              </dialog>
             </section>
             <section aria-labelledby="access-requests-heading">
               <h3 id="access-requests-heading">Pending access requests</h3>

@@ -107,7 +107,9 @@ attempt blocks further generation until it is reconciled.
 Open **Manage access**, then **Budgets and usage**. Administrators can inspect
 shared AI/safety and Speech usage, recorded actual charges, and individual
 lifetime balances. Select **Edit AI budget**, **Edit Speech budget**, or
-**Edit budget for** a user, enter the new total in USD, and save.
+**Edit budget for** a user to open the budget dialog without leaving your place
+on the page. Enter the new total and select **Save budget limit**, or select
+**Cancel** or press Escape to discard the edit.
 Use **Refresh budgets** to reload current usage.
 
 Every user, including administrators and existing enabled users, defaults to a

@@ -5,6 +5,21 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 import type { AccessRequestStatus, JingleHistory } from './types'
 
+// jsdom does not implement dialog methods; native keyboard behavior is checked in the browser.
+const dialogTriggers = new WeakMap<HTMLDialogElement, HTMLElement>()
+Object.defineProperties(HTMLDialogElement.prototype, {
+  showModal: { configurable: true, value(this: HTMLDialogElement) {
+    const active = document.activeElement
+    if (active instanceof HTMLElement) dialogTriggers.set(this, active)
+    this.open = true
+    this.querySelector('input')?.focus()
+  } },
+  close: { configurable: true, value(this: HTMLDialogElement) {
+    this.open = false
+    dialogTriggers.get(this)?.focus()
+  } },
+})
+
 const account = { homeAccountId: 'home', environment: 'example.test', tenantId: 'tenant', username: 'operator@example.test', localAccountId: 'local' }
 const estimate = { model_and_safety_max_usd: '0.03', speech_max_usd: '0.02', total_max_usd: '0.05' }
 const output = {
@@ -275,6 +290,34 @@ describe('Jingle workspace', () => {
 })
 
 describe('Authentication and access administration', () => {
+  it('opens the AI budget dialog by keyboard and cancels without saving', async () => {
+    const user = userEvent.setup()
+    const { fetchMock } = installMocks()
+    render(<App />)
+    await signIn(user)
+    await user.click(screen.getByRole('button', { name: 'Manage access' }))
+    const edit = await screen.findByRole('button', { name: 'Edit AI budget' })
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    edit.focus()
+    await user.keyboard('{Enter}')
+    const dialog = screen.getByRole('dialog', { name: 'Edit budget limit' })
+    expect(dialog).toHaveAccessibleDescription('Editing: Shared AI and safety')
+    const amount = within(dialog).getByRole('textbox', { name: 'Budget limit (USD)' })
+    expect(amount).toHaveValue('20')
+    expect(amount).toHaveFocus()
+    await user.clear(amount)
+    await user.type(amount, '21')
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(edit).toHaveFocus()
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'PUT')).toBe(false)
+    await user.click(edit)
+    expect(screen.getByRole('textbox', { name: 'Budget limit (USD)' })).toHaveValue('20')
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(edit).toHaveFocus()
+  })
+
   it('displays the lifetime balance and saves an exact per-user allowance without changing usage', async () => {
     const user = userEvent.setup()
     const { fetchMock } = installMocks()
@@ -288,6 +331,8 @@ describe('Authentication and access administration', () => {
     await user.type(screen.getByLabelText('Budget limit (USD)'), '12.500000000001')
     await user.click(screen.getByRole('button', { name: 'Save budget limit' }))
     expect(await screen.findByText('Budget limit saved. Existing usage has not changed.')).toBeVisible()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Edit budget for existing-user' })).toHaveFocus()
     const call = fetchMock.mock.calls.find(([input, init]) => String(input).endsWith('/api/admin/budgets') && init?.method === 'PUT')
     expect(JSON.parse(String(call?.[1]?.body))).toEqual({ scope: 'user', owner: 'existing-user', limit_usd: '12.500000000001' })
     expect(screen.getByText(/limit \$12.500000000001; charged or reserved \$1.25/)).toBeVisible()
@@ -306,11 +351,13 @@ describe('Authentication and access administration', () => {
     render(<App />)
     await signIn(user)
     await user.click(await screen.findByRole('button', { name: 'Manage access' }))
+    await user.click(await screen.findByRole('button', { name: 'Edit AI budget' }))
+    const dialog = screen.getByRole('dialog', { name: 'Edit budget limit' })
     const input = await screen.findByLabelText('Budget limit (USD)')
     await user.clear(input)
     await user.type(input, '25')
     await user.click(screen.getByRole('button', { name: 'Save budget limit' }))
-    expect(await screen.findByRole('alert')).toHaveTextContent('Administrator access is required')
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('Administrator access is required')
     expect(input).toHaveValue('25')
     expect(screen.queryByText('Budget limit saved. Existing usage has not changed.')).not.toBeInTheDocument()
   })
