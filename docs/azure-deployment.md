@@ -491,6 +491,11 @@ The matching JSON lines have `scope: "earwyrm.jingle"`. Start with
   status when a response was received. HTTP 200 does not mean that the model
   output passed validation.
 
+For browser jingles, the API uses its own pronunciation-based syllable counts.
+A disagreement with the counts reported by the model no longer rejects a draft
+that otherwise passes validation. The actual meter and screening checks still
+apply.
+
 The logs do not include prompts, draft lyrics, provider responses, credentials,
 or account IDs. They do not confirm charges and cannot explain requests made
 before the diagnostic feature was deployed.

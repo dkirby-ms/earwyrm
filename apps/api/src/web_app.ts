@@ -1325,7 +1325,7 @@ export function create_app(options: CreateAppOptions = {}): Express {
       }
       const lyric_request = LyricRequest.parse({ ...custom, product_path: 'spoken', creative_direction: description });
       set_stage('lyrics');
-      const lyrics = await new LyricWriter(backend).write(lyric_request, () => set_stage('safety'));
+      const lyrics = await new LyricWriter(backend, 'derive').write(lyric_request, () => set_stage('safety'));
       const store = await storage();
       const owner = identity(response).subject;
       if (lyrics.status !== 'accepted') {

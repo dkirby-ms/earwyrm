@@ -1085,7 +1085,7 @@ describe('one-page AI jingles', () => {
     const direction = vi.fn(async () => ({ name: brief.name, offer: 'tune ups', cta, tone: 'upbeat' }));
     const backend: LyricBackend = {
       preflight: vi.fn(async () => ({ english: true, risky_claims: false, artist_imitation: false })),
-      generate: vi.fn(async () => JSON.stringify({ hook, lyrics, syllables_per_line: [12, 16], rhyme_scheme: '--', brand_count: 2, cta })),
+      generate: vi.fn(async () => JSON.stringify({ hook, lyrics, syllables_per_line: [12, 15], rhyme_scheme: '--', brand_count: 2, cta })),
       assess: vi.fn(async () => ({ english: true, grounded: true, risky_claims: false })),
       screen: vi.fn(async () => ({ moderation_passed: true, protected_material_detected: false })),
     };
@@ -1112,6 +1112,11 @@ describe('one-page AI jingles', () => {
     const generate = () => request(app).post('/api/jingles').auth(user, { type: 'bearer' }).send({ description });
     const run = await generate();
     expect(run.status, JSON.stringify(run.body)).toBe(200);
+    expect(backend.generate).toHaveBeenCalledTimes(1);
+    expect(backend.assess).toHaveBeenCalledExactlyOnceWith(
+      expect.anything(), expect.objectContaining({ lyrics, syllables_per_line: [12, 16] }),
+    );
+    expect(backend.screen).toHaveBeenCalledExactlyOnceWith(lyrics);
     expect(compose).toHaveBeenCalledTimes(1);
     expect(synthesize).toHaveBeenCalledExactlyOnceWith(lyrics);
     expect(renderer.mock.calls[0]?.[6]?.composition?.result.tempo_bpm).toBe(test_score.tempo_bpm);
@@ -1156,7 +1161,7 @@ describe('one-page AI jingles', () => {
       }
       attempts++;
       if (scenario === 'refused') return Response.json({ error: { code: 'content_filter', message: marker } }, { status: 400 });
-      if (scenario === 'screened') return completion(JSON.stringify(draft));
+      if (scenario === 'screened') return completion(JSON.stringify({ ...draft, syllables_per_line: [12, 15] }));
       if (attempts === 1) return Response.json({ error: marker }, { status: 429 });
       if (attempts === 2) return completion(marker);
       return completion(JSON.stringify({ ...draft, cta: marker }));

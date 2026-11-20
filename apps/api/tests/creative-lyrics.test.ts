@@ -50,6 +50,13 @@ const completion = (content: string, updates = {}) => ({ choices: [{ finish_reas
 const transport = (data: unknown, status = 200) => vi.fn<CloudTransport>().mockImplementation(async () => new Response(JSON.stringify(data), { status }));
 
 describe("deterministic lyric rules", () => {
+  it("still rejects out-of-meter lyrics when deriving syllable counts", () => {
+    const request = request_fixture(), draft = draft_fixture();
+    expect(() => validate_draft(request, {
+      ...draft, hook: "Bright Bike", lyrics: `Bright Bike\n${request.cta}`,
+    }, "derive")).toThrow("meter");
+  });
+
   it("validates dictionary-based spoken and distinct phonetic AABB pairs", () => {
     const request = request_fixture(), draft = draft_fixture();
     expect(validate_draft(request, draft)).toBe(draft);

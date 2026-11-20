@@ -132,9 +132,10 @@ export function has_cta_rhyme(cta: string, overrides: Record<string, string[]>, 
 }
 
 /** Recompute meter, phonetic rhyme, brand occurrences and fixed CTA/hook placement.
+ * By default, require the submitted syllable counts to match. In derive mode, return the computed counts instead.
  * @throws LyricRuleError with a safe code for a failed lexical or prosody rule.
  */
-export function validate_draft(request: LyricRequest, draft: LyricDraft): LyricDraft {
+export function validate_draft(request: LyricRequest, draft: LyricDraft, syllable_counts: "verify" | "derive" = "verify"): LyricDraft {
   const policy = POLICIES[request.product_path], lines = draft.lyrics.split("\n");
   if (lines.length !== policy.lines || !/^[\x00-\x7f]*$/.test(draft.lyrics) || lines.some(line => !line.trim() || line !== line.trim()) || /[\x00-\x09\x0b-\x1f\x7f]/.test(draft.lyrics)) throw new LyricRuleError("line_format");
   if (draft.cta !== request.cta || lines.at(-1) !== request.cta || lines.filter(line => line === request.cta).length !== 1) throw new LyricRuleError("cta_placement");
@@ -147,7 +148,7 @@ export function validate_draft(request: LyricRequest, draft: LyricDraft): LyricD
     if (counts.some((count, index) => count !== request.arrangement!.syllables_per_line[index])) throw new LyricRuleError("arrangement_meter");
     for (const line of lines) lyric_syllables(line, request.pronunciations);
   } else if (counts.some(count => count < policy.min_syllables || count > policy.max_syllables)) throw new LyricRuleError("meter");
-  if (JSON.stringify(counts) !== JSON.stringify(draft.syllables_per_line)) throw new LyricRuleError("syllable_metadata");
+  if (syllable_counts === "verify" && JSON.stringify(counts) !== JSON.stringify(draft.syllables_per_line)) throw new LyricRuleError("syllable_metadata");
   if (draft.rhyme_scheme !== policy.rhyme_scheme) throw new LyricRuleError("rhyme_metadata");
   if (request.product_path === "vocoded") {
     const tails = phones.map(row => rhyme(row.at(-1)!));
@@ -159,5 +160,5 @@ export function validate_draft(request: LyricRequest, draft: LyricDraft): LyricD
     if (brand.every((word, j) => tokens[i + j] === word)) brand_count++;
   }
   if (brand_count !== 2 || draft.brand_count !== brand_count) throw new LyricRuleError("brand_count");
-  return draft;
+  return syllable_counts === "derive" ? { ...draft, syllables_per_line: counts } : draft;
 }

@@ -26,7 +26,7 @@ function brief_text(request: LyricRequest): string {
 
 /** Fail-closed writer owning one initial generation attempt and exactly three retries. */
 export class LyricWriter {
-  constructor(readonly backend: LyricBackend) {}
+  constructor(readonly backend: LyricBackend, private readonly syllable_counts: "verify" | "derive" = "verify") {}
 
   /** Resolve to screened lyrics or an explicit safe outcome; notify immediately before external safety checks. */
   async write(request: LyricRequest, on_screen?: () => void): Promise<LyricResult> {
@@ -66,7 +66,7 @@ export class LyricWriter {
           catch (error) { if (!(error instanceof SyntaxError)) throw error; retry("malformed_lyric_output"); continue; }
           const parsed = parse_candidate(request, data);
           if (!parsed) { retry("malformed_lyric_output"); continue; }
-          draft = validate_draft(request, parsed);
+          draft = validate_draft(request, parsed, this.syllable_counts);
         } catch (error) {
           if (error instanceof LyricRuleError) {
             retry(error.message);
