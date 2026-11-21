@@ -23,7 +23,8 @@ const DrumEvent = z.strictObject({
   if (event.step + event.duration_steps > 8) ctx.addIssue({ code: "custom", message: "Events must end within their bar" });
 });
 
-const Track = z.discriminatedUnion("instrument", [
+// The disjoint instrument sets allow anyOf, which Azure supports in structured outputs.
+const Track = z.union([
   z.strictObject({ instrument: z.enum(["pad", "bass", "lead"]), events: z.array(MelodicEvent).min(1).max(16) }),
   z.strictObject({ instrument: z.enum(["kick", "snare", "hat"]), events: z.array(DrumEvent).min(1).max(16) }),
 ]);

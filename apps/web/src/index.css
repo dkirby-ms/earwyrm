@@ -316,6 +316,7 @@ footer p { margin: 0; }
 }
 .generation-steps h3 { margin: 0; font-size: 1.05rem; text-wrap: initial; }
 .generation-steps p { margin: 0.18rem 0 0; color: var(--muted); font-size: 0.875rem; }
+.generation-steps .generation-timing { font-variant-numeric: tabular-nums; font-size: 0.8rem; }
 .generation-service { color: #1d4e3e; font-weight: 700; font-size: 0.75rem; }
 .generation-number {
   position: absolute; left: -2.65rem; top: 0.62rem; display: grid; place-items: center;

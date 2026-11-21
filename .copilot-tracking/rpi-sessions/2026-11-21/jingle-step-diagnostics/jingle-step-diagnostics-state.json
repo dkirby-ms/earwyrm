@@ -1,0 +1,119 @@
+{
+  "task_id": "jingle-step-diagnostics",
+  "task_slug": "jingle-step-diagnostics",
+  "session_name": "Jingle step diagnostics",
+  "parent_task": null,
+  "child_tasks": [],
+  "mode": "automatic",
+  "active_phase": "Follow-up",
+  "status": "completed",
+  "session_status": "stopped",
+  "artifact_paths": {
+    "research": ".copilot-tracking/research/2026-11-21/jingle-step-diagnostics-research.md",
+    "plan": ".copilot-tracking/plans/2026-11-21/jingle-step-diagnostics-plan.md",
+    "critique": ".copilot-tracking/reviews/plans/2026-11-21/jingle-step-diagnostics-plan-critique.md",
+    "changes": ".copilot-tracking/changes/2026-11-21/jingle-step-diagnostics-changes.md",
+    "review": ".copilot-tracking/reviews/logs/2026-11-21/jingle-step-diagnostics-review.md",
+    "refinement": ".copilot-tracking/reviews/logs/2026-11-21/jingle-step-diagnostics-refinement.md"
+  },
+  "documents": {
+    "research": [
+      ".copilot-tracking/research/2026-11-21/jingle-step-diagnostics-research.md"
+    ],
+    "plan": [
+      ".copilot-tracking/plans/2026-11-21/jingle-step-diagnostics-plan.md"
+    ],
+    "critique": [
+      ".copilot-tracking/reviews/plans/2026-11-21/jingle-step-diagnostics-plan-critique.md"
+    ],
+    "changes": [
+      ".copilot-tracking/changes/2026-11-21/jingle-step-diagnostics-changes.md"
+    ],
+    "review": [
+      ".copilot-tracking/reviews/logs/2026-11-21/jingle-step-diagnostics-review.md"
+    ],
+    "refinement": [
+      ".copilot-tracking/reviews/logs/2026-11-21/jingle-step-diagnostics-refinement.md"
+    ]
+  },
+  "confirmed_decisions": [
+    {
+      "decision": "Automatic session scope",
+      "status": "current",
+      "evidence": "Original request: show useful diagnostic information for each step of the jingle flow, such as duration or token counts. Root task is this state file. Writes are limited to that UI flow and directly required contracts/tests/docs; no live paid generation, deployment, or unrelated provider/billing changes."
+    },
+    {
+      "decision": "Automatic progression boundary",
+      "status": "through-review",
+      "evidence": "User selected \"Handle it end to end\" in this conversation."
+    },
+    {
+      "decision": "Research decision participation",
+      "status": "agent-owned",
+      "evidence": "Default for the user's end-to-end choice."
+    },
+    {
+      "decision": "Planning decision participation",
+      "status": "agent-owned",
+      "evidence": "Default for the user's end-to-end choice."
+    },
+    {
+      "decision": "Review decision participation",
+      "status": "agent-owned",
+      "evidence": "Default for the user's end-to-end choice."
+    },
+    {
+      "decision": "Follow-up decision participation",
+      "status": "agent-owned",
+      "evidence": "Default for the user's end-to-end choice."
+    },
+    {
+      "decision": "Subagent use",
+      "status": "auto",
+      "evidence": "Default; no separate helper is planned unless it improves evidence quality."
+    },
+    {
+      "decision": "Research lane effort",
+      "status": "auto",
+      "evidence": "Default."
+    },
+    {
+      "decision": "Planning critique",
+      "status": "standard",
+      "evidence": "Initial plan draft default. Completed at .copilot-tracking/reviews/plans/2026-11-21/jingle-step-diagnostics-plan-critique.md with Revise verdict; planner-owned PC-001 was resolved in the plan without a follow-up critique."
+    },
+    {
+      "decision": "Review step",
+      "status": "run",
+      "evidence": "Initial review default: run rpi-review and rpi-refine."
+    },
+    {
+      "decision": "Review disposition",
+      "status": "executed",
+      "evidence": "Acceptance review and standard refinement are complete at .copilot-tracking/reviews/logs/2026-11-21/jingle-step-diagnostics-review.md and .copilot-tracking/reviews/logs/2026-11-21/jingle-step-diagnostics-refinement.md."
+    },
+    {
+      "decision": "Canvas",
+      "status": "current",
+      "evidence": "Instance rpi-jingle-step-diagnostics, handle ZB71, provider plugin:hve-core:rpi-workflow."
+    },
+    {
+      "decision": "Research disposition",
+      "status": "executed",
+      "evidence": "Planning Ready: C1-C9 and F1-F2 in .copilot-tracking/research/2026-11-21/jingle-step-diagnostics-research.md; use server-measured stage durations, omit incomplete token counts."
+    },
+    {
+      "decision": "Plan disposition",
+      "status": "planned",
+      "evidence": "Completed and readied the server-measured per-stage duration plan. Standard critique PC-001 was resolved by defining active revisited-stage timing in P01-T01 and P01-T02."
+    },
+    {
+      "decision": "Terminal progress lifetime",
+      "status": "confirmed",
+      "evidence": "Plan decision D2: retain at most the latest terminal timing snapshot for 60 seconds, scoped to the progress ID and authenticated owner, then expire or replace it."
+    }
+  ],
+  "blockers": [],
+  "next_action": null,
+  "prioritized_follow_ups": []
+}

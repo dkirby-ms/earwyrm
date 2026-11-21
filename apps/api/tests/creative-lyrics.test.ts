@@ -525,6 +525,9 @@ describe("structured score provider without paid requests", () => {
     expect(body.max_completion_tokens).toBe(1200);
     expect(body.response_format.json_schema.strict).toBe(true);
     expect(body.response_format.json_schema.schema.additionalProperties).toBe(false);
+    const schema = body.response_format.json_schema.schema;
+    expect(schema.properties.tracks.items.anyOf).toHaveLength(2);
+    expect(JSON.stringify(schema)).not.toContain('"oneOf"');
     expect(JSON.parse(body.messages[1].content)).toEqual(prompt);
     expect(String(init.body)).not.toContain(request.brief.contact_details.email);
     expect(String(init.body)).not.toContain(request.brief.contact_details.phone);

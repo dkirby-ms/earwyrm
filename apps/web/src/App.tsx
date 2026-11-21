@@ -3,8 +3,8 @@ import type { IPublicClientApplication } from '@azure/msal-browser'
 import { ApiError, apiBlob, apiJson } from './api'
 import { initializeAuth } from './auth'
 import type {
-  Access, AccessRequestStatus, AdminAccessRequest, BudgetOverview, EvaluationDraft, JingleDiagnostic, JingleHistory, LyricReservation,
-  Output, PaidAttempt, PublicConfig, RenderRun, TextBudgetBalance, UserAccess, UserAccessDraft,
+  Access, AccessRequestStatus, AdminAccessRequest, BudgetOverview, EvaluationDraft, JingleDiagnostic, JingleHistory, JingleProgress,
+  LyricReservation, Output, PaidAttempt, PublicConfig, RenderRun, TextBudgetBalance, UserAccess, UserAccessDraft,
 } from './types'
 
 const scopes = {
@@ -15,8 +15,21 @@ const scopes = {
 interface Identity { readonly issuer: string; readonly subject: string }
 type View = 'workspace' | 'admin'
 type AdminTask = 'diagnostics' | 'budgets' | 'access'
+type GenerationState = {
+  status: 'idle' | 'running' | 'failed' | 'done'
+  step: number
+  furthestStep: number
+  delayed: boolean
+  stageDurationsMs: JingleProgress['stage_durations_ms']
+  currentStageElapsedMs: number | null
+  timingStatus: 'waiting' | 'live' | 'final' | 'unavailable'
+}
 const emptyDraft: UserAccessDraft = { issuer: '', subject: '', enabled: false, admin: false, paid_speech: false }
 const emptyEvaluation: EvaluationDraft = { brand_transcription: '', cta_transcription: '', self_rating: '' }
+const initialGeneration: GenerationState = {
+  status: 'idle', step: -1, furthestStep: -1, delayed: false, stageDurationsMs: {},
+  currentStageElapsedMs: null, timingStatus: 'waiting',
+}
 const generationSteps = [
   { stage: 'brief', title: 'Check the brief', detail: 'Check the budget and read the business description.', service: 'Earwyrm' },
   { stage: 'lyrics', title: 'Write the lyrics', detail: 'Extract the brand, offer, and call to action; draft lyrics and check the claims.', service: 'Azure OpenAI' },
@@ -26,6 +39,19 @@ const generationSteps = [
   { stage: 'voice', title: 'Synthesize the voice', detail: 'Generate one vocal for both versions.', service: 'Azure Speech' },
   { stage: 'mix', title: 'Mix and save two versions', detail: 'Align the voice and save spoken and vocoded WAVs.', service: 'Earwyrm' },
 ] as const
+
+function formatDuration(milliseconds: number): string | null {
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) return null
+  const roundedMilliseconds = Math.round(milliseconds)
+  if (roundedMilliseconds < 1000) return `${roundedMilliseconds}ms`
+  const seconds = roundedMilliseconds / 1000
+  return `${Number.isInteger(seconds) ? seconds : seconds.toFixed(1)}s`
+}
+
+function durationLabel(label: 'Elapsed' | 'Duration', milliseconds: number | undefined): string {
+  const duration = milliseconds === undefined ? null : formatDuration(milliseconds)
+  return duration === null ? 'Timing unavailable' : `${label}: ${duration}`
+}
 
 function errorText(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback
@@ -63,7 +89,7 @@ function App() {
   const [historyUncertain, setHistoryUncertain] = useState(false)
   const [description, setDescription] = useState('')
   const [pronunciationHints, setPronunciationHints] = useState('')
-  const [generation, setGeneration] = useState<{ status: 'idle' | 'running' | 'failed' | 'done'; step: number; delayed?: boolean }>({ status: 'idle', step: -1 })
+  const [generation, setGeneration] = useState<GenerationState>(initialGeneration)
   const [adminUsers, setAdminUsers] = useState<readonly UserAccess[]>([])
   const [adminRequests, setAdminRequests] = useState<readonly AdminAccessRequest[]>([])
   const [adminTask, setAdminTask] = useState<AdminTask>('diagnostics')
@@ -239,7 +265,7 @@ function App() {
       setHistoryUncertain(false)
       setDescription('')
       setPronunciationHints('')
-      setGeneration({ status: 'idle', step: -1 })
+      setGeneration(initialGeneration)
       setEvidence({})
       setEvaluations({})
       setAdminUsers([])
@@ -283,26 +309,63 @@ function App() {
     await runAction('Generating jingle', async () => {
       const progressId = crypto.randomUUID()
       const controller = new AbortController()
-      setGeneration({ status: 'running', step: -1 })
+      setGeneration({ ...initialGeneration, status: 'running' })
       let lastStep = -1
       let timer: ReturnType<typeof setTimeout>
       const poll = async () => {
         try {
-          const { stage } = await apiJson<{ stage: string | null }>(client, config, `/api/jingles/${progressId}/progress`, scopes.read, {
+          const progress = await apiJson<JingleProgress>(client, config, `/api/jingles/${progressId}/progress`, scopes.read, {
             signal: AbortSignal.any([controller.signal, AbortSignal.timeout(4000)]),
             interactive: false,
           })
           if (controller.signal.aborted) return
+          const { stage } = progress
           const step = generationSteps.findIndex(item => item.stage === stage)
           if (step > lastStep) {
             lastStep = step
             setAnnouncement(`Step ${step + 1} of ${generationSteps.length}: ${generationSteps[step]!.title}.`)
           }
-          setGeneration(current => ({ ...current, step: lastStep, delayed: stage === null && lastStep >= 0 }))
+          setGeneration(current => ({
+            ...current,
+            step: step < 0 ? current.step : step,
+            furthestStep: Math.max(current.furthestStep, step),
+            delayed: stage === null && lastStep >= 0,
+            stageDurationsMs: { ...current.stageDurationsMs, ...progress.stage_durations_ms },
+            currentStageElapsedMs: stage === null ? null : progress.current_stage_elapsed_ms,
+            timingStatus: stage !== null && progress.current_stage_elapsed_ms !== null ? 'live' : 'unavailable',
+          }))
         } catch {
-          if (!controller.signal.aborted) setGeneration(current => ({ ...current, delayed: true }))
+          if (!controller.signal.aborted) setGeneration(current => ({
+            ...current, delayed: true, currentStageElapsedMs: null, timingStatus: 'unavailable',
+          }))
         } finally {
           if (!controller.signal.aborted) timer = setTimeout(() => void poll(), 500)
+        }
+      }
+      const finishProgress = async () => {
+        controller.abort()
+        clearTimeout(timer)
+        try {
+          const progress = await apiJson<JingleProgress>(client, config, `/api/jingles/${progressId}/progress`, scopes.read, {
+            signal: AbortSignal.timeout(4000),
+            interactive: false,
+          })
+          const finalStep = generationSteps.findIndex(item => item.stage === progress.stage)
+          const finalDuration = progress.stage === null ? undefined : progress.stage_durations_ms[progress.stage]
+          const hasFinalDuration = finalDuration !== undefined && Number.isFinite(finalDuration) && finalDuration >= 0
+          setGeneration(current => ({
+            ...current,
+            step: finalStep < 0 ? current.step : finalStep,
+            furthestStep: Math.max(current.furthestStep, finalStep),
+            stageDurationsMs: { ...current.stageDurationsMs, ...progress.stage_durations_ms },
+            currentStageElapsedMs: null,
+            delayed: false,
+            timingStatus: hasFinalDuration ? 'final' : 'unavailable',
+          }))
+        } catch {
+          setGeneration(current => ({
+            ...current, currentStageElapsedMs: null, delayed: false, timingStatus: 'unavailable',
+          }))
         }
       }
       timer = setTimeout(() => void poll(), 300)
@@ -315,8 +378,7 @@ function App() {
           },
         })
       } catch (error) {
-        controller.abort()
-        clearTimeout(timer)
+        await finishProgress()
         setGeneration(current => ({ ...current, status: 'failed' }))
         let refreshMessage = ''
         try { await refreshHistory(client, config) }
@@ -329,9 +391,11 @@ function App() {
           : ''
         throw new Error(`${errorText(error, 'The jingle could not be generated.')} Some AI or speech calls may still be charged. Check Your jingles for any completed result.${refreshMessage}${diagnostic}`)
       }
-      controller.abort()
-      clearTimeout(timer)
-      setGeneration({ status: 'done', step: generationSteps.length })
+      await finishProgress()
+      setGeneration(current => ({
+        ...current, status: 'done', step: generationSteps.length,
+        furthestStep: generationSteps.length, currentStageElapsedMs: null, delayed: false,
+      }))
       setHistory(current => current ? { ...current, runs: [result, ...current.runs.filter(run => run.run_id !== result.run_id)] } : current)
       setDescription('')
       setPronunciationHints('')
@@ -649,14 +713,24 @@ function App() {
                 </p>
                 <ol role="list" aria-labelledby="generation-flow-heading" className="generation-steps">
                   {generationSteps.map((step, index) => {
-                    const state = index < generation.step ? 'complete'
-                      : index === generation.step && generation.status === 'running' && !generation.delayed ? 'active'
-                        : index === generation.step ? 'last' : 'waiting'
+                    const state = index === generation.step && generation.status === 'running' && !generation.delayed ? 'active'
+                      : index === generation.step ? 'last'
+                        : index <= generation.furthestStep ? 'complete' : 'waiting'
+                    const completedDuration = generation.stageDurationsMs[step.stage]
+                    const timing = state === 'waiting' ? 'Not reached'
+                      : state === 'active'
+                        ? generation.timingStatus === 'live' && generation.currentStageElapsedMs !== null
+                          ? durationLabel('Elapsed', (completedDuration ?? 0) + generation.currentStageElapsedMs)
+                          : 'Timing unavailable'
+                        : state === 'last' && (generation.status === 'running' || generation.timingStatus !== 'final')
+                          ? 'Timing unavailable'
+                          : durationLabel('Duration', completedDuration)
                     return <li key={step.stage} data-state={state} aria-current={state === 'active' ? 'step' : undefined}>
                       <span className="generation-number" aria-hidden="true">{index + 1}</span>
                       <div>
                         <h3>{step.title}</h3>
                         <p>{step.detail}</p>
+                        <p className="generation-timing">{timing}</p>
                         <span className="generation-service">{step.service}</span>
                       </div>
                       {state !== 'waiting' && <span className="generation-label">{state === 'active' ? 'In progress' : state === 'complete' ? 'Done' : 'Last reported'}</span>}

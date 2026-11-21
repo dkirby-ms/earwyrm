@@ -3,7 +3,7 @@ import { cleanup, render, screen, waitFor, within } from '@testing-library/react
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
-import type { AccessRequestStatus, JingleDiagnostic, JingleHistory } from './types'
+import type { AccessRequestStatus, JingleDiagnostic, JingleHistory, JingleProgress } from './types'
 
 type MockLyricEvent = {
   event_id: string
@@ -71,6 +71,7 @@ function installMocks(options: {
   failGenerate?: boolean
   waitForGeneration?: Promise<void>
   progressStage?: () => string | null
+  progressSnapshot?: (generated: boolean) => JingleProgress
   failRefreshAfterGenerate?: boolean
   email?: string | null
   failBudgetSave?: boolean
@@ -232,8 +233,10 @@ function installMocks(options: {
       return Response.json(history)
     }
     if (/^\/api\/jingles\/[^/]+\/progress$/.test(path)) {
+      const progress = options.progressSnapshot?.(generated)
+      if (progress) return Response.json(progress)
       if (!options.progressStage) return Response.json({ detail: 'Unavailable' }, { status: 503 })
-      return Response.json({ stage: options.progressStage() })
+      return Response.json({ stage: options.progressStage(), stage_durations_ms: {}, current_stage_elapsed_ms: null })
     }
     if (path === '/api/attempts/attempt-1/reconcile') {
       history = { estimate, unavailable_reason: null, runs: [{ ...run, attempt: { ...run.attempt, status: 'reconciled', actual_cost_usd: '0.015', jingle_ai_actual_cost_usd: '0.025' } }] }
@@ -308,7 +311,21 @@ describe('Jingle workspace', () => {
     let finish!: () => void
     const pending = new Promise<void>(resolve => { finish = resolve })
     let stage = 'lyrics'
-    installMocks({ waitForGeneration: pending, progressStage: () => stage, failGenerate: true })
+    let revisitedLyrics = false
+    installMocks({
+      waitForGeneration: pending,
+      progressStage: () => stage,
+      progressSnapshot: generated => {
+        if (generated) return { stage: 'safety', stage_durations_ms: { brief: 1800, lyrics: 2200, safety: 1500 }, current_stage_elapsed_ms: null }
+        if (stage === 'lyrics') {
+          return revisitedLyrics
+            ? { stage: 'lyrics', stage_durations_ms: { brief: 1800, lyrics: 2200 }, current_stage_elapsed_ms: 700 }
+            : { stage: 'lyrics', stage_durations_ms: { brief: 1800, lyrics: 900 }, current_stage_elapsed_ms: 1300 }
+        }
+        return { stage: 'safety', stage_durations_ms: { brief: 1800, lyrics: 2200, safety: 400 }, current_stage_elapsed_ms: 600 }
+      },
+      failGenerate: true,
+    })
     render(<App />)
     await signIn(user)
     await user.type(await screen.findByLabelText('Describe your jingle'), 'Bike shop')
@@ -317,15 +334,61 @@ describe('Jingle workspace', () => {
     const [brief, lyrics, safety, score] = within(list).getAllByRole('listitem')
     await waitFor(() => expect(lyrics).toHaveAttribute('aria-current', 'step'))
     expect(brief).toHaveTextContent('Done')
+    expect(brief).toHaveTextContent('Duration: 1.8s')
+    expect(lyrics).toHaveTextContent('Elapsed: 2.2s')
     expect(safety).not.toHaveAttribute('aria-current')
+    stage = 'safety'
+    await waitFor(() => expect(safety).toHaveAttribute('aria-current', 'step'))
+    expect(safety).toHaveTextContent('Elapsed: 1s')
+    expect(screen.getByText('Step 3 of 7: Screen the lyrics.')).toBeVisible()
+    revisitedLyrics = true
+    stage = 'lyrics'
+    await waitFor(() => expect(lyrics).toHaveAttribute('aria-current', 'step'))
+    expect(lyrics).toHaveTextContent('Elapsed: 2.9s')
+    expect(safety).toHaveTextContent('Done')
     stage = 'safety'
     await waitFor(() => expect(safety).toHaveAttribute('aria-current', 'step'))
     finish()
     expect(await screen.findByRole('alert')).toHaveTextContent('Provider failed')
     expect(screen.getByRole('alert')).toHaveTextContent('Diagnostic ID: a08940a6-6b20-42b0-98ab-66b98b51e013')
+    expect(screen.getByText('Generating jingle failed.')).toBeVisible()
     expect(safety).toHaveTextContent('Last reported')
+    expect(safety).toHaveTextContent('Duration: 1.5s')
     expect(safety).not.toHaveAttribute('aria-current')
     expect(score).not.toHaveTextContent('Done')
+    expect(score).toHaveTextContent('Not reached')
+  })
+
+  it('shows final success timing and labels reached steps with missing timing as unavailable', async () => {
+    const user = userEvent.setup()
+    let finish!: () => void
+    const pending = new Promise<void>(resolve => { finish = resolve })
+    installMocks({
+      waitForGeneration: pending,
+      progressSnapshot: generated => generated
+        ? {
+          stage: 'mix',
+          stage_durations_ms: { brief: 1800, lyrics: 2200, safety: 1000, score: 2500, backing: 5000, mix: 4800 },
+          current_stage_elapsed_ms: null,
+        }
+        : {
+          stage: 'voice',
+          stage_durations_ms: { brief: 1800, lyrics: 2200, safety: 1000, score: 2500, backing: 5000 },
+          current_stage_elapsed_ms: 1500,
+        },
+    })
+    render(<App />)
+    await signIn(user)
+    await user.type(await screen.findByLabelText('Describe your jingle'), 'Bike shop')
+    await user.click(screen.getByRole('button', { name: 'Generate jingle' }))
+    const list = screen.getByRole('list', { name: 'How your jingle gets made' })
+    const [, , , , , voice, mix] = within(list).getAllByRole('listitem')
+    await waitFor(() => expect(voice).toHaveAttribute('aria-current', 'step'))
+    expect(voice).toHaveTextContent('Elapsed: 1.5s')
+    finish()
+    expect(await screen.findByText('Jingle generated. Review and listen below.')).toBeVisible()
+    expect(mix).toHaveTextContent('Duration: 4.8s')
+    expect(voice).toHaveTextContent('Timing unavailable')
   })
 
   it('refreshes history on failure without resubmitting or losing the prompt', async () => {

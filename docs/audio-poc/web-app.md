@@ -99,11 +99,16 @@ application permissions. Operators can also use
    uses Foundry to compose the score, and mixes Azure Speech with that score.
    It does not substitute seeded music if a stage fails.
 3. Follow the generation timeline. It highlights the current step as the
-   server reports it; short steps may pass between updates. If updates become
-   unavailable, the page still waits for the original generation request. If
-   lyric retries run out, the error lists the distinct checks that failed.
-   Other failures name the last confirmed stage and a known recovery action.
-   Share the diagnostic ID with an administrator for server-side details.
+   server reports it; short steps may pass between updates. Reached steps show
+   server-measured elapsed time, including earlier visits to the active step.
+   Completed steps show their accumulated duration. These timings are not
+   provider billing or token usage. Steps that have not started say **Not
+   reached**; missing timing is labeled **Timing unavailable**. If updates
+   become unavailable, the page still waits for the original generation
+   request. If lyric retries run out, the error lists the distinct checks that
+   failed. Other failures name the last confirmed stage and a known recovery
+   action. Share the diagnostic ID with an administrator for server-side
+   details.
 4. Listen and review the demo on the same page. Generation is not broadcast
    approval. If the connection drops, check Your jingles for a completed
    result. When the error says a music-score provider outcome is uncertain, do

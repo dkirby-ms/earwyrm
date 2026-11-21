@@ -9,6 +9,9 @@ import { once } from 'node:events';
 import { createHash } from 'node:crypto';
 import { Decimal } from 'decimal.js';
 import { create_app, EXPECTED_ANSWERS, type CreateAppOptions } from '../src/web_app.js';
+import {
+  current_jingle_stage_elapsed_ms, finish_jingle_stage, transition_jingle_stage, type JingleProgressTiming,
+} from '../src/jingle_progress_timing.js';
 import { AuthSettings, TokenValidator, type Environment } from '../src/web_auth.js';
 import { canonical_json, STATIC_ROOT, StorageConflict, WebStorage } from '../src/web_storage.js';
 import { acquire_writer_lock, prepare_databases } from '../src/cloud_web.js';
@@ -1183,6 +1186,19 @@ describe('guarded paid text ledger', () => {
 });
 
 describe('one-page AI jingles', () => {
+  it('accumulates active and terminal timing when a stage is revisited', () => {
+    const progress: JingleProgressTiming = { stage: 'lyrics', stage_started_at: 100, stage_durations_ms: {} };
+    transition_jingle_stage(progress, 'safety', 150);
+    transition_jingle_stage(progress, 'safety', 160);
+    transition_jingle_stage(progress, 'lyrics', 180);
+
+    expect(progress.stage_durations_ms).toEqual({ lyrics: 50, safety: 30 });
+    expect(current_jingle_stage_elapsed_ms(progress, 220)).toBe(40);
+
+    finish_jingle_stage(progress, 225);
+    expect(progress.stage_durations_ms).toEqual({ lyrics: 95, safety: 30 });
+  });
+
   it.each(['short_cta', 'punctuation', 'pronunciation', 'invalid_hint', 'overlong_cta', 'unknown_brand', 'fixed_whitespace'] as const)('handles %s without rewriting user text or wasting opening retries', async scenario => {
     const root = root_dir();
     const name = ['pronunciation', 'invalid_hint', 'unknown_brand'].includes(scenario) ? 'Zyvox Bike' : 'Bright Bike';
@@ -1270,9 +1286,23 @@ describe('one-page AI jingles', () => {
     expect(quote.status).toBe(200);
     expect(quote.body).toEqual({ estimate: { model_and_safety_max_usd: '0.112', speech_max_usd: '0.4', total_max_usd: '0.512' }, unavailable_reason: null, runs: [] });
     expect(direction).not.toHaveBeenCalled();
-    const generate = () => request(app).post('/api/jingles').auth(user, { type: 'bearer' }).send({ description });
+    const progress_id = 'e661c36f-a646-41b6-a641-84b01be09dc8';
+    const progress = `/api/jingles/${progress_id}/progress`;
+    const generate = () => request(app).post('/api/jingles').auth(user, { type: 'bearer' })
+      .send({ description, progress_id });
     const run = await generate();
     expect(run.status, JSON.stringify(run.body)).toBe(200);
+    expect((await request(app).get(progress).auth(user, { type: 'bearer' })).body).toMatchObject({
+      stage: 'mix',
+      stage_durations_ms: {
+        brief: expect.any(Number), lyrics: expect.any(Number), safety: expect.any(Number),
+        score: expect.any(Number), backing: expect.any(Number), voice: expect.any(Number), mix: expect.any(Number),
+      },
+      current_stage_elapsed_ms: null,
+    });
+    expect((await request(app).get(progress).auth(access_token, { type: 'bearer' })).body).toEqual({
+      stage: null, stage_durations_ms: {}, current_stage_elapsed_ms: null,
+    });
     expect((await request(app).get(`/api/admin/jingle-diagnostics/${run.headers['x-earwyrm-diagnostic-id']}`)
       .auth(access_token, { type: 'bearer' })).body).toMatchObject({ status: 'completed', stage: 'mix' });
     expect(backend.generate).toHaveBeenCalledTimes(1);
@@ -1423,6 +1453,8 @@ describe('one-page AI jingles', () => {
   });
 
   it('does not render a fallback when a score provider fails', async () => {
+    let now = 1_000;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
     const root = root_dir();
     const [brief, script] = load_inputs()[0]!;
     const cta = script.split(/(?<=[.!?])\s+/).at(-1)!;
@@ -1435,16 +1467,27 @@ describe('one-page AI jingles', () => {
     const { app, access_token, speech_factory } = await fixture({
       data_dir: root,
       environ: { ...speech_environment(root, { SPEECH_TOTAL_BUDGET_USD: '2' }), ...lyric_limits, LYRIC_ENABLED: 'true' },
-      jingle_direction: async () => ({ name: brief.name, offer: 'tune ups', cta, suggested_cta: null, tone: 'upbeat' }),
+      jingle_direction: async () => {
+        now += 20;
+        return { name: brief.name, offer: 'tune ups', cta, suggested_cta: null, tone: 'upbeat' };
+      },
       lyric_backend: {
         preflight: async () => ({ english: true, risky_claims: false, artist_imitation: false }),
         generate: async () => JSON.stringify({ hook }),
-        assess: async () => ({ english: true, grounded: true, risky_claims: false }),
-        screen: async () => ({ moderation_passed: true, protected_material_detected: false }),
+        assess: async () => {
+          now += 30;
+          return { english: true, grounded: true, risky_claims: false };
+        },
+        screen: async () => {
+          now += 15;
+          return { moderation_passed: true, protected_material_detected: false };
+        },
       },
       score_composer: { compose: async () => {
+        now += 40;
         mark_entered();
         await released;
+        now += 20;
         throw new Error('test provider failed');
       } },
       render,
@@ -1456,12 +1499,26 @@ describe('one-page AI jingles', () => {
       .then(response => response);
     try {
       await Promise.race([entered, generation.then(res => { throw new Error(`Score was not reached: ${res.status}`); })]);
-      expect((await request(app).get(progress).auth(access_token, { type: 'bearer' })).body).toEqual({ stage: 'score' });
-      expect((await request(app).get(progress).auth(await token('user-b'), { type: 'bearer' })).body).toEqual({ stage: null });
+      expect((await request(app).get(progress).auth(access_token, { type: 'bearer' })).body).toEqual({
+        stage: 'score',
+        stage_durations_ms: { brief: 0, lyrics: 50, safety: 15 },
+        current_stage_elapsed_ms: 40,
+      });
+      expect((await request(app).get(progress).auth(await token('user-b'), { type: 'bearer' })).body).toEqual({
+        stage: null, stage_durations_ms: {}, current_stage_elapsed_ms: null,
+      });
       expect((await request(app).get(progress)).status).toBe(401);
     } finally { release(); }
     const result = await generation;
-    expect((await request(app).get(progress).auth(access_token, { type: 'bearer' })).body).toEqual({ stage: null });
+    expect((await request(app).get(progress).auth(access_token, { type: 'bearer' })).body).toEqual({
+      stage: 'score',
+      stage_durations_ms: { brief: 0, lyrics: 50, safety: 15, score: 60 },
+      current_stage_elapsed_ms: null,
+    });
+    now += 60_000;
+    expect((await request(app).get(progress).auth(access_token, { type: 'bearer' })).body).toEqual({
+      stage: null, stage_durations_ms: {}, current_stage_elapsed_ms: null,
+    });
     expect(result.status).toBe(503);
     expect(render).not.toHaveBeenCalled();
     expect(speech_factory).not.toHaveBeenCalled();

@@ -221,6 +221,19 @@ export interface JingleHistory {
   readonly runs: readonly RenderRun[]
 }
 
+/** A server-reported step in the jingle generation flow. */
+export type JingleStage = 'brief' | 'lyrics' | 'safety' | 'score' | 'backing' | 'voice' | 'mix'
+
+/** Owner-scoped timing for the current or recently finished jingle. */
+export interface JingleProgress {
+  /** Current or final stage, or null when this progress ID is unavailable. */
+  readonly stage: JingleStage | null
+  /** Elapsed milliseconds from completed visits to each stage. */
+  readonly stage_durations_ms: Readonly<Partial<Record<JingleStage, number>>>
+  /** Elapsed milliseconds in the current visit, or null after the request ends. */
+  readonly current_stage_elapsed_ms: number | null
+}
+
 /** A user-owned render run and its optional paid attempt. */
 export interface RenderRun {
   readonly run_id: string

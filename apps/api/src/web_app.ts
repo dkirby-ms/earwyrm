@@ -13,6 +13,7 @@ import { AzureLyricBackend, CloudFailure, LyricCloudSettings, type LyricBackend 
 import { IMITATION, LyricWriter } from './lyric_service.js';
 import { JINGLE_VOICE_MAX_CHARACTERS, JingleDescription, JingleDirection, type JingleEstimate } from './jingle_prompt.js';
 import { DiagnosticPersistenceFailure, jingle_diagnostic, safe_jingle_reason, set_jingle_diagnostic_stage, set_jingle_provider_recorder, trace_jingle, type JingleStage } from './jingle_diagnostics.js';
+import { current_jingle_stage_elapsed_ms, finish_jingle_stage, transition_jingle_stage, type JingleProgressTiming } from './jingle_progress_timing.js';
 import { AzureScoreComposer, score_prompt, ScoreProviderProvenance, type ScoreComposer } from './score_cloud.js';
 import { ArrangementScore, score_lyric_timing, type ArrangementScore as Arrangement } from './score_dsl.js';
 import { brand_pronunciations, has_cta_rhyme, LyricRequest, LyricResult, LyricRuleError, normalize_spoken_text, validate_draft } from './lyrics.js';
@@ -400,7 +401,14 @@ export function create_app(options: CreateAppOptions = {}): Express {
   let render_active = false;
   let jingle_active = false;
   const active_jingle_diagnostics = new Set<string>();
-  let jingle_progress: { id: string; issuer: string; subject: string; stage: JingleStage } | null = null;
+  type JingleProgress = JingleProgressTiming & {
+    id: string;
+    issuer: string;
+    subject: string;
+  };
+  type TerminalJingleProgress = Omit<JingleProgress, 'stage_started_at'> & { expires_at: number };
+  let jingle_progress: JingleProgress | null = null;
+  let terminal_jingle_progress: TerminalJingleProgress | null = null;
   const render = options.render ?? render_brief;
   const speech_factory = options.speech_factory ?? options.speech_provider_factory ?? (() => new AzureSpeech(speech_settings(source)));
   let lyrics_active = false;
@@ -1363,10 +1371,26 @@ export function create_app(options: CreateAppOptions = {}): Express {
   app.get('/api/jingles/:id/progress', ...authorized('renders.read'), (request, response) => {
     const id = parse(z.uuid(), request.params.id);
     const actor = identity(response);
+    const now = performance.now();
     const active = jingle_progress;
-    const stage = active?.id === id && active.issuer === actor.issuer && active.subject === actor.subject
-      ? active.stage : null;
-    response.json({ stage });
+    if (terminal_jingle_progress && terminal_jingle_progress.expires_at <= now) terminal_jingle_progress = null;
+    const matches_owner = (progress: JingleProgress | TerminalJingleProgress) =>
+      progress.id === id && progress.issuer === actor.issuer && progress.subject === actor.subject;
+    if (active && matches_owner(active)) {
+      response.json({
+        stage: active.stage,
+        stage_durations_ms: active.stage_durations_ms,
+        current_stage_elapsed_ms: current_jingle_stage_elapsed_ms(active, now),
+      });
+    } else if (terminal_jingle_progress && matches_owner(terminal_jingle_progress)) {
+      response.json({
+        stage: terminal_jingle_progress.stage,
+        stage_durations_ms: terminal_jingle_progress.stage_durations_ms,
+        current_stage_elapsed_ms: null,
+      });
+    } else {
+      response.json({ stage: null, stage_durations_ms: {}, current_stage_elapsed_ms: null });
+    }
   });
 
   app.post('/api/jingles', ...authorized('renders.write'), (request, response) => trace_jingle(response, async diagnostic_id => {
@@ -1401,12 +1425,16 @@ export function create_app(options: CreateAppOptions = {}): Express {
     if (IMITATION.test(description)) throw new HttpError(422, 'Describe an original mood or genre without asking to imitate an artist or song.');
     if (jingle_active || render_active || lyrics_active) throw new HttpError(409, 'Another generation is in progress. Try again when it finishes.');
     jingle_active = true;
-    const progress = progress_id === undefined ? null : { id: progress_id, ...identity(response), stage: 'brief' as JingleStage };
+    terminal_jingle_progress = null;
+    const started_at = performance.now();
+    const progress: JingleProgress | null = progress_id === undefined ? null : {
+      id: progress_id, ...identity(response), stage: 'brief', stage_started_at: started_at, stage_durations_ms: {},
+    };
     jingle_progress = progress;
     const set_stage = async (stage: JingleStage) => {
       current_stage = stage;
       set_jingle_diagnostic_stage(stage);
-      if (progress) progress.stage = stage;
+      if (progress) transition_jingle_stage(progress, stage, performance.now());
       await persist(stage, 'running');
     };
     try {
@@ -1495,6 +1523,18 @@ export function create_app(options: CreateAppOptions = {}): Express {
       }
       throw error;
     } finally {
+      if (progress) {
+        const now = performance.now();
+        finish_jingle_stage(progress, now);
+        terminal_jingle_progress = {
+          id: progress.id,
+          issuer: progress.issuer,
+          subject: progress.subject,
+          stage: progress.stage,
+          stage_durations_ms: { ...progress.stage_durations_ms },
+          expires_at: now + 60_000,
+        };
+      }
       jingle_progress = null;
       jingle_active = false;
     }

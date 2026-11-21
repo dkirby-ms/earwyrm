@@ -299,6 +299,12 @@ describe("arrangement score DSL", () => {
     expect(ArrangementScore.safeParse({ ...score, tracks: [...score.tracks, score.tracks[0]] }).success).toBe(false);
     const unsupported = score.tracks.map(track => track.instrument === "hat" ? { ...track, instrument: "harp" } : track);
     expect(ArrangementScore.safeParse({ ...score, tracks: unsupported }).success).toBe(false);
+    const drum_with_degree = score.tracks.map(track => track.instrument === "hat"
+      ? { ...track, events: [{ step: 0, degree: 0, duration_steps: 1 }] } : track);
+    const lead_without_degree = score.tracks.map(track => track.instrument === "lead"
+      ? { ...track, events: [{ step: 0, duration_steps: 1 }] } : track);
+    expect(ArrangementScore.safeParse({ ...score, tracks: drum_with_degree }).success).toBe(false);
+    expect(ArrangementScore.safeParse({ ...score, tracks: lead_without_degree }).success).toBe(false);
     const crossing = score.tracks.map(track => track.instrument === "lead"
       ? { ...track, events: [{ step: 7, degree: 0, duration_steps: 2 }] }
       : track);
