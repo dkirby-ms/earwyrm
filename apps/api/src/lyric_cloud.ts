@@ -10,6 +10,7 @@ import { trace_jingle_provider } from "./jingle_diagnostics.js";
 
 export const SCOPE = "https://cognitiveservices.azure.com/.default";
 export const CATEGORIES = new Set(["Hate", "SelfHarm", "Sexual", "Violence"]);
+export const MODEL_MAX_COMPLETION_TOKENS = 1200;
 const TRACER = trace.getTracer("earwyrm.lyric_cloud");
 
 /** Content-free provider failure; only generation may consume retry eligibility. */
@@ -152,7 +153,7 @@ export class AzureLyricBackend implements LyricBackend, JingleAdvisor {
       model: this.settings.deployment,
       messages: [{ role: "system", content: system }, { role: "user", content: JSON.stringify(data) }],
       response_format: { type: "json_schema", json_schema: { name, strict: true, schema: wire_schema(model) } },
-      max_completion_tokens: 1200,
+      max_completion_tokens: MODEL_MAX_COMPLETION_TOKENS,
     });
     const completion = Completion.safeParse(raw);
     if (!completion.success) throw new CloudFailure("malformed_model_envelope");

@@ -291,6 +291,16 @@ describe("four-attempt fail-closed writer", () => {
 });
 
 describe("Azure wire contracts without paid requests", () => {
+  it("reserves twice the standard model ceiling for one score call", () => {
+    const allowance = lyric_allowance("compose", lyric_budget({
+      LYRIC_MODEL_CALL_MAX_USD: "0.01", LYRIC_SAFETY_CALL_MAX_USD: "0.002",
+      LYRIC_PER_ACTION_CAP_USD: "1", LYRIC_TOTAL_BUDGET_USD: "1",
+    }));
+    expect(allowance.cost.toFixed()).toBe("0.02");
+    allowance.consume("model");
+    expect(() => allowance.consume("model")).toThrow("lyric_call_limit");
+  });
+
   it("captures the exact lyric model request and successful response without transport headers", async () => {
     const app = express(), entries: ProviderDiagnostic[] = [];
     const output = completion('{"english":true,"artist_imitation":false,"risky_claims":false}');
@@ -522,12 +532,18 @@ describe("structured score provider without paid requests", () => {
     const [url, init] = client.mock.calls[0];
     expect(url).toBe("https://model.openai.azure.com/openai/v1/chat/completions");
     const body = JSON.parse(String(init.body));
-    expect(body.max_completion_tokens).toBe(1200);
+    expect(body.max_completion_tokens).toBe(2400);
     expect(body.response_format.json_schema.strict).toBe(true);
     expect(body.response_format.json_schema.schema.additionalProperties).toBe(false);
     const schema = body.response_format.json_schema.schema;
     expect(schema.properties.tracks.items.anyOf).toHaveLength(2);
     expect(JSON.stringify(schema)).not.toContain('"oneOf"');
+    expect(body.messages[0].content).toContain("Each track describes ONE bar only");
+    expect(body.messages[0].content).toContain("Do not write separate events for later bars");
+    expect(body.messages[0].content).toContain("step from 0 through 7");
+    expect(body.messages[0].content).toContain("step plus duration_steps must not exceed 8");
+    expect(body.messages[0].content).toContain("exactly four chord degrees, each 0-6");
+    expect(body.messages[0].content).toContain("3-7 scale degrees");
     expect(JSON.parse(body.messages[1].content)).toEqual(prompt);
     expect(String(init.body)).not.toContain(request.brief.contact_details.email);
     expect(String(init.body)).not.toContain(request.brief.contact_details.phone);
@@ -535,7 +551,7 @@ describe("structured score provider without paid requests", () => {
     expect(observed.spans[0]).toMatchObject({
       attributes: {
         "gen_ai.operation.name": "chat",
-        "gen_ai.request.max_tokens": 1200,
+        "gen_ai.request.max_tokens": 2400,
         "gen_ai.response.finish_reasons": ["stop"],
         "gen_ai.usage.input_tokens": 321,
         "gen_ai.usage.output_tokens": 456,
@@ -573,6 +589,12 @@ describe("structured score provider without paid requests", () => {
     [completion(JSON.stringify(score_fixture()), { finish_reason: "length" }), "incomplete_model_output"],
     [completion("{"), "malformed_score_output"],
     [completion("{}"), "invalid_score_output"],
+    [completion(JSON.stringify({ ...score_fixture(), progression: [1, 6, 3, 7] })), "invalid_score_output"],
+    [completion(JSON.stringify({ ...score_fixture(), hook_motif: [1, 3, 5, 6, 5, 3, 1, 7] })), "invalid_score_output"],
+    [completion(JSON.stringify({ ...score_fixture(), tracks: [
+      { instrument: "pad", events: [{ step: 8, degree: 1, duration_steps: 8 }] },
+      ...score_fixture().tracks.slice(1),
+    ] })), "invalid_score_output"],
     [completion("x".repeat(65537)), "score_output_too_large"],
     [{ ...completion(JSON.stringify(score_fixture())), usage: { prompt_tokens: -1, completion_tokens: 3 } }, "malformed_model_envelope"],
     [{ ...completion(JSON.stringify(score_fixture())), usage: { prompt_tokens: 3, completion_tokens: 1.5 } }, "malformed_model_envelope"],

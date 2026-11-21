@@ -87,8 +87,12 @@ The web API also requires `LYRIC_MODEL_CALL_MAX_USD`,
 deployment and screening configuration. The first two amounts upper-bound one
 model and one Content Safety request, respectively. For the model, include the
 deployment's full input context at uncached pricing and up to 1,200 output
-tokens, including reasoning tokens if applicable. For Content Safety, cover
-the more expensive of moderation and protected-material detection and all
+tokens, including reasoning tokens if applicable. Score composition allows
+2,400 output tokens and reserves twice the configured model-call ceiling,
+including twice the input allowance, to remain conservative. If that reserve
+exceeds a configured budget cap, generation is unavailable until an
+administrator adjusts the cap. For Content Safety, cover the more expensive of
+moderation and protected-material detection and all
 billable units in that request. Use metered deployments with verifiable prices.
 
 | Action | Max model requests | Max safety requests |
@@ -124,7 +128,7 @@ the selected option and shows the maximum model-call cost first.
 
 Each `/api/score/compose` provider attempt makes at most one structured
 score-model request. The route uses the same Foundry deployment and text budget
-settings above, reserves the full `LYRIC_MODEL_CALL_MAX_USD` ceiling before the
+settings above, reserves twice the `LYRIC_MODEL_CALL_MAX_USD` ceiling before the
 provider call, and shares `LYRIC_TOTAL_BUDGET_USD` with chat and lyric
 generation. It validates the returned versioned score, screens the resulting
 melody, then compiles and renders tempo-aware MIDI and backing audio locally.

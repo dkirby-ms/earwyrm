@@ -1284,7 +1284,7 @@ describe('one-page AI jingles', () => {
     const description = `An upbeat ad for ${brief.name}, with tune ups.${closing === 'exact' ? ` End with "${cta}"` : ''}`;
     const quote = await request(app).get('/api/jingles').auth(user, { type: 'bearer' });
     expect(quote.status).toBe(200);
-    expect(quote.body).toEqual({ estimate: { model_and_safety_max_usd: '0.112', speech_max_usd: '0.4', total_max_usd: '0.512' }, unavailable_reason: null, runs: [] });
+    expect(quote.body).toEqual({ estimate: { model_and_safety_max_usd: '0.122', speech_max_usd: '0.4', total_max_usd: '0.522' }, unavailable_reason: null, runs: [] });
     expect(direction).not.toHaveBeenCalled();
     const progress_id = 'e661c36f-a646-41b6-a641-84b01be09dc8';
     const progress = `/api/jingles/${progress_id}/progress`;
@@ -1574,13 +1574,13 @@ describe('guarded paid score composition', () => {
     const root = root_dir();
     const score_composer = { compose: vi.fn(async (_input: unknown) => test_score) };
     const chat_advisor = { suggest: vi.fn(async () => ({ reply: 'unused', creative_direction: 'unused' })) };
-    const environ = { ...lyric_limits, LYRIC_ENABLED: 'true', LYRIC_TOTAL_BUDGET_USD: '0.01' };
+    const environ = { ...lyric_limits, LYRIC_ENABLED: 'true', LYRIC_TOTAL_BUDGET_USD: '0.02' };
     const { app, store, access_token } = await fixture({ data_dir: root, environ, lyric_backend, score_composer, chat_advisor });
     const option = await save_accepted_lyric_option(store);
     const post = () => request(app).post('/api/score/compose').auth(access_token, { type: 'bearer' }).send(body_for(option.option_id));
 
     const availability = await request(app).get('/api/lyrics/options').auth(access_token, { type: 'bearer' });
-    expect(availability.body).toMatchObject({ available: true, score_compose_max_usd: '0.01' });
+    expect(availability.body).toMatchObject({ available: true, score_compose_max_usd: '0.02' });
     const first = await post();
     expect(first.status, JSON.stringify(first.body)).toBe(200);
     expect(first.body).toMatchObject({ tool: 'compose_score', status: 'committed', score: test_score });
@@ -1599,7 +1599,7 @@ describe('guarded paid score composition', () => {
     const db = new DatabaseSync(store.database_path);
     try {
       expect(db.prepare('SELECT owner, action, logical_job_id, reserved_usd, status FROM score_reservations').get())
-        .toMatchObject({ owner: 'user-a', action: 'compose', reserved_usd: '0.01', status: 'committed' });
+        .toMatchObject({ owner: 'user-a', action: 'compose', reserved_usd: '0.02', status: 'committed' });
       expect(db.prepare('SELECT count(*) AS count FROM score_reservations').get()?.count).toBe(1);
     } finally { db.close(); }
     const later_chat = await request(app).post('/api/chat').auth(access_token, { type: 'bearer' }).send({

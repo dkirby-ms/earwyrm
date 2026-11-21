@@ -2,6 +2,8 @@ import { Decimal } from 'decimal.js';
 import { CloudFailure } from './lyric_cloud.js';
 
 const Money = Decimal.clone({ precision: 28 });
+/** Score output has twice the standard token limit and reserves twice the model-call ceiling. */
+export const SCORE_MODEL_RESERVATION_MULTIPLIER = 2;
 const ceilings = {
   discuss: { model: 2, safety: 2 },
   write: { model: 9, safety: 2 },
@@ -38,7 +40,8 @@ export function lyric_allowance(action: PaidLyricAction | 'jingle_write', budget
     ? { model: ceilings.write.model + 1, safety: ceilings.write.safety }
     : { ...ceilings[action] };
   return {
-    cost: budget.model.times(remaining.model).plus(budget.safety.times(remaining.safety)),
+    cost: budget.model.times(remaining.model).times(action === 'compose' ? SCORE_MODEL_RESERVATION_MULTIPLIER : 1)
+      .plus(budget.safety.times(remaining.safety)),
     consume(kind: keyof typeof remaining): void {
       if (remaining[kind] <= 0) throw new CloudFailure('lyric_call_limit');
       remaining[kind]--;
