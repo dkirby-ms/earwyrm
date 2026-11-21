@@ -11,7 +11,7 @@ import type { JingleEstimate } from "./jingle_prompt.js";
 import type { PaidLyricGenerationAction } from "./lyric_budget.js";
 import type { MelodyService } from "./melody_service.js";
 import type { ScoreProviderProvenance } from "./score_cloud.js";
-import { JingleDiagnostic, ProviderDiagnostic, type JingleStage } from "./jingle_diagnostics.js";
+import { JingleDiagnostic, JingleFailureReasons, ProviderDiagnostic, type JingleStage } from "./jingle_diagnostics.js";
 import { complete_preview, create_preview_schema, pin_preview, prune_previews, reserve_preview } from "./preview_quota.js";
 
 const Money = Decimal.clone({ precision: 28 });
@@ -287,7 +287,7 @@ export class WebStorage {
         diagnostic_id TEXT PRIMARY KEY,
         stage TEXT NOT NULL CHECK (stage IN ('brief', 'lyrics', 'safety', 'score', 'backing', 'voice', 'mix')),
         status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed')),
-        created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL, failure_reasons TEXT);
       CREATE INDEX IF NOT EXISTS jingle_diagnostics_created ON jingle_diagnostics(created_at);
       CREATE TABLE IF NOT EXISTS jingle_provider_events (
         event_id TEXT PRIMARY KEY, diagnostic_id TEXT NOT NULL REFERENCES jingle_diagnostics(diagnostic_id) ON DELETE CASCADE,
@@ -295,6 +295,10 @@ export class WebStorage {
         error_code TEXT, parameter TEXT, request_id TEXT, created_at TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS jingle_provider_events_job ON jingle_provider_events(diagnostic_id, created_at);
     `);
+    const columns = connection instanceof SqliteConnection
+      ? (await connection.execute("PRAGMA table_info(jingle_diagnostics)")).rows.map(row => String(row.name))
+      : (await connection.execute("SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'jingle_diagnostics'")).rows.map(row => String(row.column_name));
+    if (!columns.includes("failure_reasons")) await connection.execute("ALTER TABLE jingle_diagnostics ADD COLUMN failure_reasons TEXT");
   }
 
   /** Adds limit overrides and nullable historical lyric attribution without resetting spend. */
@@ -982,25 +986,26 @@ export class WebStorage {
     });
   }
   /** Advances a live request or finalizes it exactly once; missing or finalized records reject the update. */
-  async update_jingle_diagnostic(diagnostic_id: string, stage: JingleStage, status: JingleDiagnosticRecord["status"]): Promise<void> {
+  async update_jingle_diagnostic(diagnostic_id: string, stage: JingleStage, status: JingleDiagnosticRecord["status"], failure_reasons: string[] | null = null): Promise<void> {
     validate_diagnostic_id(diagnostic_id);
+    const reasons = failure_reasons === null ? null : JSON.stringify(JingleFailureReasons.parse(failure_reasons));
     await this.write(async c => {
       const result = await c.execute(
-        "UPDATE jingle_diagnostics SET stage = ?, status = ?, updated_at = ? WHERE diagnostic_id = ? AND status = 'running'",
-        [stage, status, new Date().toISOString(), diagnostic_id],
+        "UPDATE jingle_diagnostics SET stage = ?, status = ?, updated_at = ?, failure_reasons = ? WHERE diagnostic_id = ? AND status = 'running'",
+        [stage, status, new Date().toISOString(), reasons, diagnostic_id],
       );
       if (result.rowcount !== 1) throw new StorageConflict("Jingle diagnostic is missing or already finalized");
     });
   }
   /** Rechecks administrator access and hides expired records even before the next cleanup. */
-  async get_jingle_diagnostic_as_admin(issuer: string, subject: string, diagnostic_id: string): Promise<(JingleDiagnosticRecord & { provider_events: ProviderDiagnostic[] }) | null> {
+  async get_jingle_diagnostic_as_admin(issuer: string, subject: string, diagnostic_id: string): Promise<(JingleDiagnosticRecord & { failure_reasons: string[] | null; provider_events: ProviderDiagnostic[] }) | null> {
     WebStorage.validate_identity(issuer, subject);
     validate_diagnostic_id(diagnostic_id);
     const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
     return this.write(async c => {
       await this.require_admin(c, issuer, subject);
       const row = (await c.execute(
-        "SELECT diagnostic_id, stage, status, created_at, updated_at FROM jingle_diagnostics WHERE diagnostic_id = ? AND created_at >= ?",
+        "SELECT diagnostic_id, stage, status, created_at, updated_at, failure_reasons FROM jingle_diagnostics WHERE diagnostic_id = ? AND created_at >= ?",
         [diagnostic_id, cutoff],
       )).rows[0];
       if (!row) return null;
@@ -1008,7 +1013,9 @@ export class WebStorage {
         "SELECT stage, operation, http_status, error_code, parameter, request_id FROM jingle_provider_events WHERE diagnostic_id = ? ORDER BY created_at, event_id",
         [diagnostic_id],
       )).rows.map(entry => ProviderDiagnostic.parse(entry));
-      return { ...JingleDiagnostic.parse(row), provider_events: events };
+      const { failure_reasons, ...diagnostic } = row;
+      const reasons = failure_reasons === null ? null : JingleFailureReasons.parse(JSON.parse(String(failure_reasons)));
+      return { ...JingleDiagnostic.parse(diagnostic), failure_reasons: reasons, provider_events: events };
     });
   }
   /** Reserves all three previews before generation; failed/incomplete batches remain charged. */

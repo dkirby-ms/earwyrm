@@ -60,6 +60,7 @@ export interface JingleDiagnostic {
   readonly status: 'running' | 'completed' | 'failed' | 'outcome_unknown'
   readonly created_at: string
   readonly updated_at: string
+  readonly failure_reasons: readonly { readonly code: string; readonly explanation: string }[] | null
   readonly provider_events: readonly {
     readonly stage: string
     readonly operation: string

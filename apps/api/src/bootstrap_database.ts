@@ -11,7 +11,7 @@ import { ARTIFACT_TYPES, CompositionResult, MelodyService } from "./melody_servi
 import { database_url_from_environment, is_storage_error, parse_seed_json, PostgresConnection, REQUIRED_TABLES, SqliteConnection, transaction, validate_postgres_store, type Connection } from "./persistence.js";
 import { StorageAccessDenied, StorageConflict, WebStorage } from "./web_storage.js";
 import { create_preview_schema } from "./preview_quota.js";
-import { JingleDiagnostic, ProviderDiagnostic } from "./jingle_diagnostics.js";
+import { JingleDiagnostic, JingleFailureReasons, ProviderDiagnostic } from "./jingle_diagnostics.js";
 
 export const WEB_TABLE_COLUMNS: Record<string, readonly string[]> = {
   runs: ["run_id", "owner", "mode", "brief_ids_json", "status", "created_at"],
@@ -25,7 +25,7 @@ export const WEB_TABLE_COLUMNS: Record<string, readonly string[]> = {
   lyric_reservations: ["reservation_id", "action", "reserved_usd", "created_at", "settlement_status", "actual_cost_usd", "evidence_reference", "settled_by_issuer", "settled_by_subject", "settled_at", "owner"],
   lyric_reservation_events: ["event_id", "reservation_id", "event_type", "previous_status", "new_status", "previous_actual_usd", "new_actual_usd", "actor_issuer", "actor_subject", "evidence_reference", "reason", "created_at"],
   budget_limits: ["scope", "owner", "limit_usd", "updated_by", "updated_at"],
-  jingle_diagnostics: ["diagnostic_id", "stage", "status", "created_at", "updated_at"],
+  jingle_diagnostics: ["diagnostic_id", "stage", "status", "created_at", "updated_at", "failure_reasons"],
   jingle_provider_events: ["event_id", "diagnostic_id", "stage", "operation", "http_status", "error_code", "parameter", "request_id", "created_at"],
   score_reservations: ["reservation_id", "owner", "action", "logical_job_id", "request_sha256", "reserved_usd", "status", "score_json", "created_at", "updated_at", "provider_json", "attempt_count"],
   score_reconciliations: ["reservation_id", "attempt_number", "evidence_reference", "reconciled_at"],
@@ -183,6 +183,18 @@ async function validate_web(c: Connection, root: string, tables: Set<string>): P
     for (const row of (await c.execute("SELECT diagnostic_id, stage, status, created_at, updated_at FROM jingle_diagnostics")).rows) {
       if (!JingleDiagnostic.safeParse(row).success) throw new TypeError("SQLite source contains an invalid jingle diagnostic");
     }
+    const columns = (await c.execute("PRAGMA table_info(jingle_diagnostics)")).rows.map(row => String(row.name));
+    if (columns.includes("failure_reasons")) {
+      for (const row of (await c.execute("SELECT failure_reasons FROM jingle_diagnostics WHERE failure_reasons IS NOT NULL")).rows) {
+        let value: unknown;
+        try { value = JSON.parse(String(row.failure_reasons)); }
+        catch (error) {
+          if (!(error instanceof SyntaxError)) throw error;
+          throw new TypeError("SQLite source contains invalid jingle failure reasons", { cause: error });
+        }
+        if (!JingleFailureReasons.safeParse(value).success) throw new TypeError("SQLite source contains invalid jingle failure reasons");
+      }
+    }
   }
   if ((await c.execute(`SELECT 1 FROM paid_attempts AS attempt JOIN runs ON runs.run_id = attempt.run_id WHERE runs.owner != attempt.owner
     UNION ALL SELECT 1 FROM outputs JOIN runs ON runs.run_id = outputs.run_id WHERE runs.owner != outputs.owner
@@ -272,6 +284,7 @@ async function validate_melody(c: Connection, root: string): Promise<void> {
 export async function _copy_sqlite_table(source: Connection, target: Connection, table: string, columns: readonly string[]): Promise<number> {
   const supported = WEB_TABLE_COLUMNS[table] ?? MELODY_TABLE_COLUMNS[table];
   const legacy = table === "access_requests" ? supported?.filter(column => column !== "email")
+    : table === "jingle_diagnostics" ? supported?.filter(column => column !== "failure_reasons")
     : table === "score_reservations" ? LEGACY_SCORE_RESERVATION_COLUMNS : undefined;
   const lyricLayouts = table === "lyric_reservations"
     ? [supported, LEGACY_LYRIC_RESERVATION_COLUMNS, LEGACY_LYRIC_RESERVATION_COLUMNS_NO_OWNER,
@@ -308,6 +321,10 @@ export async function import_sqlite(directory: string, database_url: string): Pr
     const sourceColumns = { ...WEB_TABLE_COLUMNS };
     for (const table of ["jingle_provider_events", "jingle_diagnostics", "budget_limits", "access_requests", "lyric_options", "lyric_reservations", "lyric_reservation_events", "score_reservations", "score_reconciliations", "score_schema_migrations", "preview_reservations"]) {
       if (!(await web.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", [table])).rows.length) delete sourceColumns[table];
+    }
+    if (sourceColumns.jingle_diagnostics &&
+        !(await web.execute("PRAGMA table_info(jingle_diagnostics)")).rows.some(row => row.name === "failure_reasons")) {
+      sourceColumns.jingle_diagnostics = sourceColumns.jingle_diagnostics.filter(column => column !== "failure_reasons");
     }
     if (sourceColumns.lyric_reservations) {
       const lyricColumns = (await web.execute("PRAGMA table_info(lyric_reservations)")).rows.map(row => String(row.name));

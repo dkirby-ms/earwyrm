@@ -151,6 +151,7 @@ describe("jingle diagnostic storage", () => {
       stage: "lyrics", operation: "generate", http_status: 400,
       error_code: "unsupported_parameter", parameter: "model", request_id: null,
     });
+
     await expect(store.get_jingle_diagnostic_as_admin("issuer", "user", id)).rejects.toBeInstanceOf(StorageAccessDenied);
     await store.update_jingle_diagnostic(id, "lyrics", "failed");
     expect(await store.get_jingle_diagnostic_as_admin("issuer", "owner", id)).toMatchObject({
@@ -167,6 +168,21 @@ describe("jingle diagnostic storage", () => {
     expect(check.prepare("SELECT COUNT(*) AS count FROM jingle_diagnostics WHERE diagnostic_id = ?").get(id)?.count).toBe(0);
     expect(check.prepare("SELECT COUNT(*) AS count FROM jingle_provider_events WHERE diagnostic_id = ?").get(id)?.count).toBe(0);
     check.close();
+  });
+  it("preserves safe failure reasons across a local schema upgrade and rejects arbitrary text", async () => {
+    const root = directory(), original = new WebStorage(root);
+    await original.bootstrap_owner("issuer", "owner");
+    const id = randomUUID();
+    await original.create_jingle_diagnostic(id);
+    const old = new DatabaseSync(original.database_path);
+    old.exec("ALTER TABLE jingle_diagnostics DROP COLUMN failure_reasons");
+    old.close();
+    const upgraded = new WebStorage(root);
+    await expect(upgraded.update_jingle_diagnostic(id, "lyrics", "failed", ["private-marker"])).rejects.toThrow();
+    await upgraded.update_jingle_diagnostic(id, "lyrics", "failed", ["unsupported_language"]);
+    expect(await upgraded.get_jingle_diagnostic_as_admin("issuer", "owner", id)).toMatchObject({
+      status: "failed", failure_reasons: ["unsupported_language"],
+    });
   });
 });
 
@@ -262,6 +278,10 @@ describe("operator transactions and read-only import", () => {
     if (!hasDiagnostics) {
       const sourceDb = new DatabaseSync(web.database_path);
       sourceDb.exec("DROP TABLE jingle_provider_events; DROP TABLE jingle_diagnostics");
+      sourceDb.close();
+    } else if (!hasLyrics) {
+      const sourceDb = new DatabaseSync(web.database_path);
+      sourceDb.exec("ALTER TABLE jingle_diagnostics DROP COLUMN failure_reasons");
       sourceDb.close();
     }
     if (hasAccessRequests) {
@@ -406,6 +426,15 @@ describe("operator transactions and read-only import", () => {
     await prepare_databases(root, { database_url: local, upgrade_postgres: false });
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'jingle_diagnostics'").get()).toBeDefined();
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'jingle_provider_events'").get()).toBeDefined();
+    const diagnosticId = randomUUID();
+    await store.create_jingle_diagnostic(diagnosticId);
+    db.exec("ALTER TABLE jingle_diagnostics DROP COLUMN failure_reasons");
+    await expect(validate_postgres_store(local)).rejects.toThrow("explicit database upgrade");
+    await prepare_databases(root, { database_url: local, upgrade_postgres: false });
+    await store.update_jingle_diagnostic(diagnosticId, "lyrics", "failed", ["unsupported_language"]);
+    expect(await store.get_jingle_diagnostic_as_admin("issuer", "owner", diagnosticId)).toMatchObject({
+      failure_reasons: ["unsupported_language"],
+    });
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'access_requests'").get()).toBeDefined();
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'preview_reservations'").get()).toBeDefined();
     await store.request_access("issuer", "requester");

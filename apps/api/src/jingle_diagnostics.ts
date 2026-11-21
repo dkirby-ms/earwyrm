@@ -67,6 +67,9 @@ export function safe_jingle_reason(code: string): string {
   return safe_reasons.has(code) ? code : 'unknown_reason';
 }
 
+/** Validates bounded, allowlisted failure reasons read from diagnostic storage. */
+export const JingleFailureReasons = z.array(z.string().refine(reason => safe_jingle_reason(reason) === reason)).max(8);
+
 /** Emits allowlisted, content-free fields only inside a browser jingle request. */
 export function jingle_diagnostic(entry: DiagnosticEvent): void {
   const context = active.getStore();

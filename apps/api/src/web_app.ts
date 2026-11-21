@@ -155,10 +155,17 @@ const lyric_failure_explanations: Record<string, string> = {
   invalid_cloud_endpoint: 'the AI service endpoint is not configured correctly',
   invalid_model_deployment: 'the AI model is not configured correctly',
   missing_lyric_cloud_configuration: 'the AI service is not configured',
+  fixed_pronunciation_required: 'a word in the exact business name or closing line is missing from the pronunciation dictionary',
+  fixed_lyric_format: 'the business name or closing line cannot fit the required format',
+  cta_meter: 'the closing line does not fit the permitted syllable count',
+  cta_brand_count: 'the closing line repeats the business name too many times',
+  invalid_pronunciation_hint: 'the pronunciation hint has an invalid format',
   invalid_lyric_budget: 'the AI spending limit is not configured correctly',
   lyric_call_limit: 'the request exceeded its configured AI call limit',
   lyric_request_too_large: 'the request is too large for the lyric service',
   missing_jingle_direction_adapter: 'the jingle description service is not configured',
+  provider_outcome_unknown: 'the score provider may have accepted the request; verify it before retrying',
+  score_render_unavailable: 'the score was saved but the backing track could not be rendered',
   unknown_reason: 'the service could not provide a more specific reason',
 };
 
@@ -771,7 +778,9 @@ export function create_app(options: CreateAppOptions = {}): Express {
     const { issuer, subject } = identity(response);
     const record = await (await storage()).get_jingle_diagnostic_as_admin(issuer, subject, id);
     if (!record) throw new HttpError(404, 'Jingle diagnostic was not found');
-    response.json({ ...record, status: record.status === 'running' && !active_jingle_diagnostics.has(id)
+    response.json({ ...record, failure_reasons: record.failure_reasons?.map(code => ({
+      code, explanation: lyric_failure_explanations[code] ?? lyric_failure_explanations.unknown_reason,
+    })) ?? null, status: record.status === 'running' && !active_jingle_diagnostics.has(id)
       ? 'outcome_unknown' : record.status });
   });
   app.post('/api/admin/lyric-reservations/:reservation_id/settle', ...authorized('renders.write'), async (request, response) => {
@@ -1369,8 +1378,9 @@ export function create_app(options: CreateAppOptions = {}): Express {
     }
     active_jingle_diagnostics.add(diagnostic_id);
     let current_stage: JingleStage = 'brief';
+    let failure_reasons: string[] | null = null;
     const persist = async (stage: JingleStage, status: 'running' | 'completed' | 'failed') => {
-      try { await store.update_jingle_diagnostic(diagnostic_id, stage, status); }
+      try { await store.update_jingle_diagnostic(diagnostic_id, stage, status, status === 'failed' ? failure_reasons : null); }
       catch {
         console.error(JSON.stringify({ scope: 'earwyrm.jingle', diagnostic_id, event: 'diagnostic_update_failed' }));
         throw new DiagnosticPersistenceFailure();
@@ -1431,6 +1441,7 @@ export function create_app(options: CreateAppOptions = {}): Express {
       try { pronunciations = brand_pronunciations(name, pronunciation_hints ?? ''); }
       catch (error) {
         if (!(error instanceof LyricRuleError)) throw error;
+        failure_reasons = ['invalid_pronunciation_hint'];
         jingle_diagnostic({ event: 'request_failed', reason: 'invalid_pronunciation_hint' });
         throw new HttpError(422, 'Use pronunciation hints like brandword = spoken words, one per line, with familiar English words and only words from the business name.');
       }
@@ -1439,6 +1450,7 @@ export function create_app(options: CreateAppOptions = {}): Express {
       const lyrics = await new LyricWriter(backend, 'browser_jingle').write(lyric_request, () => set_stage('safety'));
       const owner = identity(response).subject;
       if (lyrics.status !== 'accepted') {
+        failure_reasons = [...new Set(lyrics.reasons.map(safe_jingle_reason))].slice(0, 8);
         if (lyrics.reasons.includes('fixed_lyric_format')) throw new HttpError(422, 'The business name and closing line must be single lines without leading or trailing spaces and fit within 400 characters after punctuation normalization. Your exact wording was not changed.');
         if (lyrics.reasons.includes('fixed_pronunciation_required')) throw new HttpError(422, 'The dictionary does not contain a word in the business name or closing line. Add a pronunciation hint for a brand word, or explicitly supply a spoken spelling in your description. Your exact wording was not changed.');
         if (lyrics.reasons.includes('cta_meter')) throw new HttpError(422, 'The exact closing line cannot fit: spoken closing lines must contain one to twenty syllables. Shorten it explicitly or leave the call to action open. Your wording was not changed.');
@@ -1460,6 +1472,7 @@ export function create_app(options: CreateAppOptions = {}): Express {
       await set_stage('score');
       const score = await compose_score({ ...selection, option_id: saved.option_id, confirm_paid_generation: true }, response, true, () => set_stage('backing'));
       if (score.status !== 200) {
+        failure_reasons = [safe_jingle_reason(score.body.code)];
         await set_stage(score.body.code === 'provider_outcome_unknown' ? 'score' : 'backing');
         throw new HttpError(score.status, score.body.detail);
       }
@@ -1472,6 +1485,7 @@ export function create_app(options: CreateAppOptions = {}): Express {
       response.json(result);
     } catch (error) {
       if (error instanceof CloudFailure) {
+        failure_reasons = [safe_jingle_reason(error.code)];
         jingle_diagnostic({ event: 'request_failed', reason: error.code });
         throw new HttpError(503, `AI generation could not complete while ${stage_labels[current_stage]}: ${explain_lyric_failure([error.code])}. No fallback audio was generated.`);
       }

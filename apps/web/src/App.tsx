@@ -756,15 +756,21 @@ function App() {
                   <div><dt>Last updated</dt><dd><time dateTime={diagnostic.updated_at}>{new Date(diagnostic.updated_at).toLocaleString()}</time></dd></div>
                 </dl>
                 {diagnostic.status === 'outcome_unknown' && <p className="notice diagnostic-caution">The outcome cannot be confirmed. Work may still be running elsewhere or may have been interrupted; do not assume it failed or retry based on this status alone.</p>}
+                {diagnostic.status === 'failed' && (diagnostic.failure_reasons?.length
+                  ? <section aria-labelledby="failure-reasons-heading"><h3 id="failure-reasons-heading">Recorded failure reasons</h3><ul>{diagnostic.failure_reasons.map(reason => <li key={reason.code}>{reason.explanation} <code>({reason.code})</code></li>)}</ul></section>
+                  : <p>No failure reason was recorded. Check the API logs using this diagnostic ID; older jobs may not have saved a reason.</p>)}
                 <h3>Provider evidence</h3>
+                <p>A successful provider response does not mean the whole job succeeded. Some failures happen outside the recorded provider exchanges.</p>
                 {diagnostic.provider_events.length === 0 ? <p className="muted">No provider evidence was recorded.</p> : <ol className="provider-events">{diagnostic.provider_events.map((entry, index) => <li key={index}>
                   <h4>Provider exchange {index + 1}</h4>
                   <dl className="diagnostic-details">
                     <div><dt>Stage</dt><dd>{entry.stage}</dd></div>
                     <div><dt>Operation</dt><dd>{entry.operation || 'Unavailable'}</dd></div>
                     <div><dt>HTTP status</dt><dd>{entry.http_status ?? 'Unavailable'}</dd></div>
-                    <div><dt>Error code</dt><dd>{entry.error_code ?? 'Unavailable'}</dd></div>
-                    <div><dt>Rejected parameter</dt><dd>{entry.parameter ?? 'Unavailable'}</dd></div>
+                    {(entry.http_status === null || entry.http_status < 200 || entry.http_status >= 300) && <>
+                      <div><dt>Error code</dt><dd>{entry.error_code ?? 'Not recorded'}</dd></div>
+                      <div><dt>Rejected parameter</dt><dd>{entry.parameter ?? 'Not recorded'}</dd></div>
+                    </>}
                     <div><dt>Provider request ID</dt><dd>{entry.request_id ?? 'Unavailable'}</dd></div>
                   </dl>
                 </li>)}</ol>}

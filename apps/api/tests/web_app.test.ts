@@ -156,6 +156,7 @@ describe('same-origin Express API', () => {
       jingle_direction: direction, score_composer: { compose: vi.fn() },
       lyric_backend: { preflight: vi.fn(), generate: vi.fn(), assess: vi.fn(), screen: vi.fn() },
     });
+
     const create = vi.spyOn(store, 'create_jingle_diagnostic').mockRejectedValueOnce(new Error('secret'));
     const logs = vi.spyOn(console, 'error').mockImplementation(() => {});
     const send = () => request(app).post('/api/jingles').auth(access_token, { type: 'bearer' }).send({ description: 'A jingle for Cedar Loop' });
@@ -170,6 +171,25 @@ describe('same-origin Express API', () => {
     expect(later.body.detail).toContain('may have incurred costs');
     expect(direction).not.toHaveBeenCalled();
     expect(JSON.stringify(logs.mock.calls)).not.toContain('secret');
+  });
+
+  it('records an allowlisted reason when a successful preflight rejects the job', async () => {
+    const root = root_dir();
+    const [brief, script] = load_inputs()[0]!;
+    const cta = script.split(/(?<=[.!?])\s+/).at(-1)!;
+    const { app, access_token } = await fixture({
+      data_dir: root,
+      environ: { ...speech_environment(root, { SPEECH_TOTAL_BUDGET_USD: '2' }), ...lyric_limits, LYRIC_ENABLED: 'true' },
+      jingle_direction: async () => ({ name: brief.name, offer: 'tune ups', cta, suggested_cta: null, tone: 'upbeat' }),
+      lyric_backend: { preflight: async () => ({ english: false, risky_claims: false, artist_imitation: false }), generate: vi.fn(), assess: vi.fn(), screen: vi.fn() },
+      score_composer: { compose: vi.fn() },
+    });
+    const result = await request(app).post('/api/jingles').auth(access_token, { type: 'bearer' })
+      .send({ description: `Write a jingle for ${brief.name}, with tune ups. End with "${cta}"` });
+    expect(result.status).toBe(422);
+    const diagnostic = await request(app).get(`/api/admin/jingle-diagnostics/${result.headers['x-earwyrm-diagnostic-id']}`)
+      .auth(access_token, { type: 'bearer' });
+    expect(diagnostic.body.failure_reasons).toEqual([{ code: 'unsupported_language', explanation: 'the description is not in a supported language' }]);
   });
 
   it.each([

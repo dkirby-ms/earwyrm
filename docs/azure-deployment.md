@@ -478,6 +478,10 @@ An enabled administrator can open **Manage access**, select **Job diagnostics**,
 and check that ID. The result shows the last recorded stage and outcome, plus
 available provider operation, HTTP status, recognized error code, rejected
 parameter and UUID request ID. Values outside the allowlist are unavailable.
+For newly recorded failures, the result also shows allowlisted failure reasons
+when the application can identify them. Successful HTTP responses do not have
+error codes; a later validation or generation step can still fail. Older records
+do not have saved failure reasons.
 Provider events cover instrumented model and safety HTTP calls, not every
 service or every failure. A successful provider response does not imply a
 successful jingle.

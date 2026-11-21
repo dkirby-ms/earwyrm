@@ -78,6 +78,8 @@ function installMocks(options: {
   failLyricAction?: boolean
   diagnosticResponse?: 'found' | 'missing' | 'error'
   diagnosticStatus?: JingleDiagnostic['status']
+  diagnosticReasons?: JingleDiagnostic['failure_reasons']
+  providerEvents?: JingleDiagnostic['provider_events']
   noProviderEvents?: boolean
   waitForDiagnostic?: Promise<void>
 } = {}) {
@@ -249,7 +251,8 @@ function installMocks(options: {
       return Response.json({
         diagnostic_id: 'a08940a6-6b20-42b0-98ab-66b98b51e013',
         stage: 'voice', status: options.diagnosticStatus ?? 'outcome_unknown', created_at: '2026-11-18T12:00:00Z', updated_at: '2026-11-18T12:01:00Z',
-        provider_events: options.noProviderEvents ? [] : [{ stage: 'score', operation: 'compose_score', http_status: 400, error_code: 'unsupported_parameter', parameter: 'max_completion_tokens', request_id: null }],
+        failure_reasons: options.diagnosticReasons ?? null,
+        provider_events: options.noProviderEvents ? [] : options.providerEvents ?? [{ stage: 'score', operation: 'compose_score', http_status: 400, error_code: 'unsupported_parameter', parameter: 'max_completion_tokens', request_id: null }],
       })
     }
     if (path === '/api/admin/access-requests/request-1/decision') {
@@ -439,6 +442,25 @@ describe('Authentication and access administration', () => {
     expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/api/admin/jingle-diagnostics/a08940a6-6b20-42b0-98ab-66b98b51e013'))).toBe(true)
     await user.clear(input)
     expect(screen.queryByText('unsupported_parameter')).not.toBeInTheDocument()
+  })
+
+  it('distinguishes successful exchanges from a recorded job failure', async () => {
+    const user = userEvent.setup()
+    installMocks({
+      diagnosticStatus: 'failed',
+      diagnosticReasons: [{ code: 'unsupported_language', explanation: 'the description is not in a supported language' }],
+      providerEvents: [{ stage: 'lyrics', operation: 'preflight', http_status: 200, error_code: null, parameter: null, request_id: '87935712-86cf-4862-bfdf-3da9b6686dc' }],
+    })
+    render(<App />)
+    await signIn(user)
+    await user.click(await screen.findByRole('button', { name: 'Manage access' }))
+    await user.type(screen.getByRole('textbox', { name: 'Diagnostic ID' }), 'a08940a6-6b20-42b0-98ab-66b98b51e013')
+    await user.click(screen.getByRole('button', { name: 'Check job' }))
+    expect(await screen.findByText(/the description is not in a supported language/)).toBeVisible()
+    expect(screen.getByText('87935712-86cf-4862-bfdf-3da9b6686dc')).toBeVisible()
+    expect(screen.queryByText('Error code')).not.toBeInTheDocument()
+    expect(screen.queryByText('Rejected parameter')).not.toBeInTheDocument()
+    expect(screen.getByText(/successful provider response does not mean/i)).toBeVisible()
   })
 
   it.each([

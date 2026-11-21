@@ -269,6 +269,10 @@ export async function validate_postgres_store(database_url: string): Promise<voi
     for (const name of REQUIRED_TABLES) {
       if (!(await connection.execute("SELECT to_regclass(?) AS name", [name])).rows[0]?.name) throw new StoreNotInitialized("PostgreSQL store is missing a required table; run the explicit database upgrade command");
     }
+    const columns = (await connection.execute(
+      "SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'jingle_diagnostics'",
+    )).rows;
+    if (!columns.some(column => column.column_name === "failure_reasons")) throw new StoreNotInitialized("PostgreSQL store is missing diagnostic columns; run the explicit database upgrade command");
   } finally { await connection.close(); }
 }
 
