@@ -188,6 +188,25 @@ describe("four-attempt fail-closed writer", () => {
     expect(backend.screen).toHaveBeenCalledTimes(scenario === "contextual_imitation" ? 0 : 1);
   });
 
+  it("does not hold a safe draft just because its creative direction excludes a sale", async () => {
+    const request = request_fixture(), backend = backend_fixture();
+    request.creative_direction = "Do not mention a sale";
+    const result = await new LyricWriter(backend).write(request);
+    expect(result.status).toBe("accepted");
+    expect(backend.preflight).toHaveBeenCalledWith(request);
+    expect(backend.assess).toHaveBeenCalledTimes(1);
+    expect(backend.screen).toHaveBeenCalledTimes(1);
+  });
+
+  it("still holds creative direction identified as risky by preflight", async () => {
+    const request = request_fixture(), backend = backend_fixture();
+    request.creative_direction = "Promote a sale";
+    backend.preflight.mockResolvedValue({ english: true, artist_imitation: false, risky_claims: true });
+    const result = await new LyricWriter(backend).write(request);
+    expect(result.status).toBe("human_review_required");
+    expect(backend.screen).toHaveBeenCalledTimes(1);
+  });
+
   it("requires preflight, generation, independent assessment and screening before acceptance", async () => {
     const backend = backend_fixture(), result = await new LyricWriter(backend).write(request_fixture());
     expect(result.status).toBe("accepted"); expect(result.attempts).toBe(1); expect(result.output).toEqual(draft_fixture());

@@ -91,6 +91,9 @@ application permissions. Operators can also use
    syllables without replacing the original brand spelling; listen to verify
    the stock voice's pronunciation. Guided vocals still require exact verified
    pronunciation, rhyme and note timing.
+   The model checks creative direction for risky requests. Keyword-based claim
+   checks apply to the structured brief and lyrics, not creative instructions
+   alone; independent grounding and safety screening still apply.
 2. Check the cost estimate, then select **Generate jingle**. This starts the
    paid request without a separate confirmation. The server screens the lyrics,
    uses Foundry to compose the score, and mixes Azure Speech with that score.

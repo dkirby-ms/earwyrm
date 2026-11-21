@@ -27,7 +27,7 @@ function parse_candidate(request: LyricRequest, data: unknown, mode?: "browser_j
 
 function brief_text(request: LyricRequest): string {
   const brief = request.brief;
-  return [brief.name, brief.offer, brief.location, brief.tone, ...brief.approved_claims, request.cta, request.creative_direction ?? ""].join("\n");
+  return [brief.name, brief.offer, brief.location, brief.tone, ...brief.approved_claims, request.cta].join("\n");
 }
 
 /** Fail-closed writer owning one initial generation attempt and exactly three retries. */
@@ -57,7 +57,7 @@ export class LyricWriter {
       failure_reasons.push(reason);
       jingle_diagnostic({ event: "lyric_attempt_failed", step: failed_step, attempt: attempts, reason });
     };
-    if (IMITATION.test(text)) return result("rejected", ["artist_imitation"]);
+    if (IMITATION.test(`${text}\n${request.creative_direction ?? ""}`)) return result("rejected", ["artist_imitation"]);
     try {
       try { validate_fixed_lyrics(request); }
       catch (error) {
