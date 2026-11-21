@@ -496,9 +496,15 @@ Diagnostic records are retained for 30 days and are hidden after expiration;
 physical cleanup occurs when another diagnostic is created. Requests made before
 this feature do not have these records, and failed diagnostic writes can leave
 an incomplete record. Initial diagnostic write failure prevents generation;
-later failure is reported as an uncertain outcome. No prompts, lyrics, account
-identities, credentials, raw provider messages or endpoint URLs are stored in
-these records.
+later failure is reported as an uncertain outcome.
+
+New model exchanges include the request and response bodies for administrators.
+These can contain customer descriptions, generated lyrics and other sensitive
+content. Each body is limited to 64 KiB; the diagnostic reports when a body
+exceeds that limit or cannot be read. Transport headers and endpoint URLs are not
+captured, although customer or model content may itself include sensitive data.
+Safety-service bodies are not captured. Older jobs do not
+have model bodies. Model content is not written to diagnostic logs.
 
 For additional process-level details, search the local API terminal or the
 container **console** logs in Azure Container Apps for the ID. For older

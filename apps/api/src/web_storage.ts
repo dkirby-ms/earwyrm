@@ -11,7 +11,7 @@ import type { JingleEstimate } from "./jingle_prompt.js";
 import type { PaidLyricGenerationAction } from "./lyric_budget.js";
 import type { MelodyService } from "./melody_service.js";
 import type { ScoreProviderProvenance } from "./score_cloud.js";
-import { JingleDiagnostic, JingleFailureReasons, ProviderDiagnostic, type JingleStage } from "./jingle_diagnostics.js";
+import { JingleDiagnostic, JingleFailureReasons, ModelExchange, ProviderDiagnostic, type JingleStage } from "./jingle_diagnostics.js";
 import { complete_preview, create_preview_schema, pin_preview, prune_previews, reserve_preview } from "./preview_quota.js";
 
 const Money = Decimal.clone({ precision: 28 });
@@ -280,7 +280,7 @@ export class WebStorage {
     await create_preview_schema(connection);
   }
 
-  /** Adds content-free request lifecycle storage without changing existing records. */
+  /** Adds request lifecycle and administrator-only provider evidence storage. */
   static async _create_jingle_diagnostic_schema(connection: Connection): Promise<void> {
     await connection.executescript(`
       CREATE TABLE IF NOT EXISTS jingle_diagnostics (
@@ -292,13 +292,17 @@ export class WebStorage {
       CREATE TABLE IF NOT EXISTS jingle_provider_events (
         event_id TEXT PRIMARY KEY, diagnostic_id TEXT NOT NULL REFERENCES jingle_diagnostics(diagnostic_id) ON DELETE CASCADE,
         stage TEXT NOT NULL, operation TEXT NOT NULL, http_status INTEGER,
-        error_code TEXT, parameter TEXT, request_id TEXT, created_at TEXT NOT NULL);
+        error_code TEXT, parameter TEXT, request_id TEXT, created_at TEXT NOT NULL, model_exchange TEXT);
       CREATE INDEX IF NOT EXISTS jingle_provider_events_job ON jingle_provider_events(diagnostic_id, created_at);
     `);
     const columns = connection instanceof SqliteConnection
       ? (await connection.execute("PRAGMA table_info(jingle_diagnostics)")).rows.map(row => String(row.name))
       : (await connection.execute("SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'jingle_diagnostics'")).rows.map(row => String(row.column_name));
     if (!columns.includes("failure_reasons")) await connection.execute("ALTER TABLE jingle_diagnostics ADD COLUMN failure_reasons TEXT");
+    const event_columns = connection instanceof SqliteConnection
+      ? (await connection.execute("PRAGMA table_info(jingle_provider_events)")).rows.map(row => String(row.name))
+      : (await connection.execute("SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'jingle_provider_events'")).rows.map(row => String(row.column_name));
+    if (!event_columns.includes("model_exchange")) await connection.execute("ALTER TABLE jingle_provider_events ADD COLUMN model_exchange TEXT");
   }
 
   /** Adds limit overrides and nullable historical lyric attribution without resetting spend. */
@@ -980,9 +984,9 @@ export class WebStorage {
       const count = (await c.execute("SELECT count(*) AS count FROM jingle_provider_events WHERE diagnostic_id = ?", [diagnostic_id])).rows[0];
       if (Number(count?.count) >= 64) throw new StorageConflict("Jingle diagnostic event limit reached");
       await c.execute(`INSERT INTO jingle_provider_events
-        (event_id, diagnostic_id, stage, operation, http_status, error_code, parameter, request_id, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [randomUUID(), diagnostic_id, entry.stage, entry.operation, entry.http_status, entry.error_code, entry.parameter, entry.request_id, new Date().toISOString()]);
+        (event_id, diagnostic_id, stage, operation, http_status, error_code, parameter, request_id, created_at, model_exchange)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [randomUUID(), diagnostic_id, entry.stage, entry.operation, entry.http_status, entry.error_code, entry.parameter, entry.request_id, new Date().toISOString(), entry.model_exchange ? JSON.stringify(entry.model_exchange) : null]);
     });
   }
   /** Advances a live request or finalizes it exactly once; missing or finalized records reject the update. */
@@ -1010,9 +1014,11 @@ export class WebStorage {
       )).rows[0];
       if (!row) return null;
       const events = (await c.execute(
-        "SELECT stage, operation, http_status, error_code, parameter, request_id FROM jingle_provider_events WHERE diagnostic_id = ? ORDER BY created_at, event_id",
+        "SELECT stage, operation, http_status, error_code, parameter, request_id, model_exchange FROM jingle_provider_events WHERE diagnostic_id = ? ORDER BY created_at, event_id",
         [diagnostic_id],
-      )).rows.map(entry => ProviderDiagnostic.parse(entry));
+      )).rows.map(({ model_exchange, ...entry }) => ProviderDiagnostic.parse({
+        ...entry, ...(model_exchange === null ? {} : { model_exchange: ModelExchange.parse(JSON.parse(String(model_exchange))) }),
+      }));
       const { failure_reasons, ...diagnostic } = row;
       const reasons = failure_reasons === null ? null : JingleFailureReasons.parse(JSON.parse(String(failure_reasons)));
       return { ...JingleDiagnostic.parse(diagnostic), failure_reasons: reasons, provider_events: events };

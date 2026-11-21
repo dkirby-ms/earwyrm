@@ -273,6 +273,10 @@ export async function validate_postgres_store(database_url: string): Promise<voi
       "SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'jingle_diagnostics'",
     )).rows;
     if (!columns.some(column => column.column_name === "failure_reasons")) throw new StoreNotInitialized("PostgreSQL store is missing diagnostic columns; run the explicit database upgrade command");
+    const event_columns = (await connection.execute(
+      "SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'jingle_provider_events'",
+    )).rows;
+    if (!event_columns.some(column => column.column_name === "model_exchange")) throw new StoreNotInitialized("PostgreSQL store is missing diagnostic columns; run the explicit database upgrade command");
   } finally { await connection.close(); }
 }
 

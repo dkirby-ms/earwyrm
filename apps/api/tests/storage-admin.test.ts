@@ -150,12 +150,14 @@ describe("jingle diagnostic storage", () => {
     await store.append_jingle_provider_event(id, {
       stage: "lyrics", operation: "generate", http_status: 400,
       error_code: "unsupported_parameter", parameter: "model", request_id: null,
+      model_exchange: { request: { status: "captured", text: "private prompt" }, response: { status: "captured", text: "private output" } },
     });
 
     await expect(store.get_jingle_diagnostic_as_admin("issuer", "user", id)).rejects.toBeInstanceOf(StorageAccessDenied);
     await store.update_jingle_diagnostic(id, "lyrics", "failed");
     expect(await store.get_jingle_diagnostic_as_admin("issuer", "owner", id)).toMatchObject({
       diagnostic_id: id, stage: "lyrics", status: "failed",
+      provider_events: [{ model_exchange: { request: { status: "captured", text: "private prompt" }, response: { status: "captured", text: "private output" } } }],
     });
     await expect(store.update_jingle_diagnostic(id, "score", "completed")).rejects.toBeInstanceOf(StorageConflict);
     const db = new DatabaseSync(store.database_path);
@@ -176,6 +178,7 @@ describe("jingle diagnostic storage", () => {
     await original.create_jingle_diagnostic(id);
     const old = new DatabaseSync(original.database_path);
     old.exec("ALTER TABLE jingle_diagnostics DROP COLUMN failure_reasons");
+    old.exec("ALTER TABLE jingle_provider_events DROP COLUMN model_exchange");
     old.close();
     const upgraded = new WebStorage(root);
     await expect(upgraded.update_jingle_diagnostic(id, "lyrics", "failed", ["private-marker"])).rejects.toThrow();
@@ -282,6 +285,7 @@ describe("operator transactions and read-only import", () => {
     } else if (!hasLyrics) {
       const sourceDb = new DatabaseSync(web.database_path);
       sourceDb.exec("ALTER TABLE jingle_diagnostics DROP COLUMN failure_reasons");
+      sourceDb.exec("ALTER TABLE jingle_provider_events DROP COLUMN model_exchange");
       sourceDb.close();
     }
     if (hasAccessRequests) {

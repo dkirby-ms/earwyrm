@@ -197,13 +197,13 @@ describe('same-origin Express API', () => {
     ['hostile', JSON.stringify({ error: { code: 'private-marker', param: 'private-marker' } }), 'private-marker', 400],
     ['malformed', '{private-marker', 'private-marker', 400],
     ['oversized', JSON.stringify({ error: { code: 'unsupported_parameter', param: 'model', message: 'private-marker'.repeat(7000) } }), 'private-marker', 429],
-  ] as const)('stores only safe provider evidence for %s responses', async (scenario, body, requestId, status) => {
+  ] as const)('stores model bodies and allowlisted metadata for %s responses', async (scenario, body, requestId, status) => {
     const root = root_dir();
     const [brief, script] = load_inputs()[0]!;
     const cta = script.split(/(?<=[.!?])\s+/).at(-1)!;
     const backend = new AzureLyricBackend({
       foundry_endpoint: 'https://foundry.example.test', safety_endpoint: 'https://safety.example.test', deployment: 'test',
-    }, { getToken: async () => ({ token: 'private-marker', expiresOnTimestamp: Date.now() + 60000 }) },
+    }, { getToken: async () => ({ token: 'secret-token-marker', expiresOnTimestamp: Date.now() + 60000 }) },
     async () => new Response(body, { status, headers: { 'x-request-id': requestId } }));
     const logs = vi.spyOn(console, 'info').mockImplementation(() => {});
     const { app, access_token } = await fixture({
@@ -217,13 +217,19 @@ describe('same-origin Express API', () => {
     expect(result.status).toBe(503);
     const diagnostic = await request(app).get(`/api/admin/jingle-diagnostics/${result.headers['x-earwyrm-diagnostic-id']}`)
       .auth(access_token, { type: 'bearer' });
-    expect(diagnostic.body.provider_events).toEqual([{
+    expect(diagnostic.body.provider_events).toMatchObject([{
       stage: 'lyrics', operation: 'preflight', http_status: status,
       error_code: scenario === 'recognized' ? 'unsupported_parameter' : null,
       parameter: scenario === 'recognized' ? 'max_completion_tokens' : null,
       request_id: scenario === 'recognized' ? requestId : null,
     }]);
-    expect(JSON.stringify(diagnostic.body)).not.toContain('private-marker');
+    const exchange = diagnostic.body.provider_events[0].model_exchange;
+    expect(exchange.request).toMatchObject({ status: 'captured', text: expect.stringContaining('Classify the supplied data') });
+    expect(exchange.response).toEqual(scenario === 'oversized'
+      ? { status: 'too_large', text: null } : { status: 'captured', text: body });
+    expect(JSON.stringify(diagnostic.body)).not.toContain('secret-token-marker');
+    expect((await request(app).get(`/api/admin/jingle-diagnostics/${result.headers['x-earwyrm-diagnostic-id']}`)
+      .auth(await token('user-b'), { type: 'bearer' })).status).toBe(403);
     expect(JSON.stringify(logs.mock.calls)).not.toContain('private-marker');
   });
 

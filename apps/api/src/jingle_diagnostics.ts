@@ -11,7 +11,14 @@ type ProviderOperation = z.infer<typeof ProviderOperation>;
 const ProviderCode = z.enum(['content_filter', 'ResponsibleAIPolicyViolation', 'invalid_request_error', 'invalid_parameter', 'unsupported_parameter', 'unknown_parameter', 'invalid_value', 'model_not_found', 'DeploymentNotFound', 'BadRequest', 'InvalidRequest', 'InvalidArgument', 'rate_limit_exceeded', 'context_length_exceeded']);
 const ProviderParameter = z.enum(['model', 'messages', 'response_format', 'max_completion_tokens', 'text', 'categories', 'outputType']);
 
-/** The only provider-supplied values that may be persisted for an HTTP exchange. */
+const CapturedText = z.discriminatedUnion('status', [
+  z.strictObject({ status: z.literal('captured'), text: z.string().refine(value => Buffer.byteLength(value, 'utf8') <= 65536) }),
+  z.strictObject({ status: z.enum(['too_large', 'unreadable']), text: z.null() }),
+]);
+/** Bounded model request and response bodies; these may contain customer content. */
+export const ModelExchange = z.strictObject({ request: CapturedText, response: CapturedText });
+
+/** Provider metadata and, for model calls, optional administrator-only content. */
 export const ProviderDiagnostic = z.strictObject({
   stage: z.enum(['brief', 'lyrics', 'safety', 'score', 'backing', 'voice', 'mix']),
   operation: ProviderOperation,
@@ -19,6 +26,7 @@ export const ProviderDiagnostic = z.strictObject({
   error_code: ProviderCode.nullable(),
   parameter: ProviderParameter.nullable(),
   request_id: z.uuid().nullable(),
+  model_exchange: ModelExchange.optional(),
 });
 export type ProviderDiagnostic = z.infer<typeof ProviderDiagnostic>;
 /** Durable request lifecycle fields, independent of provider messages or user content. */
@@ -127,8 +135,30 @@ async function bounded_error_body(response: globalThis.Response): Promise<unknow
   } finally { reader.releaseLock(); }
 }
 
-/** Measures an HTTP exchange without capturing its URL, headers, or body. */
-export async function trace_jingle_provider(operation: ProviderOperation, send: () => Promise<globalThis.Response>): Promise<globalThis.Response> {
+async function capture_body(response: globalThis.Response): Promise<z.infer<typeof CapturedText>> {
+  const reader = response.body?.getReader();
+  if (!reader) return { status: 'captured', text: '' };
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) return { status: 'captured', text: new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks)) };
+      bytes += value.byteLength;
+      if (bytes > 65536) {
+        void reader.cancel().catch(() => console.error('ERROR: Provider response cancellation failed'));
+        return { status: 'too_large', text: null };
+      }
+      chunks.push(value);
+    }
+  } catch (error) {
+    if (error instanceof TypeError || error instanceof DOMException) return { status: 'unreadable', text: null };
+    throw error;
+  } finally { reader.releaseLock(); }
+}
+
+/** Records metadata and optional bounded model bodies, never transport headers or URLs. */
+export async function trace_jingle_provider(operation: ProviderOperation, send: () => Promise<globalThis.Response>, model_payload?: string): Promise<globalThis.Response> {
   const context = active.getStore();
   if (!context) return send();
   const started = performance.now();
@@ -137,7 +167,13 @@ export async function trace_jingle_provider(operation: ProviderOperation, send: 
     const response = await send();
     http_status = response.status;
     if (context.record_provider) {
-      const raw = response.ok ? null : await bounded_error_body(response.status === 400 ? response.clone() : response);
+      const model_response = model_payload === undefined ? undefined : await capture_body(response.clone());
+      let raw: unknown = null;
+      if (!response.ok && model_response === undefined) raw = await bounded_error_body(response.clone());
+      else if (!response.ok && model_response?.status === 'captured') {
+        try { raw = JSON.parse(model_response.text); }
+        catch (error) { if (!(error instanceof SyntaxError)) throw error; }
+      }
       const body = z.object({ error: z.object({ code: z.unknown().optional(), param: z.unknown().optional() }).optional() }).safeParse(raw);
       const code = ProviderCode.safeParse(body.success ? body.data.error?.code : undefined);
       const parameter = ProviderParameter.safeParse(body.success ? body.data.error?.param : undefined);
@@ -150,6 +186,12 @@ export async function trace_jingle_provider(operation: ProviderOperation, send: 
         error_code: code.success ? code.data : null,
         parameter: parameter.success ? parameter.data : null,
         request_id: request_id?.data ?? null,
+        ...(model_payload === undefined || model_response === undefined ? {} : { model_exchange: {
+          request: Buffer.byteLength(model_payload, 'utf8') <= 65536
+            ? { status: 'captured' as const, text: model_payload }
+            : { status: 'too_large' as const, text: null },
+          response: model_response,
+        } }),
       });
     }
     return response;

@@ -463,6 +463,25 @@ describe('Authentication and access administration', () => {
     expect(screen.getByText(/successful provider response does not mean/i)).toBeVisible()
   })
 
+  it('reveals model request and response only when the administrator opens the exchange', async () => {
+    const user = userEvent.setup()
+    installMocks({ providerEvents: [{
+      stage: 'lyrics', operation: 'assess', http_status: 200, error_code: null, parameter: null, request_id: null,
+      model_exchange: {
+        request: { status: 'captured', text: '{"messages":[{"content":"private prompt"}]}' },
+        response: { status: 'captured', text: '{"grounded":false}' },
+      },
+    }] })
+    render(<App />)
+    await signIn(user)
+    await user.click(await screen.findByRole('button', { name: 'Manage access' }))
+    await user.type(screen.getByRole('textbox', { name: 'Diagnostic ID' }), 'a08940a6-6b20-42b0-98ab-66b98b51e013')
+    await user.click(screen.getByRole('button', { name: 'Check job' }))
+    await user.click(await screen.findByText('View model request and response'))
+    expect(screen.getByText(/private prompt/)).toBeVisible()
+    expect(screen.getByText('{"grounded":false}')).toBeVisible()
+  })
+
   it.each([
     ['missing', 'No diagnostic was found'],
     ['error', 'Storage unavailable'],

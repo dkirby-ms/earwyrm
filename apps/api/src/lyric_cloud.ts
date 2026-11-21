@@ -118,7 +118,7 @@ export class AzureLyricBackend implements LyricBackend, JingleAdvisor {
         if (!token) throw new CloudFailure("cloud_authentication_failed");
         let response: Response;
         try {
-          response = await trace_jingle_provider(operation, () => this.client(url, { method: "POST", redirect: "manual", signal: AbortSignal.timeout(30000), headers: { Authorization: `Bearer ${token.token}`, "Content-Type": "application/json" }, body: payload }));
+          response = await trace_jingle_provider(operation, () => this.client(url, { method: "POST", redirect: "manual", signal: AbortSignal.timeout(30000), headers: { Authorization: `Bearer ${token.token}`, "Content-Type": "application/json" }, body: payload }), kind === 'model' ? payload : undefined);
         } catch (error) {
           if (!(error instanceof TypeError) && !(error instanceof DOMException)) throw error;
           throw new CloudFailure("cloud_transport_failed", { retryable: true });

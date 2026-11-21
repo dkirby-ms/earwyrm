@@ -232,7 +232,7 @@ export class AzureScoreComposer implements ScoreComposer {
         signal: AbortSignal.timeout(30000),
         headers,
         body: payload,
-      }));
+      }), payload);
     } catch (error) {
       if (!(error instanceof TypeError) && !(error instanceof DOMException)) throw error;
       throw new CloudFailure("cloud_transport_failed", { retryable: true });

@@ -761,6 +761,7 @@ function App() {
                   : <p>No failure reason was recorded. Check the API logs using this diagnostic ID; older jobs may not have saved a reason.</p>)}
                 <h3>Provider evidence</h3>
                 <p>A successful provider response does not mean the whole job succeeded. Some failures happen outside the recorded provider exchanges.</p>
+                <p>Model exchanges can contain private customer details and generated content. Share them only with authorized people.</p>
                 {diagnostic.provider_events.length === 0 ? <p className="muted">No provider evidence was recorded.</p> : <ol className="provider-events">{diagnostic.provider_events.map((entry, index) => <li key={index}>
                   <h4>Provider exchange {index + 1}</h4>
                   <dl className="diagnostic-details">
@@ -773,6 +774,14 @@ function App() {
                     </>}
                     <div><dt>Provider request ID</dt><dd>{entry.request_id ?? 'Unavailable'}</dd></div>
                   </dl>
+                  {entry.model_exchange && <details>
+                    <summary>View model request and response</summary>
+                    <h5>Request sent to model</h5>
+                    {entry.model_exchange.request.status === 'captured' ? <pre>{entry.model_exchange.request.text}</pre> : <p>Request not recorded: {entry.model_exchange.request.status === 'too_large' ? 'exceeded the capture limit' : 'could not be read'}.</p>}
+                    <h5>Model response</h5>
+                    {entry.model_exchange.response.status === 'captured' ? <pre>{entry.model_exchange.response.text}</pre> : <p>Response not recorded: {entry.model_exchange.response.status === 'too_large' ? 'exceeded the capture limit' : 'could not be read'}.</p>}
+                  </details>}
+                  {!entry.model_exchange && ['extract_direction', 'preflight', 'generate', 'assess', 'suggest', 'compose_score'].includes(entry.operation) && <p>Model request and response were not recorded for this exchange.</p>}
                 </li>)}</ol>}
               </div>}
             </section>

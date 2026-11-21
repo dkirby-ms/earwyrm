@@ -53,7 +53,7 @@ export interface AdminAccessRequest {
   readonly created_at: string
 }
 
-/** Content-free lifecycle and allowlisted provider evidence for one browser jingle. */
+/** Administrator-only lifecycle and provider evidence for one browser jingle. */
 export interface JingleDiagnostic {
   readonly diagnostic_id: string
   readonly stage: 'brief' | 'lyrics' | 'safety' | 'score' | 'backing' | 'voice' | 'mix'
@@ -68,6 +68,10 @@ export interface JingleDiagnostic {
     readonly error_code: string | null
     readonly parameter: string | null
     readonly request_id: string | null
+    readonly model_exchange?: {
+      readonly request: { readonly status: 'captured' | 'too_large' | 'unreadable'; readonly text: string | null }
+      readonly response: { readonly status: 'captured' | 'too_large' | 'unreadable'; readonly text: string | null }
+    }
   }[]
 }
 

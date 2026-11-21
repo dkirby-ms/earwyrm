@@ -291,6 +291,36 @@ describe("four-attempt fail-closed writer", () => {
 });
 
 describe("Azure wire contracts without paid requests", () => {
+  it("captures the exact lyric model request and successful response without transport headers", async () => {
+    const app = express(), entries: ProviderDiagnostic[] = [];
+    const output = completion('{"english":true,"artist_imitation":false,"risky_claims":false}');
+    const client = transport(output);
+    app.get("/", (_req, res) => trace_jingle(res, async () => {
+      set_jingle_provider_recorder(async entry => { entries.push(entry); });
+      await new AzureLyricBackend(settings, credential, client).preflight(request_fixture());
+      res.sendStatus(204);
+    }));
+    await request(app).get("/").expect(204);
+    expect(entries[0]?.model_exchange).toEqual({
+      request: { status: "captured", text: client.mock.calls[0]?.[1].body },
+      response: { status: "captured", text: JSON.stringify(output) },
+    });
+    expect(JSON.stringify(entries)).not.toContain("TEST-ONLY");
+  });
+
+  it("reports an unreadable model response without retaining invalid UTF-8", async () => {
+    const app = express(), entries: ProviderDiagnostic[] = [];
+    const client = vi.fn<CloudTransport>().mockResolvedValue(new Response(new Uint8Array([255])));
+    app.get("/", (_req, res) => trace_jingle(res, async () => {
+      set_jingle_provider_recorder(async entry => { entries.push(entry); });
+      await expect(new AzureLyricBackend(settings, credential, client).preflight(request_fixture()))
+        .rejects.toThrow("malformed_cloud_response");
+      res.sendStatus(204);
+    }));
+    await request(app).get("/").expect(204);
+    expect(entries[0]?.model_exchange?.response).toEqual({ status: "unreadable", text: null });
+  });
+
   it("blocks oversized requests and extra completions before transport", async () => {
     const allowance = lyric_allowance("discuss", lyric_budget({
       LYRIC_MODEL_CALL_MAX_USD: "0.001", LYRIC_SAFETY_CALL_MAX_USD: "0.002",
@@ -398,7 +428,7 @@ describe("Azure wire contracts without paid requests", () => {
 });
 
 describe("structured score provider without paid requests", () => {
-  it("captures safe score-provider HTTP evidence without changing refusal behavior", async () => {
+  it("captures score-provider bodies without changing refusal behavior", async () => {
     const app = express(), entries: ProviderDiagnostic[] = [];
     const client = vi.fn<CloudTransport>().mockResolvedValue(new Response(
       JSON.stringify({ error: { code: "content_filter", param: "response_format", message: "private-marker" } }),
@@ -412,11 +442,13 @@ describe("structured score provider without paid requests", () => {
     }));
     await request(app).get("/").expect(204);
     expect(client).toHaveBeenCalledTimes(1);
-    expect(entries).toEqual([{
+    expect(entries).toMatchObject([{
       stage: "brief", operation: "compose_score", http_status: 400, error_code: "content_filter",
       parameter: "response_format", request_id: "35675016-33ae-4c9d-b39c-23aa0d631c18",
     }]);
-    expect(JSON.stringify(entries)).not.toContain("private-marker");
+    expect(entries[0]?.model_exchange?.response).toEqual({ status: "captured", text: expect.stringContaining("private-marker") });
+    expect(entries[0]?.model_exchange?.request).toEqual({ status: "captured", text: expect.stringContaining("Compose a concise") });
+    expect(JSON.stringify(entries)).not.toContain("TEST-ONLY");
   });
 
   it.each([false, true])("records successful score HTTP metadata or stops on evidence-write failure (%s)", async fails => {
@@ -437,10 +469,11 @@ describe("structured score provider without paid requests", () => {
     }));
     await request(app).get("/").expect(204);
     expect(client).toHaveBeenCalledTimes(1);
-    expect(entries).toEqual([{
+    expect(entries).toMatchObject([{
       stage: "brief", operation: "compose_score", http_status: 200, error_code: null,
       parameter: null, request_id: "35675016-33ae-4c9d-b39c-23aa0d631c18",
     }]);
+    expect(entries[0]?.model_exchange?.response).toEqual({ status: "captured", text: expect.stringContaining("tempo_bpm") });
   });
 
   function telemetry_fixture() {
