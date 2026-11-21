@@ -11,6 +11,7 @@ import { ARTIFACT_TYPES, CompositionResult, MelodyService } from "./melody_servi
 import { database_url_from_environment, is_storage_error, parse_seed_json, PostgresConnection, REQUIRED_TABLES, SqliteConnection, transaction, validate_postgres_store, type Connection } from "./persistence.js";
 import { StorageAccessDenied, StorageConflict, WebStorage } from "./web_storage.js";
 import { create_preview_schema } from "./preview_quota.js";
+import { JingleDiagnostic, ProviderDiagnostic } from "./jingle_diagnostics.js";
 
 export const WEB_TABLE_COLUMNS: Record<string, readonly string[]> = {
   runs: ["run_id", "owner", "mode", "brief_ids_json", "status", "created_at"],
@@ -24,6 +25,8 @@ export const WEB_TABLE_COLUMNS: Record<string, readonly string[]> = {
   lyric_reservations: ["reservation_id", "action", "reserved_usd", "created_at", "settlement_status", "actual_cost_usd", "evidence_reference", "settled_by_issuer", "settled_by_subject", "settled_at", "owner"],
   lyric_reservation_events: ["event_id", "reservation_id", "event_type", "previous_status", "new_status", "previous_actual_usd", "new_actual_usd", "actor_issuer", "actor_subject", "evidence_reference", "reason", "created_at"],
   budget_limits: ["scope", "owner", "limit_usd", "updated_by", "updated_at"],
+  jingle_diagnostics: ["diagnostic_id", "stage", "status", "created_at", "updated_at"],
+  jingle_provider_events: ["event_id", "diagnostic_id", "stage", "operation", "http_status", "error_code", "parameter", "request_id", "created_at"],
   score_reservations: ["reservation_id", "owner", "action", "logical_job_id", "request_sha256", "reserved_usd", "status", "score_json", "created_at", "updated_at", "provider_json", "attempt_count"],
   score_reconciliations: ["reservation_id", "attempt_number", "evidence_reference", "reconciled_at"],
   score_schema_migrations: ["version", "applied_at"],
@@ -70,7 +73,7 @@ function require_root(root: string): string {
   return realpathSync(root);
 }
 const RESET_TABLES = [
-  "budget_limits", "preview_reservations", "lyric_reservation_events", "score_reconciliations", "score_schema_migrations", "score_reservations", "lyric_reservations", "lyric_options", "access_requests", "application_users", "application_identity", "evaluations", "outputs", "paid_attempts",
+  "jingle_provider_events", "jingle_diagnostics", "budget_limits", "preview_reservations", "lyric_reservation_events", "score_reconciliations", "score_schema_migrations", "score_reservations", "lyric_reservations", "lyric_options", "access_requests", "application_users", "application_identity", "evaluations", "outputs", "paid_attempts",
   "runs", "local_outputs", "render_jobs", "earwyrm_store_metadata",
 ] as const;
 const RESET_DATA_ENTRIES = ["audio", "work", "melody", "earwyrm.sqlite3", ".earwyrm-initialized"] as const;
@@ -170,6 +173,17 @@ function safe_file(path: string, ancestors: readonly string[]): void {
   if (ancestors.some(parent => lstatSync(parent).isSymbolicLink()) || lstatSync(path).isSymbolicLink() || !lstatSync(path).isFile()) throw new TypeError("SQLite source references missing or unsafe media");
 }
 async function validate_web(c: Connection, root: string, tables: Set<string>): Promise<void> {
+  if (tables.has("jingle_provider_events")) {
+    const schema = ProviderDiagnostic.extend({ event_id: z.uuid(), diagnostic_id: z.uuid(), created_at: z.iso.datetime() });
+    for (const row of (await c.execute("SELECT event_id, diagnostic_id, stage, operation, http_status, error_code, parameter, request_id, created_at FROM jingle_provider_events")).rows) {
+      if (!schema.safeParse(row).success) throw new TypeError("SQLite source contains invalid jingle provider evidence");
+    }
+  }
+  if (tables.has("jingle_diagnostics")) {
+    for (const row of (await c.execute("SELECT diagnostic_id, stage, status, created_at, updated_at FROM jingle_diagnostics")).rows) {
+      if (!JingleDiagnostic.safeParse(row).success) throw new TypeError("SQLite source contains an invalid jingle diagnostic");
+    }
+  }
   if ((await c.execute(`SELECT 1 FROM paid_attempts AS attempt JOIN runs ON runs.run_id = attempt.run_id WHERE runs.owner != attempt.owner
     UNION ALL SELECT 1 FROM outputs JOIN runs ON runs.run_id = outputs.run_id WHERE runs.owner != outputs.owner
     UNION ALL SELECT 1 FROM evaluations JOIN outputs ON outputs.output_id = evaluations.output_id WHERE outputs.owner != evaluations.owner LIMIT 1`)).rows.length) throw new TypeError("SQLite source contains inconsistent record ownership");
@@ -292,7 +306,7 @@ export async function import_sqlite(directory: string, database_url: string): Pr
     web = new SqliteConnection(webPath, true);
     melody = new SqliteConnection(melodyPath, true);
     const sourceColumns = { ...WEB_TABLE_COLUMNS };
-    for (const table of ["budget_limits", "access_requests", "lyric_options", "lyric_reservations", "lyric_reservation_events", "score_reservations", "score_reconciliations", "score_schema_migrations", "preview_reservations"]) {
+    for (const table of ["jingle_provider_events", "jingle_diagnostics", "budget_limits", "access_requests", "lyric_options", "lyric_reservations", "lyric_reservation_events", "score_reservations", "score_reconciliations", "score_schema_migrations", "preview_reservations"]) {
       if (!(await web.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", [table])).rows.length) delete sourceColumns[table];
     }
     if (sourceColumns.lyric_reservations) {
@@ -347,10 +361,11 @@ export async function upgrade_postgres_store(
   await transaction(new PostgresConnection(database_url, 0x4557524d01), async c => {
     const marker = (await c.execute("SELECT schema_version FROM earwyrm_store_metadata WHERE singleton = 1")).rows;
     if (marker.length !== 1 || marker[0]!.schema_version !== 1) throw new TypeError("Upgrade requires an initialized version-one store");
-    for (const table of REQUIRED_TABLES.filter(name => name !== "access_requests" && name !== "lyric_options" && name !== "budget_limits")) {
+    for (const table of REQUIRED_TABLES.filter(name => name !== "access_requests" && name !== "lyric_options" && name !== "budget_limits" && name !== "jingle_diagnostics" && name !== "jingle_provider_events")) {
       if (!(await c.execute("SELECT to_regclass(?) AS name", [table])).rows[0]?.name) throw new TypeError("Upgrade requires a complete existing store");
     }
     await WebStorage._create_access_request_schema(c);
+    await WebStorage._create_jingle_diagnostic_schema(c);
     await create_preview_schema(c);
     if (include_lyrics) {
       await WebStorage._create_lyric_schema(c);

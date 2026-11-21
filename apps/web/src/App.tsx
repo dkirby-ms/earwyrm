@@ -3,7 +3,7 @@ import type { IPublicClientApplication } from '@azure/msal-browser'
 import { ApiError, apiBlob, apiJson } from './api'
 import { initializeAuth } from './auth'
 import type {
-  Access, AccessRequestStatus, AdminAccessRequest, BudgetOverview, EvaluationDraft, JingleHistory, LyricReservation,
+  Access, AccessRequestStatus, AdminAccessRequest, BudgetOverview, EvaluationDraft, JingleDiagnostic, JingleHistory, LyricReservation,
   Output, PaidAttempt, PublicConfig, RenderRun, TextBudgetBalance, UserAccess, UserAccessDraft,
 } from './types'
 
@@ -14,6 +14,7 @@ const scopes = {
 
 interface Identity { readonly issuer: string; readonly subject: string }
 type View = 'workspace' | 'admin'
+type AdminTask = 'diagnostics' | 'budgets' | 'access'
 const emptyDraft: UserAccessDraft = { issuer: '', subject: '', enabled: false, admin: false, paid_speech: false }
 const emptyEvaluation: EvaluationDraft = { brand_transcription: '', cta_transcription: '', self_rating: '' }
 const generationSteps = [
@@ -65,6 +66,11 @@ function App() {
   const [generation, setGeneration] = useState<{ status: 'idle' | 'running' | 'failed' | 'done'; step: number; delayed?: boolean }>({ status: 'idle', step: -1 })
   const [adminUsers, setAdminUsers] = useState<readonly UserAccess[]>([])
   const [adminRequests, setAdminRequests] = useState<readonly AdminAccessRequest[]>([])
+  const [adminTask, setAdminTask] = useState<AdminTask>('diagnostics')
+  const [diagnosticId, setDiagnosticId] = useState('')
+  const [diagnostic, setDiagnostic] = useState<JingleDiagnostic | null>(null)
+  const [diagnosticState, setDiagnosticState] = useState<'idle' | 'loading' | 'not-found' | 'error' | 'ready'>('idle')
+  const [diagnosticError, setDiagnosticError] = useState('')
   const [budget, setBudget] = useState<TextBudgetBalance | null>(null)
   const [adminBudgets, setAdminBudgets] = useState<BudgetOverview | null>(null)
   const [budgetDraft, setBudgetDraft] = useState<{ scope: 'text' | 'speech' | 'user'; owner: string; limit_usd: string } | null>(null)
@@ -238,6 +244,11 @@ function App() {
       setEvaluations({})
       setAdminUsers([])
       setAdminRequests([])
+      setAdminTask('diagnostics')
+      setDiagnosticId('')
+      setDiagnostic(null)
+      setDiagnosticState('idle')
+      setDiagnosticError('')
       setUserDraft(emptyDraft)
       setView('workspace')
       setAnnouncement('Signed out.')
@@ -401,6 +412,32 @@ function App() {
     setAdminBudgets(budgets)
   }
 
+  async function checkDiagnostic(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault()
+    if (!client || !config || busyRef.current) return
+    const id = diagnosticId.trim()
+    setDiagnostic(null)
+    setDiagnosticError('')
+    setDiagnosticState('loading')
+    await runAction('Checking job', async () => {
+      try {
+        const result = await apiJson<JingleDiagnostic>(client, config, `/api/admin/jingle-diagnostics/${encodeURIComponent(id)}`, scopes.read)
+        setDiagnostic(result)
+        setDiagnosticState('ready')
+        setAnnouncement('Job diagnostic loaded.')
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) {
+          setDiagnosticState('not-found')
+          setAnnouncement('Job diagnostic not found.')
+        } else {
+          setDiagnosticError(errorText(error, 'The job diagnostic could not be loaded.'))
+          setDiagnosticState('error')
+          setAnnouncement('Job diagnostic lookup failed.')
+        }
+      }
+    })
+  }
+
   function editBudget(trigger: HTMLButtonElement, scope: 'text' | 'speech' | 'user', limit: string | null, owner = ''): void {
     // Clicks don't focus buttons in every browser; set the native dialog's return target.
     trigger.focus({ preventScroll: true })
@@ -505,6 +542,11 @@ function App() {
         setAdminUsers([])
         setAdminRequests([])
         setAdminBudgets(null)
+        setDiagnostic(null)
+        setDiagnosticId('')
+        setDiagnosticState('idle')
+        setDiagnosticError('')
+        setAdminTask('diagnostics')
         setAccess(submitted.enabled ? { ...identity, admin: false, paid_speech: submitted.paid_speech } : null)
         setView('workspace')
         setAnnouncement('Access saved. Your administrator access has been removed.')
@@ -685,9 +727,50 @@ function App() {
               })}
             </section>
           </div>
-          <section className="panel workspace-view" aria-labelledby="admin-heading" hidden={view !== 'admin' || !access.admin}>
-            <h2 id="admin-heading" ref={adminHeading} tabIndex={-1}>Manage application access</h2>
-            <p>Granting enables baseline access. Jingle generation also depends on service and budget settings. Paid Speech access applies only to legacy endpoints.</p>
+          <section className="panel admin-layout" aria-labelledby="admin-heading" hidden={view !== 'admin' || !access.admin}>
+            <nav className="admin-rail" aria-label="Administration tasks">
+              <h2 id="admin-heading" ref={adminHeading} tabIndex={-1}>Administration</h2>
+              <button type="button" aria-pressed={adminTask === 'diagnostics'} disabled={busy} onClick={() => setAdminTask('diagnostics')}>Job diagnostics</button>
+              <button type="button" aria-pressed={adminTask === 'budgets'} disabled={busy} onClick={() => setAdminTask('budgets')}>Budgets and usage</button>
+              <button type="button" aria-pressed={adminTask === 'access'} disabled={busy} onClick={() => setAdminTask('access')}>Application access</button>
+            </nav>
+            <div className="workspace-view admin-work">
+            <section aria-labelledby="diagnostic-heading" hidden={adminTask !== 'diagnostics'}>
+              <h2 id="diagnostic-heading">Check a jingle job</h2>
+              <p>Enter the diagnostic ID shared by the person who requested help. Billing totals do not determine a job's outcome.</p>
+              <form className="diagnostic-form" onSubmit={event => void checkDiagnostic(event)}>
+                <label>Diagnostic ID<input type="text" required maxLength={36} value={diagnosticId} disabled={busy} onChange={event => { setDiagnosticId(event.currentTarget.value); setDiagnostic(null); setDiagnosticState('idle') }} /></label>
+                <button className="button button-primary" type="submit" disabled={busy}>Check job</button>
+              </form>
+              {diagnosticState === 'idle' && <p className="muted">Enter a diagnostic ID to see the last recorded stage and available provider evidence.</p>}
+              {diagnosticState === 'loading' && <p role="status">Checking job…</p>}
+              {diagnosticState === 'not-found' && <p role="status">No diagnostic was found. Check the ID; older or expired jobs may not be available.</p>}
+              {diagnosticState === 'error' && <p className="alert" role="alert">Could not check the job: {diagnosticError} Check the ID and try again.</p>}
+              {diagnostic && <div className="diagnostic-result">
+                <h3>Job result</h3>
+                <dl className="diagnostic-details">
+                  <div><dt>Diagnostic ID</dt><dd><code>{diagnostic.diagnostic_id}</code></dd></div>
+                  <div><dt>Outcome</dt><dd>{diagnostic.status === 'outcome_unknown' ? <span className="diagnostic-unknown">Unknown</span> : diagnostic.status === 'running' ? 'Running' : diagnostic.status === 'completed' ? 'Completed' : 'Failed'}</dd></div>
+                  <div><dt>Last recorded stage</dt><dd>{diagnostic.stage}</dd></div>
+                  <div><dt>Created</dt><dd><time dateTime={diagnostic.created_at}>{new Date(diagnostic.created_at).toLocaleString()}</time></dd></div>
+                  <div><dt>Last updated</dt><dd><time dateTime={diagnostic.updated_at}>{new Date(diagnostic.updated_at).toLocaleString()}</time></dd></div>
+                </dl>
+                {diagnostic.status === 'outcome_unknown' && <p className="notice diagnostic-caution">The outcome cannot be confirmed. Work may still be running elsewhere or may have been interrupted; do not assume it failed or retry based on this status alone.</p>}
+                <h3>Provider evidence</h3>
+                {diagnostic.provider_events.length === 0 ? <p className="muted">No provider evidence was recorded.</p> : <ol className="provider-events">{diagnostic.provider_events.map((entry, index) => <li key={index}>
+                  <h4>Provider exchange {index + 1}</h4>
+                  <dl className="diagnostic-details">
+                    <div><dt>Stage</dt><dd>{entry.stage}</dd></div>
+                    <div><dt>Operation</dt><dd>{entry.operation || 'Unavailable'}</dd></div>
+                    <div><dt>HTTP status</dt><dd>{entry.http_status ?? 'Unavailable'}</dd></div>
+                    <div><dt>Error code</dt><dd>{entry.error_code ?? 'Unavailable'}</dd></div>
+                    <div><dt>Rejected parameter</dt><dd>{entry.parameter ?? 'Unavailable'}</dd></div>
+                    <div><dt>Provider request ID</dt><dd>{entry.request_id ?? 'Unavailable'}</dd></div>
+                  </dl>
+                </li>)}</ol>}
+              </div>}
+            </section>
+            <div hidden={adminTask !== 'budgets'}>
             <section className="budget-admin" aria-labelledby="budgets-heading">
               <div className="section-heading">
                 <h3 id="budgets-heading">Budgets and usage</h3>
@@ -784,6 +867,10 @@ function App() {
                 </div>}
               </dialog>
             </section>
+            </div>
+            <div hidden={adminTask !== 'access'}>
+            <h2>Manage application access</h2>
+            <p>Granting enables baseline access. Jingle generation also depends on service and budget settings. Paid Speech access applies only to legacy endpoints.</p>
             <section aria-labelledby="access-requests-heading">
               <h3 id="access-requests-heading">Pending access requests</h3>
               {adminRequests.length ? <ul className="stack">{adminRequests.map(request => <li key={request.request_id}>
@@ -814,6 +901,8 @@ function App() {
               </fieldset>
               <button className="button button-primary" type="submit" disabled={busy}>Save user access</button>
             </form>
+            </div>
+            </div>
           </section>
         </div>}
       </main>

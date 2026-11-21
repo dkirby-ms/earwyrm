@@ -3,7 +3,7 @@ import { cleanup, render, screen, waitFor, within } from '@testing-library/react
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
-import type { AccessRequestStatus, JingleHistory } from './types'
+import type { AccessRequestStatus, JingleDiagnostic, JingleHistory } from './types'
 
 type MockLyricEvent = {
   event_id: string
@@ -76,6 +76,10 @@ function installMocks(options: {
   failBudgetSave?: boolean
   failBudgetLoad?: boolean
   failLyricAction?: boolean
+  diagnosticResponse?: 'found' | 'missing' | 'error'
+  diagnosticStatus?: JingleDiagnostic['status']
+  noProviderEvents?: boolean
+  waitForDiagnostic?: Promise<void>
 } = {}) {
   let denied = Boolean(options.denied)
   let status = options.status ?? 'none'
@@ -238,6 +242,16 @@ function installMocks(options: {
     if (path === '/api/outputs/output-1/evaluation') return Response.json({ status: 'Pass' })
     if (path === '/api/admin/users') return Response.json(init?.method === 'PUT' ? { status: 'updated' } : { users })
     if (path === '/api/admin/access-requests') return Response.json({ requests })
+    if (path.startsWith('/api/admin/jingle-diagnostics/')) {
+      await options.waitForDiagnostic
+      if (options.diagnosticResponse === 'missing') return Response.json({ detail: 'Not found' }, { status: 404 })
+      if (options.diagnosticResponse === 'error') return Response.json({ detail: 'Storage unavailable' }, { status: 503 })
+      return Response.json({
+        diagnostic_id: 'a08940a6-6b20-42b0-98ab-66b98b51e013',
+        stage: 'voice', status: options.diagnosticStatus ?? 'outcome_unknown', created_at: '2026-11-18T12:00:00Z', updated_at: '2026-11-18T12:01:00Z',
+        provider_events: options.noProviderEvents ? [] : [{ stage: 'score', operation: 'compose_score', http_status: 400, error_code: 'unsupported_parameter', parameter: 'max_completion_tokens', request_id: null }],
+      })
+    }
     if (path === '/api/admin/access-requests/request-1/decision') {
       const request = requests[0]
       requests = []
@@ -404,6 +418,60 @@ describe('Jingle workspace', () => {
 })
 
 describe('Authentication and access administration', () => {
+  it('checks one job and distinguishes unknown outcome from available provider evidence', async () => {
+    const user = userEvent.setup()
+    let finish!: () => void
+    const pending = new Promise<void>(resolve => { finish = resolve })
+    const { fetchMock } = installMocks({ waitForDiagnostic: pending })
+    render(<App />)
+    await signIn(user)
+    await user.click(await screen.findByRole('button', { name: 'Manage access' }))
+    const input = screen.getByRole('textbox', { name: 'Diagnostic ID' })
+    await user.type(input, 'a08940a6-6b20-42b0-98ab-66b98b51e013')
+    await user.click(screen.getByRole('button', { name: 'Check job' }))
+    expect(screen.getByRole('status')).toHaveTextContent('Checking job')
+    finish()
+    expect(await screen.findByText(/The outcome cannot be confirmed/)).toBeVisible()
+    expect(screen.getByText('unsupported_parameter')).toBeVisible()
+    expect(screen.getByText('max_completion_tokens')).toBeVisible()
+    expect(screen.getByText('400')).toBeVisible()
+    expect(screen.getByText('Unavailable')).toBeVisible()
+    expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith('/api/admin/jingle-diagnostics/a08940a6-6b20-42b0-98ab-66b98b51e013'))).toBe(true)
+    await user.clear(input)
+    expect(screen.queryByText('unsupported_parameter')).not.toBeInTheDocument()
+  })
+
+  it.each([
+    ['missing', 'No diagnostic was found'],
+    ['error', 'Storage unavailable'],
+  ] as const)('reports a %s diagnostic lookup without retaining an old result', async (response, message) => {
+    const user = userEvent.setup()
+    installMocks({ diagnosticResponse: response })
+    render(<App />)
+    await signIn(user)
+    await user.click(await screen.findByRole('button', { name: 'Manage access' }))
+    await user.type(screen.getByRole('textbox', { name: 'Diagnostic ID' }), 'a08940a6-6b20-42b0-98ab-66b98b51e013')
+    await user.click(screen.getByRole('button', { name: 'Check job' }))
+    expect(await screen.findByText(new RegExp(message))).toBeVisible()
+    expect(screen.queryByRole('heading', { name: 'Job result' })).not.toBeInTheDocument()
+  })
+
+  it.each([
+    ['completed', 'Completed'],
+    ['failed', 'Failed'],
+    ['running', 'Running'],
+  ] as const)('shows a %s job independently of missing provider evidence', async (status, label) => {
+    const user = userEvent.setup()
+    installMocks({ diagnosticStatus: status, noProviderEvents: true })
+    render(<App />)
+    await signIn(user)
+    await user.click(await screen.findByRole('button', { name: 'Manage access' }))
+    await user.type(screen.getByRole('textbox', { name: 'Diagnostic ID' }), 'a08940a6-6b20-42b0-98ab-66b98b51e013')
+    await user.click(screen.getByRole('button', { name: 'Check job' }))
+    expect(await screen.findByText(label)).toBeVisible()
+    expect(screen.getByText('No provider evidence was recorded.')).toBeVisible()
+  })
+
   it('shows pending lyric reserves separately from administrator-recorded verified actuals', async () => {
     const user = userEvent.setup()
     installMocks()
@@ -411,6 +479,7 @@ describe('Authentication and access administration', () => {
     await signIn(user)
     expect(await screen.findByText(/Lyric reserve: \$0\.62\. Administrator-recorded verified lyric actual: \$0\.05\./)).toBeVisible()
     await user.click(screen.getByRole('button', { name: 'Manage access' }))
+    await user.click(screen.getByRole('button', { name: 'Budgets and usage' }))
     expect(await screen.findByRole('heading', { name: 'Lyric reservations' })).toBeVisible()
     const pending = screen.getAllByRole('listitem').find(item => item.textContent?.includes('reservation-pending'))
     const settled = screen.getAllByRole('listitem').find(item => item.textContent?.includes('reservation-settled'))
@@ -432,6 +501,7 @@ describe('Authentication and access administration', () => {
     render(<App />)
     await signIn(user)
     await user.click(screen.getByRole('button', { name: 'Manage access' }))
+    await user.click(screen.getByRole('button', { name: 'Budgets and usage' }))
     await screen.findByRole('heading', { name: 'Lyric reservations' })
     const settlementForm = screen.getByRole('form', { name: 'Settle lyric reservation reservation-pending' })
     await user.type(within(settlementForm).getByLabelText('Verified actual lyric cost (USD)'), '0.04')
@@ -474,6 +544,7 @@ describe('Authentication and access administration', () => {
     render(<App />)
     await signIn(user)
     await user.click(screen.getByRole('button', { name: 'Manage access' }))
+    await user.click(screen.getByRole('button', { name: 'Budgets and usage' }))
     await screen.findByRole('heading', { name: 'Lyric reservations' })
     const form = screen.getByRole('form', { name: 'Settle lyric reservation reservation-pending' })
     await user.type(within(form).getByLabelText('Verified actual lyric cost (USD)'), '0.04')
@@ -492,6 +563,7 @@ describe('Authentication and access administration', () => {
     render(<App />)
     await signIn(user)
     await user.click(screen.getByRole('button', { name: 'Manage access' }))
+    await user.click(screen.getByRole('button', { name: 'Budgets and usage' }))
     const edit = await screen.findByRole('button', { name: 'Edit AI budget' })
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     edit.focus()
@@ -521,6 +593,7 @@ describe('Authentication and access administration', () => {
     await signIn(user)
     expect(await screen.findByText(/Lifetime allowance: \$5.*Remaining: \$3.75/)).toBeVisible()
     await user.click(screen.getByRole('button', { name: 'Manage access' }))
+    await user.click(screen.getByRole('button', { name: 'Budgets and usage' }))
     await user.click(await screen.findByRole('button', { name: 'Edit budget for existing-user' }))
     expect(screen.getByText('Editing: Lifetime allowance for existing-user')).toBeVisible()
     await user.clear(screen.getByLabelText('Budget limit (USD)'))
@@ -547,6 +620,7 @@ describe('Authentication and access administration', () => {
     render(<App />)
     await signIn(user)
     await user.click(await screen.findByRole('button', { name: 'Manage access' }))
+    await user.click(screen.getByRole('button', { name: 'Budgets and usage' }))
     await user.click(await screen.findByRole('button', { name: 'Edit AI budget' }))
     const dialog = screen.getByRole('dialog', { name: 'Edit budget limit' })
     const input = await screen.findByLabelText('Budget limit (USD)')
@@ -564,6 +638,7 @@ describe('Authentication and access administration', () => {
     render(<App />)
     await signIn(user)
     await user.click(await screen.findByRole('button', { name: 'Manage access' }))
+    await user.click(screen.getByRole('button', { name: 'Budgets and usage' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('Persistent storage is unavailable')
     expect(screen.getByText('Budget data has not loaded. Use Refresh budgets to retry.')).toBeVisible()
     expect(screen.getByRole('button', { name: 'Refresh budgets' })).toBeEnabled()
@@ -598,6 +673,7 @@ describe('Authentication and access administration', () => {
     render(<App />)
     await signIn(user)
     await user.click(await screen.findByRole('button', { name: 'Manage access' }))
+    await user.click(screen.getByRole('button', { name: 'Application access' }))
     const queue = await screen.findByRole('region', { name: 'Pending access requests' })
     expect(within(queue).getByText('Email: requester@example.test')).toBeVisible()
     const grant = within(queue).getByRole('button', { name: 'Grant access to requester-1' })
@@ -621,6 +697,7 @@ describe('Authentication and access administration', () => {
     render(<App />)
     await signIn(user)
     await user.click(await screen.findByRole('button', { name: 'Manage access' }))
+    await user.click(screen.getByRole('button', { name: 'Application access' }))
     expect(await screen.findByText('Email unavailable')).toBeVisible()
     await user.click(screen.getByRole('button', { name: 'Deny request from requester-1' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('The request was already decided')
@@ -633,6 +710,7 @@ describe('Authentication and access administration', () => {
     render(<App />)
     await signIn(user)
     await user.click(await screen.findByRole('button', { name: 'Manage access' }))
+    await user.click(screen.getByRole('button', { name: 'Application access' }))
     await user.click(await screen.findByRole('button', { name: 'Edit current-user' }))
     await user.click(screen.getByLabelText('Administrator'))
     await user.click(screen.getByRole('button', { name: 'Save user access' }))

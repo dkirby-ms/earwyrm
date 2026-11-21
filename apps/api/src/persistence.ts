@@ -257,7 +257,7 @@ export async function transaction<T>(connection: Connection, operation: (connect
     throw error;
   } finally { await connection.close(); }
 }
-export const REQUIRED_TABLES = ["runs", "paid_attempts", "outputs", "evaluations", "render_jobs", "local_outputs", "application_identity", "application_users", "access_requests", "lyric_options", "budget_limits"] as const;
+export const REQUIRED_TABLES = ["runs", "paid_attempts", "outputs", "evaluations", "render_jobs", "local_outputs", "application_identity", "application_users", "access_requests", "lyric_options", "budget_limits", "jingle_diagnostics", "jingle_provider_events"] as const;
 /** Requires the version-one marker and both schemas without initializing, importing, or falling back to SQLite. */
 export async function validate_postgres_store(database_url: string): Promise<void> {
   const connection = new PostgresConnection(database_url, 0x4557524d01);

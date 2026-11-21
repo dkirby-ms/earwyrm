@@ -53,6 +53,23 @@ export interface AdminAccessRequest {
   readonly created_at: string
 }
 
+/** Content-free lifecycle and allowlisted provider evidence for one browser jingle. */
+export interface JingleDiagnostic {
+  readonly diagnostic_id: string
+  readonly stage: 'brief' | 'lyrics' | 'safety' | 'score' | 'backing' | 'voice' | 'mix'
+  readonly status: 'running' | 'completed' | 'failed' | 'outcome_unknown'
+  readonly created_at: string
+  readonly updated_at: string
+  readonly provider_events: readonly {
+    readonly stage: string
+    readonly operation: string
+    readonly http_status: number | null
+    readonly error_code: string | null
+    readonly parameter: string | null
+    readonly request_id: string | null
+  }[]
+}
+
 /** An identity and its application-scoped permissions. */
 export interface UserAccess {
   readonly issuer: string

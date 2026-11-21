@@ -137,7 +137,7 @@ export interface RenderOutput extends Record<string, unknown> {
 export async function render_brief(
   directory: string, brief: AdvertiserBrief, text: string, _index: number,
   provider: SpeechProvider | null, evidence: SpeechEvidence | null,
-  options: { composition_seed?: CompositionRequest['seed']; history_dir?: string | null; database_url?: string | null; composition?: CommittedComposition; on_stage?: (stage: 'voice' | 'mix') => void } = {},
+  options: { composition_seed?: CompositionRequest['seed']; history_dir?: string | null; database_url?: string | null; composition?: CommittedComposition; on_stage?: (stage: 'voice' | 'mix') => void | Promise<void> } = {},
 ): Promise<RenderOutput[]> {
   const started = performance.now();
   mkdirSync(directory);
@@ -180,7 +180,7 @@ export async function render_brief(
       calculated_request_cost_usd: null, cost_status: 'Unknown until request completes', evidence,
     };
     save_json(join(directory, 'attempt.json'), attempt);
-    options.on_stage?.('voice');
+    await options.on_stage?.('voice');
     const utterance = await provider.synthesize(text).catch((error: unknown) => {
       attempt!.status = 'failed_or_unknown';
       save_json(join(directory, 'attempt.json'), attempt);
@@ -192,7 +192,7 @@ export async function render_brief(
       cost_status: 'Calculated estimate; reconcile with Azure billing',
     });
     save_json(join(directory, 'attempt.json'), attempt);
-    options.on_stage?.('mix');
+    await options.on_stage?.('mix');
     const fitted_duration = committed ? duration_seconds : jingle_duration(seed, Math.max(minimum_duration,
       utterance.audio.length / SAMPLE_RATE + 2, hook_word_index(utterance, text) * 0.25 + 10.75));
     if (!committed && fitted_duration !== duration_seconds) {

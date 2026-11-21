@@ -1,11 +1,37 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import type { Response } from 'express';
+import { z } from 'zod';
 
 /** Pipeline stages included in content-free jingle diagnostics. */
 export type JingleStage = 'brief' | 'lyrics' | 'safety' | 'score' | 'backing' | 'voice' | 'mix';
 type Stage = JingleStage;
-type ProviderOperation = 'extract_direction' | 'preflight' | 'generate' | 'assess' | 'suggest' | 'moderation' | 'protected_material' | 'compose_score';
+const ProviderOperation = z.enum(['extract_direction', 'preflight', 'generate', 'assess', 'suggest', 'moderation', 'protected_material', 'compose_score']);
+type ProviderOperation = z.infer<typeof ProviderOperation>;
+const ProviderCode = z.enum(['content_filter', 'ResponsibleAIPolicyViolation', 'invalid_request_error', 'invalid_parameter', 'unsupported_parameter', 'unknown_parameter', 'invalid_value', 'model_not_found', 'DeploymentNotFound', 'BadRequest', 'InvalidRequest', 'InvalidArgument', 'rate_limit_exceeded', 'context_length_exceeded']);
+const ProviderParameter = z.enum(['model', 'messages', 'response_format', 'max_completion_tokens', 'text', 'categories', 'outputType']);
+
+/** The only provider-supplied values that may be persisted for an HTTP exchange. */
+export const ProviderDiagnostic = z.strictObject({
+  stage: z.enum(['brief', 'lyrics', 'safety', 'score', 'backing', 'voice', 'mix']),
+  operation: ProviderOperation,
+  http_status: z.number().int().min(100).max(599).nullable(),
+  error_code: ProviderCode.nullable(),
+  parameter: ProviderParameter.nullable(),
+  request_id: z.uuid().nullable(),
+});
+export type ProviderDiagnostic = z.infer<typeof ProviderDiagnostic>;
+/** Durable request lifecycle fields, independent of provider messages or user content. */
+export const JingleDiagnostic = z.strictObject({
+  diagnostic_id: z.uuid(),
+  stage: ProviderDiagnostic.shape.stage,
+  status: z.enum(['running', 'completed', 'failed']),
+  created_at: z.iso.datetime(),
+  updated_at: z.iso.datetime(),
+});
+
+/** A diagnostic write failed after the request may have incurred costs. */
+export class DiagnosticPersistenceFailure extends Error {}
 
 type DiagnosticEvent =
   | { event: 'request_finished'; http_status: number; duration_ms: number }
@@ -15,7 +41,10 @@ type DiagnosticEvent =
   | { event: 'lyric_outcome'; step: 'preflight' | 'generate' | 'assess' | 'screen'; attempts: number; outcome: 'accepted' | 'rejected' | 'retry_exhausted' | 'unavailable' | 'human_review_required'; reasons: string[] }
   | { event: 'provider_http'; operation: ProviderOperation; duration_ms: number; http_status?: number };
 
-const active = new AsyncLocalStorage<{ diagnostic_id: string; stage: Stage }>();
+const active = new AsyncLocalStorage<{
+  diagnostic_id: string; stage: Stage;
+  record_provider?: (entry: ProviderDiagnostic) => Promise<void>;
+}>();
 const safe_reasons = new Set([
   'artist_imitation', 'unsupported_language', 'unsupported_output_language', 'unsupported_claims',
   'moderation_rejected', 'protected_material', 'risky_claims_require_human_review', 'model_refusal',
@@ -48,14 +77,14 @@ export function jingle_diagnostic(entry: DiagnosticEvent): void {
 }
 
 /** Assigns an opaque correlation ID independently of browser progress polling. */
-export function trace_jingle<T>(response: Response, run: () => T): T {
+export function trace_jingle<T>(response: Response, run: (diagnostic_id: string) => T): T {
   const context = { diagnostic_id: randomUUID(), stage: 'brief' as Stage };
   const started = performance.now();
   response.setHeader('X-Earwyrm-Diagnostic-Id', context.diagnostic_id);
   response.once('finish', () => active.run(context, () => jingle_diagnostic({
     event: 'request_finished', http_status: response.statusCode, duration_ms: Math.round(performance.now() - started),
   })));
-  return active.run(context, run);
+  return active.run(context, () => run(context.diagnostic_id));
 }
 
 /** Updates the diagnostic stage even when the browser did not request progress polling. */
@@ -64,14 +93,62 @@ export function set_jingle_diagnostic_stage(stage: Stage): void {
   if (context) context.stage = stage;
 }
 
+/** Attaches a durable writer to the active request; it must reject when evidence cannot be saved. */
+export function set_jingle_provider_recorder(record: (entry: ProviderDiagnostic) => Promise<void>): void {
+  const context = active.getStore();
+  if (!context) throw new Error('No active jingle diagnostic');
+  context.record_provider = record;
+}
+
+async function bounded_error_body(response: globalThis.Response): Promise<unknown> {
+  const reader = response.body?.getReader();
+  if (!reader) return null;
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > 65536) {
+        void reader.cancel().catch(() => console.error('ERROR: Provider response cancellation failed'));
+        return null;
+      }
+      chunks.push(value);
+    }
+    try { return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown; }
+    catch (error) { if (error instanceof SyntaxError) return null; throw error; }
+  } catch (error) {
+    if (error instanceof TypeError || error instanceof DOMException) return null;
+    throw error;
+  } finally { reader.releaseLock(); }
+}
+
 /** Measures an HTTP exchange without capturing its URL, headers, or body. */
 export async function trace_jingle_provider(operation: ProviderOperation, send: () => Promise<globalThis.Response>): Promise<globalThis.Response> {
-  if (!active.getStore()) return send();
+  const context = active.getStore();
+  if (!context) return send();
   const started = performance.now();
   let http_status: number | undefined;
   try {
     const response = await send();
     http_status = response.status;
+    if (context.record_provider) {
+      const raw = response.ok ? null : await bounded_error_body(response.status === 400 ? response.clone() : response);
+      const body = z.object({ error: z.object({ code: z.unknown().optional(), param: z.unknown().optional() }).optional() }).safeParse(raw);
+      const code = ProviderCode.safeParse(body.success ? body.data.error?.code : undefined);
+      const parameter = ProviderParameter.safeParse(body.success ? body.data.error?.param : undefined);
+      const request_id = ['x-request-id', 'apim-request-id', 'x-ms-request-id']
+        .map(name => z.uuid().safeParse(response.headers.get(name)))
+        .find(result => result.success);
+      await context.record_provider({
+        stage: context.stage, operation,
+        http_status: response.status >= 100 && response.status <= 599 ? response.status : null,
+        error_code: code.success ? code.data : null,
+        parameter: parameter.success ? parameter.data : null,
+        request_id: request_id?.data ?? null,
+      });
+    }
     return response;
   } finally {
     jingle_diagnostic({ event: 'provider_http', operation, duration_ms: Math.round(performance.now() - started),

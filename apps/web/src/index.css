@@ -178,6 +178,30 @@ audio { display: block; width: 100%; min-width: 0; height: 2.6rem; margin-top: 0
 .batch-help { grid-column: 1 / -1; margin: 0; }
 .batch-content p { font-size: 0.9rem; }
 .workspace-view { padding: 2rem clamp(1.5rem, 5vw, 5rem); }
+.admin-layout:not([hidden]) { display: grid; grid-template-columns: 16.5rem minmax(0, 1fr); min-height: calc(100dvh - 6rem); }
+.admin-rail { padding: 2rem 1.25rem; color: white; background: var(--accent); }
+.admin-rail h2 { margin: 0 0 1.5rem; font-size: 1.25rem; }
+.admin-rail button { display: block; width: 100%; min-height: 2.75rem; padding: 0.8rem 1rem; border: 0; border-radius: 4px; background: transparent; color: white; text-align: left; font-weight: 700; }
+.admin-rail button:hover:not(:disabled) { background: var(--accent-strong); }
+.admin-rail button[aria-pressed="true"], .admin-rail button[aria-pressed="true"]:hover:not(:disabled) { background: white; color: var(--accent-strong); }
+.admin-rail :focus-visible { outline-color: white; }
+.admin-work { min-width: 0; }
+.diagnostic-form { display: flex; align-items: end; flex-wrap: wrap; gap: 0.75rem; margin-block: 1.5rem; }
+.diagnostic-form label { flex: 1 1 20rem; min-width: 0; }
+.diagnostic-form input { width: 100%; }
+.diagnostic-result { max-width: 60rem; margin-top: 2.5rem; padding-top: 1.5rem; border-top: 1px solid var(--line); }
+.diagnostic-details { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr)); gap: 1rem; }
+.diagnostic-details dt { color: var(--muted); font-size: 0.9rem; }
+.diagnostic-details dd { margin: 0.25rem 0 0; overflow-wrap: anywhere; }
+.diagnostic-unknown { display: inline-block; padding: 0.15rem 0.5rem; color: #583f00; background: #fff3bf; font-weight: 700; }
+.diagnostic-caution { color: #583f00; background: #fff8df; border-color: #b48a24; }
+.provider-events { padding-left: 1.5rem; }
+.provider-events li { padding: 0.5rem 0 1rem; border-top: 1px solid var(--line); }
+@media (max-width: 48rem) {
+  .admin-layout:not([hidden]) { grid-template-columns: minmax(0, 1fr); }
+  .admin-rail { padding: 1.25rem 1rem; }
+  .admin-rail h2 { margin-bottom: 0.75rem; }
+}
 .budget-admin { margin-block: 2rem; padding-block: 1.5rem; border-block: 1px solid var(--line); }
 .budget-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr)); gap: 1.5rem; }
 .budget-summary dt { font-weight: 700; }

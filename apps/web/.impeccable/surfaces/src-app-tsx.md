@@ -38,6 +38,28 @@ Code-led; no approved image comp or raster assets are required.
 
 FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance
 
+## Admin direction contract
+
+THESIS: Administrators select one operational task at a time instead of navigating
+an undifferentiated page of unrelated controls.
+
+OWN-WORLD: Retain Campaign Color: a flat red rail, warm paper, dark ink, workhorse
+sans, neutral rules, and yellow for selection, using familiar native controls.
+
+STORY: An administrator checks the diagnostic ID, understands the recorded outcome
+and provider evidence, then separately manages budgets and application access.
+
+FIRST VIEWPORT: A red 264px task rail anchors a spacious lookup area. A diagnostic
+ID field and check action precede an explicit result with stage and provider
+evidence. The signature move is the selected task appearing on a white field within
+the red rail. On mobile, navigation and content stack without horizontal overflow.
+
+FORM: Task rail, grounded direction 6 of 7, seed:94a148e642ce6896.
+Chosen sketch: .impeccable/mocks/decision/admin-task-rail.html.
+Code-led, selected by the user in the surface decision round.
+
+FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance
+
 ## Implementation boundaries
 
 Persist server-owned lyric results and select only accepted drafts; do not turn
@@ -45,3 +67,4 @@ held results into renderable text. Bind paid estimates to immutable lyric conten
 Preserve batch rendering as a secondary path, without silently applying a single
 advertiser's lyric choice to a batch. Keep protected playback and source evidence.
 Handle empty, loading, failed, unavailable, ready, and reconciliation-blocked states.
+Preserve all admin permission, budget, reservation, and dialog operations.

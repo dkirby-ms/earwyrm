@@ -1,60 +1,101 @@
 ---
-title: Earwyrm
-description: Try the Earwyrm jingle proof of concept locally or in the browser.
+title: Earwyrm architecture and Azure AI integration
+description: System architecture, Azure AI components, and operational controls for the Earwyrm jingle proof of concept.
 ---
 
-Earwyrm turns sample advertiser briefs into short jingle demos. Start with an
-offline instrumental render, or use the signed-in web workspace to create,
-compare, and review versions. These are review demos, not broadcast-ready audio.
+## Overview
 
-## Try it without Azure
+Earwyrm turns an advertiser's description into a short jingle demo with original
+lyrics, AI-composed music, and a synthetic voice. Azure AI generates the content;
+application code validates it, controls musical timing, renders and mixes the
+audio, and enforces spending limits. Outputs are intended for human review, not
+as broadcast-ready masters.
 
-From the repository root, use Node.js 24, npm, and Linux with util-linux
-`flock` installed:
+## System architecture
 
-```bash
-npm ci
-npm run render -- --instrumental-only
-```
+A React/Vite web workspace and Node.js/Express API run in a single Azure
+Container App, sharing one HTTPS origin and container image. The generation
+pipeline extracts advertiser facts and a closing line, writes and screens
+lyrics, composes a structured musical score, renders the backing track locally
+with MIDI and FluidSynth, and mixes it with Azure Speech audio. If a stage fails,
+the application reports the failure rather than substituting fallback music.
 
-Open `brief-001/instrumental.wav` inside the new run directory printed under
-`renders/`. The command renders all three sample briefs and also writes MIDI
-scores and a `summary.json`. This path needs no sign-in, Azure credentials, or
-paid API calls.
+PostgreSQL stores structured records, permissions, generation jobs, and budget
+reservations. Azure Files holds private audio and working artifacts. Local
+operation can use SQLite and supports instrumental rendering without paid
+Azure calls.
 
-## Open the web workspace
+Model Context Protocol (MCP) connects collaborative chat, lyric tools, and
+deterministic arrangement previews through linked in-process clients and
+servers. Artifact digests are checked before use. The main generation workflow
+also calls services directly; there is no public MCP endpoint or general
+background queue worker.
 
-After `npm ci`, start the API and web client in separate terminals:
+## Azure AI components
 
-```bash
-npm run dev:api
-```
+### Microsoft Foundry
 
-```bash
-npm run dev:web
-```
+One shared OpenAI-compatible model deployment extracts creative direction,
+supports chat, writes and independently assesses lyrics, and produces musical
+scores as strict JSON. Application validation and local rendering translate
+those scores into audio. The model name, version, deployment SKU, and capacity
+are configurable.
 
-Open [http://localhost:8000/](http://localhost:8000/). Without configured
-Microsoft Entra External ID, the page starts in setup mode and you can't
-render from the browser. Follow the [web workspace guide](docs/audio-poc/web-app.md)
-to configure sign-in and the AI services. Describe the jingle and select
-**Generate jingle**. The page shows an estimate before generation and keeps
-playback and billing status alongside the result.
+### Azure AI Content Safety
 
-## Find the right guide
+Separate moderation and protected-material checks screen generated lyrics.
+Moderation must return severity zero for hate, self-harm, sexual content, and
+violence. Application checks additionally enforce factual grounding, syllable
+counts, brand placement, and exact closing wording. Screening does not replace
+human review or copyright clearance.
 
-| Goal | Guide |
-|---|---|
-| Sign in, enter a brief, or review audio in the browser | [Web workspace](docs/audio-poc/web-app.md) |
-| Change the backing sound, run paid Speech from the CLI, or evaluate output | [Audio rendering and evaluation](docs/audio-poc/rendering.md) |
-| Run a Model Context Protocol (MCP) tool or look up a schema | [Services and contracts](docs/service-contracts.md) |
-| Deploy or maintain the Azure web POC | [Azure operator runbook](docs/azure-deployment.md) |
+### Azure AI Speech
 
-## Work on the project
+The stock `en-US-JennyNeural` voice supplies speech audio and word timing.
+Local digital signal processing aligns the voice with the committed score and
+produces spoken and vocoded mixes. This is speech synthesis combined with local
+audio processing, not a dedicated singing-generation model.
 
-The Node API and audio tooling live in [apps/api](apps/api), the React/Vite
-client in [apps/web](apps/web), and Azure infrastructure in [infra](infra).
-Run `npm run typecheck`, `npm test`, and `npm run build` from the root to check
-both workspaces.
+The normal deployment enables voice and text together on a shared `AIServices`
+account. Runtime requests use managed identity, and key-based authentication is
+disabled on that account.
+
+## Operational highlights
+
+* Microsoft Entra External ID authenticates users. The API validates access
+  tokens and delegated scopes, while application approval and permissions
+  determine access after sign-in.
+* PostgreSQL uses Private Link and private DNS with public access disabled.
+  Its password is supplied through Azure Key Vault; the application retains
+  public HTTPS ingress.
+* Shared budgets, per-operation caps, and a default $5 lifetime user allowance
+  constrain paid generation. Costs are reserved before provider calls.
+  Estimates and reservations are not invoices; uncertain outcomes require
+  evidence-backed reconciliation.
+* Stable score-job identities recover committed results without another model
+  call. Ambiguous provider outcomes block resubmission to reduce duplicate-charge
+  risk.
+* Manually dispatched GitHub Actions deploys through OpenID Connect (OIDC)
+  federation. Builds run separately from the Azure-credentialed job, the
+  deployment artifact checksum is verified, and writers are stopped during
+  maintenance.
+* Diagnostic IDs correlate generation stages and provider-status logs without
+  logging prompts or lyrics. `/healthz` checks process health only.
+  OpenTelemetry instrumentation requires host SDK and exporter configuration.
+
+## Proof-of-concept limitations
+
+The deployment runs one replica with 0.5 CPU and 1 GiB RAM, and PostgreSQL has
+no high-availability configuration. Azure Files managed-identity mounting is a
+preview feature, and the writer lock is not a proven distributed exclusion
+mechanism. These are deliberate proof-of-concept constraints, not production
+availability guarantees. The architecture summary does not establish live
+deployment health.
+
+## Technical references
+
+* [Azure infrastructure](../infra/platform.bicep)
+* [API and generation orchestration](../apps/api/src/web_app.ts)
+* [Deployment and maintenance runbook](azure-deployment.md)
 
 This documentation was revised with AI assistance.

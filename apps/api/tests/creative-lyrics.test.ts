@@ -1,9 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
+import express from "express";
+import request from "supertest";
 import { CredentialUnavailableError } from "@azure/identity";
 import { Assessment, AzureLyricBackend, CATEGORIES, CloudFailure, LyricCloudSettings, ModelRefusal, Preflight, Screening, type CloudTransport, type LyricBackend } from "../src/lyric_cloud.js";
 import { lyric_allowance, lyric_budget } from "../src/lyric_budget.js";
 import { brand_pronunciations, LyricDraft, LyricRequest, LyricResult, lyric_syllables, normalize_spoken_text, validate_draft } from "../src/lyrics.js";
 import { LyricWriter } from "../src/lyric_service.js";
+import { DiagnosticPersistenceFailure, set_jingle_provider_recorder, trace_jingle, type ProviderDiagnostic } from "../src/jingle_diagnostics.js";
 import {
   AzureScoreComposer, score_prompt, type ScoreTelemetry, type ScoreTelemetrySpan,
 } from "../src/score_cloud.js";
@@ -376,6 +379,51 @@ describe("Azure wire contracts without paid requests", () => {
 });
 
 describe("structured score provider without paid requests", () => {
+  it("captures safe score-provider HTTP evidence without changing refusal behavior", async () => {
+    const app = express(), entries: ProviderDiagnostic[] = [];
+    const client = vi.fn<CloudTransport>().mockResolvedValue(new Response(
+      JSON.stringify({ error: { code: "content_filter", param: "response_format", message: "private-marker" } }),
+      { status: 400, headers: { "apim-request-id": "35675016-33ae-4c9d-b39c-23aa0d631c18" } },
+    ));
+    app.get("/", (_req, res) => trace_jingle(res, async () => {
+      set_jingle_provider_recorder(async entry => { entries.push(entry); });
+      await expect(new AzureScoreComposer(settings, credential, client).compose(score_prompt(request_fixture(), accepted_lyrics())))
+        .rejects.toBeInstanceOf(ModelRefusal);
+      res.sendStatus(204);
+    }));
+    await request(app).get("/").expect(204);
+    expect(client).toHaveBeenCalledTimes(1);
+    expect(entries).toEqual([{
+      stage: "brief", operation: "compose_score", http_status: 400, error_code: "content_filter",
+      parameter: "response_format", request_id: "35675016-33ae-4c9d-b39c-23aa0d631c18",
+    }]);
+    expect(JSON.stringify(entries)).not.toContain("private-marker");
+  });
+
+  it.each([false, true])("records successful score HTTP metadata or stops on evidence-write failure (%s)", async fails => {
+    const app = express(), entries: ProviderDiagnostic[] = [];
+    const client = vi.fn<CloudTransport>().mockResolvedValue(new Response(
+      JSON.stringify(completion(JSON.stringify(score_fixture()))),
+      { status: 200, headers: { "x-ms-request-id": "35675016-33ae-4c9d-b39c-23aa0d631c18" } },
+    ));
+    app.get("/", (_req, res) => trace_jingle(res, async () => {
+      set_jingle_provider_recorder(async entry => {
+        entries.push(entry);
+        if (fails) throw new DiagnosticPersistenceFailure();
+      });
+      const call = new AzureScoreComposer(settings, credential, client).compose(score_prompt(request_fixture(), accepted_lyrics()));
+      if (fails) await expect(call).rejects.toBeInstanceOf(DiagnosticPersistenceFailure);
+      else await expect(call).resolves.toEqual(score_fixture());
+      res.sendStatus(204);
+    }));
+    await request(app).get("/").expect(204);
+    expect(client).toHaveBeenCalledTimes(1);
+    expect(entries).toEqual([{
+      stage: "brief", operation: "compose_score", http_status: 200, error_code: null,
+      parameter: null, request_id: "35675016-33ae-4c9d-b39c-23aa0d631c18",
+    }]);
+  });
+
   function telemetry_fixture() {
     const spans: Array<{ name: string; attributes: Record<string, unknown>; status?: unknown; ended: boolean }> = [];
     const measurements: Array<{ seconds: number; attributes: Record<string, unknown> }> = [];

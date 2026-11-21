@@ -11,6 +11,7 @@ import type { JingleEstimate } from "./jingle_prompt.js";
 import type { PaidLyricGenerationAction } from "./lyric_budget.js";
 import type { MelodyService } from "./melody_service.js";
 import type { ScoreProviderProvenance } from "./score_cloud.js";
+import { JingleDiagnostic, ProviderDiagnostic, type JingleStage } from "./jingle_diagnostics.js";
 import { complete_preview, create_preview_schema, pin_preview, prune_previews, reserve_preview } from "./preview_quota.js";
 
 const Money = Decimal.clone({ precision: 28 });
@@ -34,6 +35,11 @@ function required_ledger_text(value: string, label: string, maxLength: number): 
   }
   return text;
 }
+function validate_diagnostic_id(value: string): void {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)) {
+    throw new TypeError("Invalid diagnostic ID");
+  }
+}
 /** A durable reservation or immutable record prevents this operation. */
 export class StorageConflict extends Error {}
 /** No record belongs to the supplied owner. */
@@ -42,6 +48,14 @@ export class StorageNotFound extends Error {}
 export class StorageAccessDenied extends Error {}
 /** Explicit PostgreSQL selection; omission retains SQLite without fallback. */
 export interface StorageOptions { database_url?: string | null }
+/** A content-free lifecycle record; running records do not establish a successful outcome. */
+export interface JingleDiagnosticRecord {
+  diagnostic_id: string;
+  stage: JingleStage;
+  status: "running" | "completed" | "failed";
+  created_at: string;
+  updated_at: string;
+}
 /** Exact USD totals; null limits mean the service has no configured default. */
 export interface BudgetBalance {
   limit_usd: string | null; charged_usd: string; remaining_usd: string | null;
@@ -262,7 +276,25 @@ export class WebStorage {
     await WebStorage._create_lyric_schema(connection);
     await WebStorage._create_lyric_budget_schema(connection);
     await WebStorage._create_budget_schema(connection);
+    await WebStorage._create_jingle_diagnostic_schema(connection);
     await create_preview_schema(connection);
+  }
+
+  /** Adds content-free request lifecycle storage without changing existing records. */
+  static async _create_jingle_diagnostic_schema(connection: Connection): Promise<void> {
+    await connection.executescript(`
+      CREATE TABLE IF NOT EXISTS jingle_diagnostics (
+        diagnostic_id TEXT PRIMARY KEY,
+        stage TEXT NOT NULL CHECK (stage IN ('brief', 'lyrics', 'safety', 'score', 'backing', 'voice', 'mix')),
+        status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed')),
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS jingle_diagnostics_created ON jingle_diagnostics(created_at);
+      CREATE TABLE IF NOT EXISTS jingle_provider_events (
+        event_id TEXT PRIMARY KEY, diagnostic_id TEXT NOT NULL REFERENCES jingle_diagnostics(diagnostic_id) ON DELETE CASCADE,
+        stage TEXT NOT NULL, operation TEXT NOT NULL, http_status INTEGER,
+        error_code TEXT, parameter TEXT, request_id TEXT, created_at TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS jingle_provider_events_job ON jingle_provider_events(diagnostic_id, created_at);
+    `);
   }
 
   /** Adds limit overrides and nullable historical lyric attribution without resetting spend. */
@@ -919,6 +951,65 @@ export class WebStorage {
   private async write<T>(operation: (connection: Connection) => Promise<T>): Promise<T> {
     await this.initialized();
     return serialized(this.database_path, async () => transaction(await this._connect(), operation));
+  }
+  /** Creates a request before billable work and removes records older than 30 days. */
+  async create_jingle_diagnostic(diagnostic_id: string): Promise<void> {
+    validate_diagnostic_id(diagnostic_id);
+    const now = new Date();
+    const cutoff = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString();
+    await this.write(async c => {
+      await c.execute("DELETE FROM jingle_provider_events WHERE diagnostic_id IN (SELECT diagnostic_id FROM jingle_diagnostics WHERE created_at < ?)", [cutoff]);
+      await c.execute("DELETE FROM jingle_diagnostics WHERE created_at < ?", [cutoff]);
+      await c.execute(
+        "INSERT INTO jingle_diagnostics (diagnostic_id, stage, status, created_at, updated_at) VALUES (?, 'brief', 'running', ?, ?)",
+        [diagnostic_id, now.toISOString(), now.toISOString()],
+      );
+    });
+  }
+  /** Persists bounded, validated provider evidence for a running request. */
+  async append_jingle_provider_event(diagnostic_id: string, value: ProviderDiagnostic): Promise<void> {
+    validate_diagnostic_id(diagnostic_id);
+    const entry = ProviderDiagnostic.parse(value);
+    await this.write(async c => {
+      const current = (await c.execute("SELECT status FROM jingle_diagnostics WHERE diagnostic_id = ?", [diagnostic_id])).rows[0];
+      if (current?.status !== "running") throw new StorageConflict("Jingle diagnostic is missing or already finalized");
+      const count = (await c.execute("SELECT count(*) AS count FROM jingle_provider_events WHERE diagnostic_id = ?", [diagnostic_id])).rows[0];
+      if (Number(count?.count) >= 64) throw new StorageConflict("Jingle diagnostic event limit reached");
+      await c.execute(`INSERT INTO jingle_provider_events
+        (event_id, diagnostic_id, stage, operation, http_status, error_code, parameter, request_id, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [randomUUID(), diagnostic_id, entry.stage, entry.operation, entry.http_status, entry.error_code, entry.parameter, entry.request_id, new Date().toISOString()]);
+    });
+  }
+  /** Advances a live request or finalizes it exactly once; missing or finalized records reject the update. */
+  async update_jingle_diagnostic(diagnostic_id: string, stage: JingleStage, status: JingleDiagnosticRecord["status"]): Promise<void> {
+    validate_diagnostic_id(diagnostic_id);
+    await this.write(async c => {
+      const result = await c.execute(
+        "UPDATE jingle_diagnostics SET stage = ?, status = ?, updated_at = ? WHERE diagnostic_id = ? AND status = 'running'",
+        [stage, status, new Date().toISOString(), diagnostic_id],
+      );
+      if (result.rowcount !== 1) throw new StorageConflict("Jingle diagnostic is missing or already finalized");
+    });
+  }
+  /** Rechecks administrator access and hides expired records even before the next cleanup. */
+  async get_jingle_diagnostic_as_admin(issuer: string, subject: string, diagnostic_id: string): Promise<(JingleDiagnosticRecord & { provider_events: ProviderDiagnostic[] }) | null> {
+    WebStorage.validate_identity(issuer, subject);
+    validate_diagnostic_id(diagnostic_id);
+    const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+    return this.write(async c => {
+      await this.require_admin(c, issuer, subject);
+      const row = (await c.execute(
+        "SELECT diagnostic_id, stage, status, created_at, updated_at FROM jingle_diagnostics WHERE diagnostic_id = ? AND created_at >= ?",
+        [diagnostic_id, cutoff],
+      )).rows[0];
+      if (!row) return null;
+      const events = (await c.execute(
+        "SELECT stage, operation, http_status, error_code, parameter, request_id FROM jingle_provider_events WHERE diagnostic_id = ? ORDER BY created_at, event_id",
+        [diagnostic_id],
+      )).rows.map(entry => ProviderDiagnostic.parse(entry));
+      return { ...JingleDiagnostic.parse(row), provider_events: events };
+    });
   }
   /** Reserves all three previews before generation; failed/incomplete batches remain charged. */
   async reserve_previews(melody: MelodyService, owner: string, key: string, logical_ids: string[]): Promise<void> {

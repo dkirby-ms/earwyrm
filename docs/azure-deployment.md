@@ -339,8 +339,8 @@ then dispatch **Approved web deployment** with the default `deploy` action.
 Check `maintenance_approved` to authorize the run and confirm that all
 external share writers are stopped. The run stops the app, provisions Azure
 resources, verifies private PostgreSQL networking, publishes the web image,
-and resumes the app. At startup, the app adds the access-request schema to an
-existing PostgreSQL store regardless of `LYRIC_ENABLED`, then validates the
+and resumes the app. At startup, the app adds the access-request and jingle
+diagnostic schemas to an existing PostgreSQL store regardless of `LYRIC_ENABLED`, then validates the
 complete required schema before starting the worker. This additive upgrade
 does not reset existing data. Paid-text tables are added only when
 `LYRIC_ENABLED` is true; startup accepts the setting case-insensitively,
@@ -474,10 +474,32 @@ duration measurements and reported token counts, not export delivery.
 
 Copy the **Diagnostic ID** from the failure message. It is also available as
 `X-Earwyrm-Diagnostic-Id` on `POST /api/jingles` in the browser's Network tab.
-Search for that ID in the local API terminal or the container **console** logs
-in Azure Container Apps. For older requests, use your configured log
-destination if it retained the console stream. This does not require an
-OpenTelemetry exporter.
+An enabled administrator can open **Manage access**, select **Job diagnostics**,
+and check that ID. The result shows the last recorded stage and outcome, plus
+available provider operation, HTTP status, recognized error code, rejected
+parameter and UUID request ID. Values outside the allowlist are unavailable.
+Provider events cover instrumented model and safety HTTP calls, not every
+service or every failure. A successful provider response does not imply a
+successful jingle.
+
+An unknown outcome means the worker serving the lookup cannot confirm that a
+recorded running request is still active. The request may have been interrupted
+or may be running on another instance. Check the user's jingle history and
+billing evidence before retrying; costs or results may exist. Billing totals
+alone do not establish the job outcome.
+
+Diagnostic records are retained for 30 days and are hidden after expiration;
+physical cleanup occurs when another diagnostic is created. Requests made before
+this feature do not have these records, and failed diagnostic writes can leave
+an incomplete record. Initial diagnostic write failure prevents generation;
+later failure is reported as an uncertain outcome. No prompts, lyrics, account
+identities, credentials, raw provider messages or endpoint URLs are stored in
+these records.
+
+For additional process-level details, search the local API terminal or the
+container **console** logs in Azure Container Apps for the ID. For older
+requests, use your configured log destination if it retained the console stream.
+This does not require an OpenTelemetry exporter.
 
 The matching JSON lines have `scope: "earwyrm.jingle"`. Start with
 `request_finished` for the final stage and HTTP status. Then check:

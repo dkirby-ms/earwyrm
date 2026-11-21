@@ -126,6 +126,87 @@ async function save_accepted_lyric_option(store: WebStorage, owner = 'user-a') {
 }
 
 describe('same-origin Express API', () => {
+  it('records early jingle failures and restricts diagnostic lookup to enabled admins', async () => {
+    const { app, store, access_token } = await fixture();
+    const response = await request(app).post('/api/jingles').auth(access_token, { type: 'bearer' }).send({ description: '' });
+    expect(response.status).toBe(422);
+    const id = response.headers['x-earwyrm-diagnostic-id'] as string;
+    const path = `/api/admin/jingle-diagnostics/${id}`;
+    expect((await request(app).get(path)).status).toBe(401);
+    expect((await request(app).get(path).auth(await token('user-b'), { type: 'bearer' })).status).toBe(403);
+    const diagnostic = await request(app).get(path).auth(access_token, { type: 'bearer' });
+    expect(diagnostic.body).toMatchObject({ diagnostic_id: id, stage: 'brief', status: 'failed' });
+    expect(JSON.stringify(diagnostic.body)).not.toContain('description');
+    const interrupted = '8a90bb43-8e2b-45fd-b98b-b719c1bfbe22';
+    await store.create_jingle_diagnostic(interrupted);
+    expect((await request(app).get(`/api/admin/jingle-diagnostics/${interrupted}`).auth(access_token, { type: 'bearer' })).body.status)
+      .toBe('outcome_unknown');
+    vi.spyOn(store, 'update_jingle_diagnostic').mockRejectedValueOnce(new Error('secret'));
+    const failedFinalization = await request(app).post('/api/jingles').auth(access_token, { type: 'bearer' }).send({ description: '' });
+    expect(failedFinalization.status).toBe(503);
+    expect(failedFinalization.body.detail).toContain('do not retry');
+  });
+
+  it('stops paid work if diagnostics cannot be created or advanced', async () => {
+    const root = root_dir();
+    const direction = vi.fn();
+    const { app, store, access_token } = await fixture({
+      data_dir: root,
+      environ: { ...speech_environment(root, { SPEECH_TOTAL_BUDGET_USD: '2' }), ...lyric_limits, LYRIC_ENABLED: 'true' },
+      jingle_direction: direction, score_composer: { compose: vi.fn() },
+      lyric_backend: { preflight: vi.fn(), generate: vi.fn(), assess: vi.fn(), screen: vi.fn() },
+    });
+    const create = vi.spyOn(store, 'create_jingle_diagnostic').mockRejectedValueOnce(new Error('secret'));
+    const logs = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const send = () => request(app).post('/api/jingles').auth(access_token, { type: 'bearer' }).send({ description: 'A jingle for Cedar Loop' });
+    const initial = await send();
+    expect(initial.status).toBe(503);
+    expect(initial.body.detail).toContain('No generation was started');
+    expect(direction).not.toHaveBeenCalled();
+    create.mockRestore();
+    vi.spyOn(store, 'update_jingle_diagnostic').mockRejectedValueOnce(new Error('secret'));
+    const later = await send();
+    expect(later.status).toBe(503);
+    expect(later.body.detail).toContain('may have incurred costs');
+    expect(direction).not.toHaveBeenCalled();
+    expect(JSON.stringify(logs.mock.calls)).not.toContain('secret');
+  });
+
+  it.each([
+    ['recognized', JSON.stringify({ error: { code: 'unsupported_parameter', param: 'max_completion_tokens', message: 'private-marker' } }), '56d617b0-1f30-43e4-8eb2-3f768f895ec0', 400],
+    ['hostile', JSON.stringify({ error: { code: 'private-marker', param: 'private-marker' } }), 'private-marker', 400],
+    ['malformed', '{private-marker', 'private-marker', 400],
+    ['oversized', JSON.stringify({ error: { code: 'unsupported_parameter', param: 'model', message: 'private-marker'.repeat(7000) } }), 'private-marker', 429],
+  ] as const)('stores only safe provider evidence for %s responses', async (scenario, body, requestId, status) => {
+    const root = root_dir();
+    const [brief, script] = load_inputs()[0]!;
+    const cta = script.split(/(?<=[.!?])\s+/).at(-1)!;
+    const backend = new AzureLyricBackend({
+      foundry_endpoint: 'https://foundry.example.test', safety_endpoint: 'https://safety.example.test', deployment: 'test',
+    }, { getToken: async () => ({ token: 'private-marker', expiresOnTimestamp: Date.now() + 60000 }) },
+    async () => new Response(body, { status, headers: { 'x-request-id': requestId } }));
+    const logs = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const { app, access_token } = await fixture({
+      data_dir: root,
+      environ: { ...speech_environment(root, { SPEECH_TOTAL_BUDGET_USD: '2' }), ...lyric_limits, LYRIC_ENABLED: 'true' },
+      jingle_direction: async () => ({ name: brief.name, offer: 'tune ups', cta, suggested_cta: null, tone: 'upbeat' }),
+      lyric_backend: backend, score_composer: { compose: vi.fn() },
+    });
+    const result = await request(app).post('/api/jingles').auth(access_token, { type: 'bearer' })
+      .send({ description: `Write a jingle for ${brief.name}, with tune ups. End with "${cta}"` });
+    expect(result.status).toBe(503);
+    const diagnostic = await request(app).get(`/api/admin/jingle-diagnostics/${result.headers['x-earwyrm-diagnostic-id']}`)
+      .auth(access_token, { type: 'bearer' });
+    expect(diagnostic.body.provider_events).toEqual([{
+      stage: 'lyrics', operation: 'preflight', http_status: status,
+      error_code: scenario === 'recognized' ? 'unsupported_parameter' : null,
+      parameter: scenario === 'recognized' ? 'max_completion_tokens' : null,
+      request_id: scenario === 'recognized' ? requestId : null,
+    }]);
+    expect(JSON.stringify(diagnostic.body)).not.toContain('private-marker');
+    expect(JSON.stringify(logs.mock.calls)).not.toContain('private-marker');
+  });
+
   it('exposes own budgets and restricts persistent budget administration to enabled administrators', async () => {
     const { app, store, access_token } = await fixture({ environ: lyric_limits });
     const auth = { type: 'bearer' as const };
@@ -1166,6 +1247,8 @@ describe('one-page AI jingles', () => {
     const generate = () => request(app).post('/api/jingles').auth(user, { type: 'bearer' }).send({ description });
     const run = await generate();
     expect(run.status, JSON.stringify(run.body)).toBe(200);
+    expect((await request(app).get(`/api/admin/jingle-diagnostics/${run.headers['x-earwyrm-diagnostic-id']}`)
+      .auth(access_token, { type: 'bearer' })).body).toMatchObject({ status: 'completed', stage: 'mix' });
     expect(backend.generate).toHaveBeenCalledTimes(1);
     expect(backend.assess).toHaveBeenCalledExactlyOnceWith(
       expect.anything(), expect.objectContaining({ lyrics, syllables_per_line: [12, 16] }),
@@ -1249,6 +1332,8 @@ describe('one-page AI jingles', () => {
     const id = result.headers['x-earwyrm-diagnostic-id'];
     expect(id).toMatch(/^[a-f0-9-]{36}$/);
     expect(result.status, JSON.stringify(result.body)).toBe(['unknown', 'score_unknown'].includes(scenario) ? 503 : 422);
+    expect((await request(app).get(`/api/admin/jingle-diagnostics/${id}`).auth(access_token, { type: 'bearer' })).body)
+      .toMatchObject({ status: 'failed', stage: scenario === 'score_unknown' ? 'score' : scenario === 'screened' ? 'safety' : 'lyrics' });
     if (scenario === 'exhausted') {
       expect(result.body.detail).toContain('tried 4 drafts');
       expect(result.body.detail).toContain('the AI service is temporarily unavailable');

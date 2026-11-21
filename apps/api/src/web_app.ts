@@ -12,7 +12,7 @@ import { lyric_allowance, lyric_budget, type PaidLyricGenerationAction } from '.
 import { AzureLyricBackend, CloudFailure, LyricCloudSettings, type LyricBackend } from './lyric_cloud.js';
 import { IMITATION, LyricWriter } from './lyric_service.js';
 import { JINGLE_VOICE_MAX_CHARACTERS, JingleDescription, JingleDirection, type JingleEstimate } from './jingle_prompt.js';
-import { jingle_diagnostic, safe_jingle_reason, set_jingle_diagnostic_stage, trace_jingle, type JingleStage } from './jingle_diagnostics.js';
+import { DiagnosticPersistenceFailure, jingle_diagnostic, safe_jingle_reason, set_jingle_diagnostic_stage, set_jingle_provider_recorder, trace_jingle, type JingleStage } from './jingle_diagnostics.js';
 import { AzureScoreComposer, score_prompt, ScoreProviderProvenance, type ScoreComposer } from './score_cloud.js';
 import { ArrangementScore, score_lyric_timing, type ArrangementScore as Arrangement } from './score_dsl.js';
 import { brand_pronunciations, has_cta_rhyme, LyricRequest, LyricResult, LyricRuleError, normalize_spoken_text, validate_draft } from './lyrics.js';
@@ -343,7 +343,8 @@ export type WebAppStorage = Pick<WebStorage,
   'save_lyric_option' | 'list_lyric_options' | 'get_lyric_option' | 'has_lyric_budget' | 'reserve_lyric_action' |
   'settle_lyric_reservation_as_admin' | 'correct_lyric_reservation_as_admin' | 'reopen_lyric_reservation_as_admin' |
   'claim_score_compose' | 'commit_score_compose' | 'finish_score_compose' | 'get_score_compose' | 'reconcile_score_compose' |
-  'reserve_previews' | 'complete_previews' | 'pin_preview' | 'check_jingle_text_budget' | 'check_jingle_speech_budget'>;
+  'reserve_previews' | 'complete_previews' | 'pin_preview' | 'check_jingle_text_budget' | 'check_jingle_speech_budget' |
+  'create_jingle_diagnostic' | 'update_jingle_diagnostic' | 'append_jingle_provider_event' | 'get_jingle_diagnostic_as_admin'>;
 /** All providers, persistence and identity fetchers remain lazy until a route needs them. */
 export interface CreateAppOptions {
   environ?: Environment;
@@ -391,6 +392,7 @@ export function create_app(options: CreateAppOptions = {}): Express {
   let storage_pending: Promise<WebAppStorage> | undefined;
   let render_active = false;
   let jingle_active = false;
+  const active_jingle_diagnostics = new Set<string>();
   let jingle_progress: { id: string; issuer: string; subject: string; stage: JingleStage } | null = null;
   const render = options.render ?? render_brief;
   const speech_factory = options.speech_factory ?? options.speech_provider_factory ?? (() => new AzureSpeech(speech_settings(source)));
@@ -764,6 +766,14 @@ export function create_app(options: CreateAppOptions = {}): Express {
     const { issuer, subject } = identity(response);
     response.json(await (await storage()).budgets_as_admin(issuer, subject, budget_defaults()));
   });
+  app.get('/api/admin/jingle-diagnostics/:id', ...authorized('renders.read'), async (request, response) => {
+    const id = parse(z.uuid(), request.params.id);
+    const { issuer, subject } = identity(response);
+    const record = await (await storage()).get_jingle_diagnostic_as_admin(issuer, subject, id);
+    if (!record) throw new HttpError(404, 'Jingle diagnostic was not found');
+    response.json({ ...record, status: record.status === 'running' && !active_jingle_diagnostics.has(id)
+      ? 'outcome_unknown' : record.status });
+  });
   app.post('/api/admin/lyric-reservations/:reservation_id/settle', ...authorized('renders.write'), async (request, response) => {
     const payload = parse(LyricSettlementSubmission, request.body);
     const reservation_id = String(request.params.reservation_id);
@@ -981,7 +991,7 @@ export function create_app(options: CreateAppOptions = {}): Express {
   const score_selection = BriefSelection.extend({
     option_id: z.uuid(), confirm_paid_generation: z.literal(true),
   });
-  async function compose_score(payload: z.infer<typeof score_selection>, response: Response, jingle = false, on_backing?: () => void) {
+  async function compose_score(payload: z.infer<typeof score_selection>, response: Response, jingle = false, on_backing?: () => void | Promise<void>) {
     const started = performance.now();
     if (payload.brief_ids.length !== 1) throw new HttpError(422, 'Compose a score for one active brief at a time');
     if (payload.lyric_selections?.length || payload.composition_selections?.length) {
@@ -1051,6 +1061,7 @@ export function create_app(options: CreateAppOptions = {}): Express {
         });
         try { await store.finish_score_compose(owner, logical_job_id, request_sha256, 'outcome_unknown', claim.attempt_count); }
         catch { console.error('ERROR: Paid score outcome could not be persisted'); }
+        if (error instanceof DiagnosticPersistenceFailure) throw error;
         console.error('ERROR: Paid score composition failed');
         return { status: 503, body: {
           code: 'provider_outcome_unknown', logical_job_id, retryable: false,
@@ -1066,7 +1077,7 @@ export function create_app(options: CreateAppOptions = {}): Express {
 
     let composition;
     try {
-      on_backing?.();
+      await on_backing?.();
       const timing = score_lyric_timing(score, result.output.lyrics.split('\n'), lyric_request.pronunciations);
       const melody = new MelodyService(join(store.root, 'melody'), { database_url: store.database_url ?? undefined });
       composition = await melody.submit_score({
@@ -1177,7 +1188,7 @@ export function create_app(options: CreateAppOptions = {}): Express {
       ...(payload.composition_selections?.length ? { composition_selections: payload.composition_selections } : {}),
     });
   });
-  async function render_selection(payload: RenderRequest, response: Response, jingle_estimate?: JingleEstimate, on_stage?: (stage: 'voice' | 'mix') => void) {
+  async function render_selection(payload: RenderRequest, response: Response, jingle_estimate?: JingleEstimate, on_stage?: (stage: 'voice' | 'mix') => void | Promise<void>) {
     if (payload.mode === 'instrumental' && payload.lyric_selections?.length) {
       throw new HttpError(422, 'Instrumental previews do not render selected lyrics');
     }
@@ -1279,8 +1290,10 @@ export function create_app(options: CreateAppOptions = {}): Express {
         await store.set_run_status(run_id, 'failed_or_unknown');
         if (attempt_id) {
           await store.finish_attempt(attempt_id, 'failed_or_unknown');
+          if (error instanceof DiagnosticPersistenceFailure) throw error;
           throw new HttpError(502, { message: 'Speech render failed or has unknown usage', attempt_id, status: 'failed_or_unknown' });
         }
+        if (error instanceof DiagnosticPersistenceFailure) throw error;
         throw new HttpError(500, 'Offline render failed');
       }
     } finally {
@@ -1347,7 +1360,30 @@ export function create_app(options: CreateAppOptions = {}): Express {
     response.json({ stage });
   });
 
-  app.post('/api/jingles', ...authorized('renders.write'), (request, response) => trace_jingle(response, async () => {
+  app.post('/api/jingles', ...authorized('renders.write'), (request, response) => trace_jingle(response, async diagnostic_id => {
+    const store = await storage();
+    try { await store.create_jingle_diagnostic(diagnostic_id); }
+    catch {
+      console.error(JSON.stringify({ scope: 'earwyrm.jingle', diagnostic_id, event: 'diagnostic_create_failed' }));
+      throw new HttpError(503, 'Job diagnostics are unavailable. No generation was started.');
+    }
+    active_jingle_diagnostics.add(diagnostic_id);
+    let current_stage: JingleStage = 'brief';
+    const persist = async (stage: JingleStage, status: 'running' | 'completed' | 'failed') => {
+      try { await store.update_jingle_diagnostic(diagnostic_id, stage, status); }
+      catch {
+        console.error(JSON.stringify({ scope: 'earwyrm.jingle', diagnostic_id, event: 'diagnostic_update_failed' }));
+        throw new DiagnosticPersistenceFailure();
+      }
+    };
+    set_jingle_provider_recorder(async entry => {
+      try { await store.append_jingle_provider_event(diagnostic_id, entry); }
+      catch {
+        console.error(JSON.stringify({ scope: 'earwyrm.jingle', diagnostic_id, event: 'diagnostic_update_failed' }));
+        throw new DiagnosticPersistenceFailure();
+      }
+    });
+    try {
     const { description, progress_id, pronunciation_hints } = parse(z.strictObject({
       description: JingleDescription, progress_id: z.uuid().optional(),
       pronunciation_hints: z.string().max(2000).optional(),
@@ -1357,16 +1393,16 @@ export function create_app(options: CreateAppOptions = {}): Express {
     jingle_active = true;
     const progress = progress_id === undefined ? null : { id: progress_id, ...identity(response), stage: 'brief' as JingleStage };
     jingle_progress = progress;
-    let current_stage: JingleStage = 'brief';
-    const set_stage = (stage: JingleStage) => {
+    const set_stage = async (stage: JingleStage) => {
       current_stage = stage;
       set_jingle_diagnostic_stage(stage);
       if (progress) progress.stage = stage;
+      await persist(stage, 'running');
     };
     try {
       const estimate = await jingle_quote(response);
       const backend = await paid_lyric_backend('jingle_write', identity(response).subject);
-      set_stage('lyrics');
+      await set_stage('lyrics');
       const direction = parse(JingleDirection, await (options.jingle_direction
         ? options.jingle_direction(description)
         : backend instanceof AzureLyricBackend
@@ -1399,9 +1435,8 @@ export function create_app(options: CreateAppOptions = {}): Express {
         throw new HttpError(422, 'Use pronunciation hints like brandword = spoken words, one per line, with familiar English words and only words from the business name.');
       }
       const lyric_request = LyricRequest.parse({ ...custom, product_path: 'spoken', pronunciations, creative_direction: description });
-      set_stage('lyrics');
+      await set_stage('lyrics');
       const lyrics = await new LyricWriter(backend, 'browser_jingle').write(lyric_request, () => set_stage('safety'));
-      const store = await storage();
       const owner = identity(response).subject;
       if (lyrics.status !== 'accepted') {
         if (lyrics.reasons.includes('fixed_lyric_format')) throw new HttpError(422, 'The business name and closing line must be single lines without leading or trailing spaces and fit within 400 characters after punctuation normalization. Your exact wording was not changed.');
@@ -1422,17 +1457,19 @@ export function create_app(options: CreateAppOptions = {}): Express {
       const saved = await store.save_lyric_option(owner, lyric_request, lyrics);
       const brief_id = custom.brief.brief_id;
       const selection = { brief_ids: [brief_id], custom_briefs: [custom] };
-      set_stage('score');
+      await set_stage('score');
       const score = await compose_score({ ...selection, option_id: saved.option_id, confirm_paid_generation: true }, response, true, () => set_stage('backing'));
       if (score.status !== 200) {
-        set_stage(score.body.code === 'provider_outcome_unknown' ? 'score' : 'backing');
+        await set_stage(score.body.code === 'provider_outcome_unknown' ? 'score' : 'backing');
         throw new HttpError(score.status, score.body.detail);
       }
-      response.json(await render_selection({
+      const result = await render_selection({
         ...selection, mode: 'azure',
         lyric_selections: [{ brief_id, option_id: saved.option_id }],
         composition_selections: [{ brief_id, job_id: score.body.job_id }],
-      }, response, estimate, set_stage));
+      }, response, estimate, set_stage);
+      await persist(current_stage, 'completed');
+      response.json(result);
     } catch (error) {
       if (error instanceof CloudFailure) {
         jingle_diagnostic({ event: 'request_failed', reason: error.code });
@@ -1446,6 +1483,20 @@ export function create_app(options: CreateAppOptions = {}): Express {
     } finally {
       jingle_progress = null;
       jingle_active = false;
+    }
+    } catch (error) {
+      let persistence_failed = error instanceof DiagnosticPersistenceFailure;
+      if (!persistence_failed) {
+        try { await persist(current_stage, 'failed'); }
+        catch (failure) {
+          if (!(failure instanceof DiagnosticPersistenceFailure)) throw failure;
+          persistence_failed = true;
+        }
+      }
+      if (persistence_failed) throw new HttpError(503, 'Job diagnostics could not be saved. Generation may have incurred costs or produced results; do not retry before checking with an administrator.');
+      throw error;
+    } finally {
+      active_jingle_diagnostics.delete(diagnostic_id);
     }
   }));
   app.get('/api/renders/:run_id', ...authorized('renders.read'), async (request, response) => {
